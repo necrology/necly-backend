@@ -75,7 +75,7 @@ func (r *Router) registerHealth(app *fiber.App) {
 			})
 		}
 
-		// Check Redis if configured
+		// Check Redis if required
 		if r.redis != nil {
 			if err := r.redis.Ping(ctx).Err(); err != nil {
 				return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
@@ -164,17 +164,17 @@ func (r *Router) authMiddleware() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		authHeader := c.Get("Authorization")
 		if authHeader == "" {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "missing authorization header"})
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Header otorisasi tidak ditemukan"})
 		}
 
 		parts := strings.SplitN(authHeader, " ", 2)
 		if len(parts) != 2 || parts[0] != "Bearer" {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid authorization format"})
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Format otorisasi tidak valid"})
 		}
 
 		claims, err := r.tokens.ParseAccess(parts[1])
 		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid or expired token"})
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Token tidak valid atau telah kedaluwarsa"})
 		}
 
 		c.Locals("user_id", claims.Subject)
@@ -187,7 +187,7 @@ func (r *Router) requireRole(requiredRole domain.UserRole) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		role := c.Locals("user_role")
 		if role != requiredRole {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "insufficient permissions"})
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Akses ditolak: Anda tidak memiliki izin untuk tindakan ini"})
 		}
 		return c.Next()
 	}
@@ -196,7 +196,7 @@ func (r *Router) requireRole(requiredRole domain.UserRole) fiber.Handler {
 func (r *Router) register(c *fiber.Ctx) error {
 	var input service.RegisterInput
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
 	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
@@ -205,12 +205,12 @@ func (r *Router) register(c *fiber.Ctx) error {
 	result, err := r.authSvc.Register(ctx, input)
 	if err != nil {
 		if strings.Contains(err.Error(), "conflict") || strings.Contains(err.Error(), "duplicate") {
-			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "email already registered"})
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Email sudah terdaftar"})
 		}
 		if strings.Contains(err.Error(), "invalid") {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "registration failed"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Pendaftaran akun gagal"})
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(result)
@@ -219,7 +219,7 @@ func (r *Router) register(c *fiber.Ctx) error {
 func (r *Router) login(c *fiber.Ctx) error {
 	var input service.LoginInput
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
 	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
@@ -233,7 +233,7 @@ func (r *Router) login(c *fiber.Ctx) error {
 		if err == service.ErrUnauthorized || err == service.ErrEmailNotVerified {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": err.Error()})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "login failed"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal masuk ke akun"})
 	}
 
 	c.Cookie(&fiber.Cookie{
@@ -256,7 +256,7 @@ func (r *Router) login(c *fiber.Ctx) error {
 func (r *Router) refresh(c *fiber.Ctx) error {
 	refreshToken := c.Cookies("refresh_token")
 	if refreshToken == "" {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "missing refresh token"})
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Token penyegar tidak ditemukan"})
 	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
@@ -269,9 +269,9 @@ func (r *Router) refresh(c *fiber.Ctx) error {
 	if err != nil {
 		c.ClearCookie("refresh_token")
 		if err == service.ErrUnauthorized {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "refresh token revoked or expired"})
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Sesi telah kedaluwarsa atau dicabut, silakan masuk kembali"})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "refresh failed"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui sesi"})
 	}
 
 	c.Cookie(&fiber.Cookie{
@@ -299,7 +299,7 @@ func (r *Router) logout(c *fiber.Ctx) error {
 		_ = r.authSvc.Logout(ctx, refreshToken)
 	}
 	c.ClearCookie("refresh_token")
-	return c.JSON(fiber.Map{"message": "logged out"})
+	return c.JSON(fiber.Map{"message": "Berhasil keluar"})
 }
 
 func (r *Router) verifyEmail(c *fiber.Ctx) error {
@@ -307,7 +307,7 @@ func (r *Router) verifyEmail(c *fiber.Ctx) error {
 		Token string `json:"token"`
 	}
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
 	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
@@ -316,29 +316,29 @@ func (r *Router) verifyEmail(c *fiber.Ctx) error {
 	user, err := r.authSvc.VerifyEmail(ctx, input.Token)
 	if err != nil {
 		if err == service.ErrUnauthorized || err == service.ErrNotFound {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid or expired verification token"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Token verifikasi tidak valid atau telah kedaluwarsa"})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "verification failed"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Verifikasi email gagal"})
 	}
 
-	return c.JSON(fiber.Map{"message": "email verified", "user": user})
+	return c.JSON(fiber.Map{"message": "Email berhasil diverifikasi", "user": user})
 }
 
 func (r *Router) googleLogin(c *fiber.Ctx) error {
 	if r.authSvc.GoogleConfig() == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "google oauth not configured"})
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Autentikasi Google belum dikonfigurasi"})
 	}
 	cfg := r.authSvc.GoogleConfig()
 	state, err := r.authSvc.GenerateOAuthState()
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to generate oauth state"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal membuat state autentikasi Google"})
 	}
 	// Store state in Redis with TTL
 	if r.redis != nil {
 		ctx, cancel := context.WithTimeout(c.Context(), 3*time.Second)
 		defer cancel()
 		if err := r.redis.Set(ctx, "oauth:state:"+state, c.IP(), cfg.StateTTL).Err(); err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to store oauth state"})
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menyimpan state autentikasi Google"})
 		}
 	}
 	authURL := fmt.Sprintf("%s?client_id=%s&redirect_uri=%s&response_type=code&scope=openid%%20email%%20profile&access_type=offline&prompt=consent&state=%s",
@@ -348,13 +348,13 @@ func (r *Router) googleLogin(c *fiber.Ctx) error {
 
 func (r *Router) googleCallback(c *fiber.Ctx) error {
 	if r.authSvc.GoogleConfig() == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "google oauth not configured"})
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Autentikasi Google belum dikonfigurasi"})
 	}
 	cfg := r.authSvc.GoogleConfig()
 	code := c.Query("code")
 	state := c.Query("state")
 	if code == "" || state == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "missing code or state"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Kode otorisasi atau state Google tidak lengkap"})
 	}
 	// Verify state
 	if r.redis != nil {
@@ -362,7 +362,7 @@ func (r *Router) googleCallback(c *fiber.Ctx) error {
 		defer cancel()
 		storedIP, err := r.redis.Get(ctx, "oauth:state:"+state).Result()
 		if err != nil || storedIP != c.IP() {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid or expired oauth state"})
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Sesi login Google tidak valid atau kedaluwarsa"})
 		}
 		r.redis.Del(ctx, "oauth:state:"+state)
 	}
@@ -371,9 +371,9 @@ func (r *Router) googleCallback(c *fiber.Ctx) error {
 	session, err := r.authSvc.ExchangeGoogleCode(ctx, code, cfg)
 	if err != nil {
 		if err == service.ErrUnauthorized {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid google code"})
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Kode otorisasi Google tidak valid"})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "google oauth exchange failed"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menghubungkan akun Google"})
 	}
 	// Redirect to frontend with tokens
 	returnUrl := fmt.Sprintf("%s?access_token=%s&refresh_token=%s&expires_in=%d", cfg.FrontendReturnURL, session.AccessToken, session.RefreshToken, session.ExpiresIn)
@@ -385,7 +385,7 @@ func (r *Router) listCategories(c *fiber.Ctx) error {
 	defer cancel()
 	categories, _, err := r.catalogSvc.ListCategories(ctx, true, 1, 100)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to list categories"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil daftar kategori"})
 	}
 	return c.JSON(fiber.Map{"categories": categories})
 }
@@ -396,7 +396,7 @@ func (r *Router) getCategory(c *fiber.Ctx) error {
 	defer cancel()
 	cat, err := r.catalogSvc.GetCategory(ctx, id)
 	if err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "category not found"})
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Kategori tidak ditemukan"})
 	}
 	return c.JSON(cat)
 }
@@ -413,7 +413,7 @@ func (r *Router) listProducts(c *fiber.Ctx) error {
 	}
 	products, total, err := r.catalogSvc.ListProductsWithStock(ctx, categoryID, search, true, page, perPage)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to list products"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil daftar produk"})
 	}
 	return c.JSON(fiber.Map{"products": products, "page": page, "per_page": perPage, "total": total})
 }
@@ -429,7 +429,7 @@ func (r *Router) getProduct(c *fiber.Ctx) error {
 		// Try slug lookup if ID lookup failed
 		product, err = r.catalogSvc.GetProductBySlugWithStock(ctx, id)
 		if err != nil {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "product not found"})
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Produk langganan tidak ditemukan"})
 		}
 	}
 	return c.JSON(product)
@@ -441,7 +441,7 @@ func (r *Router) listProductPrices(c *fiber.Ctx) error {
 	defer cancel()
 	prices, err := r.catalogSvc.ListProductPrices(ctx, id, true)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to list prices"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil daftar harga paket"})
 	}
 	return c.JSON(fiber.Map{"prices": prices})
 }
@@ -452,7 +452,7 @@ func (r *Router) getMe(c *fiber.Ctx) error {
 	defer cancel()
 	user, err := r.authSvc.GetUserByID(ctx, userID)
 	if err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pengguna tidak ditemukan"})
 	}
 	return c.JSON(user)
 }
@@ -465,11 +465,11 @@ func (r *Router) addToCart(c *fiber.Ctx) error {
 		Quantity       int    `json:"quantity"`
 	}
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
 	}
 	input.ProductPriceID = strings.TrimSpace(input.ProductPriceID)
 	if input.ProductPriceID == "" || input.Quantity <= 0 || input.Quantity > 100 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "product_price_id and quantity (1-100) are required"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Pilihan paket langganan dan jumlah slot (1-100) wajib diisi"})
 	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
@@ -478,12 +478,12 @@ func (r *Router) addToCart(c *fiber.Ctx) error {
 	item, err := r.cartSvc.AddItem(ctx, userID, input.ProductPriceID, input.Quantity)
 	if err != nil {
 		if err == service.ErrNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "product price not found"})
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Paket langganan tidak ditemukan"})
 		}
 		if err == service.ErrInvalidInput {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to add to cart"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menambahkan ke keranjang"})
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(item)
@@ -497,7 +497,7 @@ func (r *Router) getCart(c *fiber.Ctx) error {
 
 	cart, err := r.cartSvc.GetCartWithValidation(ctx, userID)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to get cart"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil data keranjang"})
 	}
 
 	var total int64
@@ -518,10 +518,10 @@ func (r *Router) updateCartItem(c *fiber.Ctx) error {
 		Quantity int `json:"quantity"`
 	}
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
 	}
 	if input.Quantity <= 0 || input.Quantity > 100 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "quantity must be between 1 and 100"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Jumlah slot harus antara 1 dan 100"})
 	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
@@ -530,15 +530,15 @@ func (r *Router) updateCartItem(c *fiber.Ctx) error {
 	err := r.cartSvc.UpdateItem(ctx, userID, itemID, input.Quantity)
 	if err != nil {
 		if err == service.ErrNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "cart item not found"})
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Item keranjang tidak ditemukan"})
 		}
 		if err == service.ErrInvalidInput {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to update cart item"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui item keranjang"})
 	}
 
-	return c.JSON(fiber.Map{"message": "cart item updated"})
+	return c.JSON(fiber.Map{"message": "Item keranjang berhasil diperbarui"})
 }
 
 func (r *Router) removeCartItem(c *fiber.Ctx) error {
@@ -551,12 +551,12 @@ func (r *Router) removeCartItem(c *fiber.Ctx) error {
 	err := r.cartSvc.RemoveItem(ctx, userID, itemID)
 	if err != nil {
 		if err == service.ErrNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "cart item not found"})
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Item keranjang tidak ditemukan"})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to remove cart item"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menghapus item dari keranjang"})
 	}
 
-	return c.JSON(fiber.Map{"message": "cart item removed"})
+	return c.JSON(fiber.Map{"message": "Item keranjang berhasil dihapus"})
 }
 
 func (r *Router) checkout(c *fiber.Ctx) error {
@@ -564,7 +564,7 @@ func (r *Router) checkout(c *fiber.Ctx) error {
 
 	var input service.CheckoutInput
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
 	}
 	input.UserID = userID
 
@@ -577,12 +577,12 @@ func (r *Router) checkout(c *fiber.Ctx) error {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
 		if err == service.ErrNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "product or voucher not found"})
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Produk atau voucher tidak ditemukan"})
 		}
 		if err == service.ErrOutOfStock {
-			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "insufficient stock"})
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Slot akun langganan tidak mencukupi atau sedang habis"})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "checkout failed"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Proses pemesanan gagal"})
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(result)
@@ -602,7 +602,7 @@ func (r *Router) listOrders(c *fiber.Ctx) error {
 
 	orders, total, err := r.orderSvc.ListOrders(ctx, userID, page, perPage)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to list orders"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil riwayat pesanan"})
 	}
 
 	return c.JSON(fiber.Map{"orders": orders, "page": page, "per_page": perPage, "total": total})
@@ -618,9 +618,9 @@ func (r *Router) getOrder(c *fiber.Ctx) error {
 	order, err := r.orderSvc.GetOrder(ctx, userID, id)
 	if err != nil {
 		if err == service.ErrNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "order not found"})
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pesanan tidak ditemukan"})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to get order"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil detail pesanan"})
 	}
 
 	return c.JSON(order)
@@ -632,7 +632,7 @@ func (r *Router) dashboard(c *fiber.Ctx) error {
 
 	stats, err := r.adminSvc.GetDashboardStats(ctx)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to get dashboard stats"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil statistik dashboard"})
 	}
 
 	return c.JSON(stats)
@@ -655,7 +655,7 @@ func (r *Router) listUsers(c *fiber.Ctx) error {
 
 	users, total, err := r.adminUserSvc.ListUsers(ctx, filter, page, perPage)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to list users"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil daftar pengguna"})
 	}
 
 	// Clear password hashes from response
@@ -675,9 +675,9 @@ func (r *Router) getUser(c *fiber.Ctx) error {
 	user, err := r.adminUserSvc.GetUser(ctx, id)
 	if err != nil {
 		if err == service.ErrNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pengguna tidak ditemukan"})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to get user"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil data pengguna"})
 	}
 
 	user.PasswordHash = ""
@@ -694,7 +694,7 @@ func (r *Router) updateUser(c *fiber.Ctx) error {
 		Role   string `json:"role"`
 	}
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
 	}
 
 	var role *domain.UserRole
@@ -709,24 +709,24 @@ func (r *Router) updateUser(c *fiber.Ctx) error {
 	user, err := r.adminUserSvc.UpdateUser(ctx, id, input.Name, input.Email, input.Active)
 	if err != nil {
 		if err == service.ErrNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pengguna tidak ditemukan"})
 		}
 		if err == service.ErrConflict {
-			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "email already in use"})
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Email sudah digunakan oleh akun lain"})
 		}
 		if err == service.ErrInvalidInput {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to update user"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui data pengguna"})
 	}
 
 	if role != nil {
 		user, err = r.adminUserSvc.UpdateUserRole(ctx, id, *role)
 		if err != nil {
 			if err == service.ErrInvalidInput {
-				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid role"})
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Peran pengguna tidak valid"})
 			}
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to update user role"})
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui peran pengguna"})
 		}
 	}
 
@@ -743,12 +743,12 @@ func (r *Router) deleteUser(c *fiber.Ctx) error {
 	err := r.adminUserSvc.DeleteUser(ctx, id)
 	if err != nil {
 		if err == service.ErrNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pengguna tidak ditemukan"})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to delete user"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menghapus pengguna"})
 	}
 
-	return c.JSON(fiber.Map{"message": "user deleted"})
+	return c.JSON(fiber.Map{"message": "Pengguna berhasil dihapus"})
 }
 
 func (r *Router) adminListProducts(c *fiber.Ctx) error {
@@ -768,7 +768,7 @@ func (r *Router) adminListProducts(c *fiber.Ctx) error {
 
 	products, total, err := r.adminProductSvc.ListProducts(ctx, filter, page, perPage)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to list products"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil daftar produk"})
 	}
 
 	return c.JSON(fiber.Map{"products": products, "page": page, "per_page": perPage, "total": total})
@@ -783,7 +783,7 @@ func (r *Router) adminCreateProduct(c *fiber.Ctx) error {
 		ImageURL    string `json:"image_url"`
 	}
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
 	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
@@ -795,9 +795,9 @@ func (r *Router) adminCreateProduct(c *fiber.Ctx) error {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
 		if err == service.ErrConflict {
-			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "product SKU already exists"})
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "SKU/Slug produk sudah digunakan"})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to create product"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menambahkan produk"})
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(product)
@@ -815,7 +815,7 @@ func (r *Router) adminUpdateProduct(c *fiber.Ctx) error {
 		Active      *bool  `json:"active"`
 	}
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
 	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
@@ -824,15 +824,15 @@ func (r *Router) adminUpdateProduct(c *fiber.Ctx) error {
 	product, err := r.adminProductSvc.UpdateProduct(ctx, id, input.CategoryID, input.Name, input.Slug, input.Description, input.ImageURL, input.Active)
 	if err != nil {
 		if err == service.ErrNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "product not found"})
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Produk langganan tidak ditemukan"})
 		}
 		if err == service.ErrInvalidInput {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
 		if err == service.ErrConflict {
-			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "product SKU already exists"})
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "SKU/Slug produk sudah digunakan"})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to update product"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui data produk"})
 	}
 
 	return c.JSON(product)
@@ -847,12 +847,12 @@ func (r *Router) adminDeleteProduct(c *fiber.Ctx) error {
 	err := r.adminProductSvc.DeleteProduct(ctx, id)
 	if err != nil {
 		if err == service.ErrNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "product not found"})
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Produk langganan tidak ditemukan"})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to delete product"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menghapus produk"})
 	}
 
-	return c.JSON(fiber.Map{"message": "product deleted"})
+	return c.JSON(fiber.Map{"message": "Produk berhasil dihapus"})
 }
 
 func (r *Router) adminListCategories(c *fiber.Ctx) error {
@@ -871,7 +871,7 @@ func (r *Router) adminListCategories(c *fiber.Ctx) error {
 
 	categories, total, err := r.adminCategorySvc.ListCategories(ctx, filter, page, perPage)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to list categories"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil daftar kategori"})
 	}
 
 	return c.JSON(fiber.Map{"categories": categories, "page": page, "per_page": perPage, "total": total})
@@ -885,7 +885,7 @@ func (r *Router) adminCreateCategory(c *fiber.Ctx) error {
 		ImageURL    string `json:"image_url"`
 	}
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
 	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
@@ -897,9 +897,9 @@ func (r *Router) adminCreateCategory(c *fiber.Ctx) error {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
 		if err == service.ErrConflict {
-			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "category slug already exists"})
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Slug kategori sudah digunakan"})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to create category"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal membuat kategori"})
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(category)
@@ -916,7 +916,7 @@ func (r *Router) adminUpdateCategory(c *fiber.Ctx) error {
 		Active      *bool  `json:"active"`
 	}
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
 	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
@@ -925,15 +925,15 @@ func (r *Router) adminUpdateCategory(c *fiber.Ctx) error {
 	category, err := r.adminCategorySvc.UpdateCategory(ctx, id, input.Name, input.Slug, input.Description, input.ImageURL, input.Active)
 	if err != nil {
 		if err == service.ErrNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "category not found"})
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Kategori tidak ditemukan"})
 		}
 		if err == service.ErrInvalidInput {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
 		if err == service.ErrConflict {
-			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "category slug already exists"})
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Slug kategori sudah digunakan"})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to update category"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui kategori"})
 	}
 
 	return c.JSON(category)
@@ -948,12 +948,12 @@ func (r *Router) adminDeleteCategory(c *fiber.Ctx) error {
 	err := r.adminCategorySvc.DeleteCategory(ctx, id)
 	if err != nil {
 		if err == service.ErrNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "category not found"})
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Kategori tidak ditemukan"})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to delete category"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menghapus kategori"})
 	}
 
-	return c.JSON(fiber.Map{"message": "category deleted"})
+	return c.JSON(fiber.Map{"message": "Kategori berhasil dihapus"})
 }
 
 func (r *Router) adminListOrders(c *fiber.Ctx) error {
@@ -975,7 +975,7 @@ func (r *Router) adminListOrders(c *fiber.Ctx) error {
 
 	orders, total, err := r.adminOrderSvc.ListOrders(ctx, filter, page, perPage)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to list orders"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil riwayat pesanan"})
 	}
 
 	return c.JSON(fiber.Map{"orders": orders, "page": page, "per_page": perPage, "total": total})
@@ -988,10 +988,10 @@ func (r *Router) adminUpdateOrderStatus(c *fiber.Ctx) error {
 		Status string `json:"status"`
 	}
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
 	}
 	if input.Status == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "status is required"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Status pesanan wajib diisi"})
 	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
@@ -1000,12 +1000,12 @@ func (r *Router) adminUpdateOrderStatus(c *fiber.Ctx) error {
 	order, err := r.adminOrderSvc.UpdateOrderStatus(ctx, id, domain.OrderStatus(input.Status))
 	if err != nil {
 		if err == service.ErrNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "order not found"})
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pesanan tidak ditemukan"})
 		}
 		if err == service.ErrInvalidInput {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to update order status"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui status pesanan"})
 	}
 
 	return c.JSON(order)
@@ -1014,7 +1014,7 @@ func (r *Router) adminUpdateOrderStatus(c *fiber.Ctx) error {
 func (r *Router) receiveWebhook(c *fiber.Ctx) error {
 	provider := c.Params("provider")
 	if provider == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "provider is required"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Penyedia pembayaran wajib diisi"})
 	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), 30*time.Second)
@@ -1029,12 +1029,12 @@ func (r *Router) receiveWebhook(c *fiber.Ctx) error {
 	result, err := r.webhookSvc.Process(ctx, headers, payload)
 	if err != nil {
 		if err == service.ErrUnauthorized {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid webhook signature"})
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tanda tangan webhook tidak valid"})
 		}
 		if err == service.ErrInvalidInput {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "webhook processing failed"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Pemrosesan webhook gagal"})
 	}
 
 	return c.JSON(result)
@@ -1060,7 +1060,7 @@ func (r *Router) adminListAuditLogs(c *fiber.Ctx) error {
 
 	logs, total, err := r.adminSvc.ListAuditLogs(ctx, filter, page, perPage)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to list audit logs"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil log audit"})
 	}
 
 	return c.JSON(fiber.Map{"logs": logs, "page": page, "per_page": perPage, "total": total})
@@ -1094,7 +1094,7 @@ func (r *Router) adminListVouchers(c *fiber.Ctx) error {
 
 	vouchers, total, err := r.adminVoucherSvc.ListVouchers(ctx, filter, page, perPage)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to list vouchers"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil daftar voucher"})
 	}
 
 	return c.JSON(fiber.Map{"vouchers": vouchers, "page": page, "per_page": perPage, "total": total})
@@ -1103,7 +1103,7 @@ func (r *Router) adminListVouchers(c *fiber.Ctx) error {
 func (r *Router) adminCreateVoucher(c *fiber.Ctx) error {
 	var input service.CreateVoucherInput
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
 	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
@@ -1115,9 +1115,9 @@ func (r *Router) adminCreateVoucher(c *fiber.Ctx) error {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
 		if err == service.ErrConflict {
-			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "voucher code already exists"})
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Kode voucher sudah ada"})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to create voucher"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal membuat voucher"})
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(voucher)
@@ -1132,9 +1132,9 @@ func (r *Router) adminGetVoucher(c *fiber.Ctx) error {
 	voucher, err := r.adminVoucherSvc.GetVoucher(ctx, id)
 	if err != nil {
 		if err == service.ErrNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "voucher not found"})
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Voucher tidak ditemukan"})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to get voucher"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil data voucher"})
 	}
 
 	return c.JSON(voucher)
@@ -1145,7 +1145,7 @@ func (r *Router) adminUpdateVoucher(c *fiber.Ctx) error {
 
 	var input service.UpdateVoucherInput
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
 	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
@@ -1154,15 +1154,15 @@ func (r *Router) adminUpdateVoucher(c *fiber.Ctx) error {
 	voucher, err := r.adminVoucherSvc.UpdateVoucher(ctx, id, input)
 	if err != nil {
 		if err == service.ErrNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "voucher not found"})
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Voucher tidak ditemukan"})
 		}
 		if err == service.ErrInvalidInput {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
 		if err == service.ErrConflict {
-			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "voucher code already exists"})
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Kode voucher sudah ada"})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to update voucher"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui voucher"})
 	}
 
 	return c.JSON(voucher)
@@ -1177,12 +1177,12 @@ func (r *Router) adminDeleteVoucher(c *fiber.Ctx) error {
 	err := r.adminVoucherSvc.DeleteVoucher(ctx, id)
 	if err != nil {
 		if err == service.ErrNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "voucher not found"})
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Voucher tidak ditemukan"})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to delete voucher"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menghapus voucher"})
 	}
 
-	return c.JSON(fiber.Map{"message": "voucher deleted"})
+	return c.JSON(fiber.Map{"message": "Voucher berhasil dihapus"})
 }
 
 func (r *Router) adminListInventoryAccounts(c *fiber.Ctx) error {
@@ -1201,7 +1201,7 @@ func (r *Router) adminListInventoryAccounts(c *fiber.Ctx) error {
 
 	accounts, total, err := r.adminInventorySvc.ListInventoryAccounts(ctx, filter, page, perPage)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to list inventory accounts"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil daftar akun inventaris"})
 	}
 
 	// Never return encrypted credentials
@@ -1215,7 +1215,7 @@ func (r *Router) adminListInventoryAccounts(c *fiber.Ctx) error {
 func (r *Router) adminCreateInventoryAccount(c *fiber.Ctx) error {
 	var input service.CreateInventoryAccountInput
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
 	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
@@ -1226,7 +1226,7 @@ func (r *Router) adminCreateInventoryAccount(c *fiber.Ctx) error {
 		if err == service.ErrInvalidInput {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to create inventory account"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menambahkan akun inventaris"})
 	}
 
 	account.EncryptedCredentials = nil
@@ -1242,9 +1242,9 @@ func (r *Router) adminGetInventoryAccount(c *fiber.Ctx) error {
 	account, err := r.adminInventorySvc.GetInventoryAccount(ctx, id)
 	if err != nil {
 		if err == service.ErrNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "inventory account not found"})
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Akun inventaris tidak ditemukan"})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to get inventory account"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil data akun inventaris"})
 	}
 
 	account.EncryptedCredentials = nil
@@ -1256,7 +1256,7 @@ func (r *Router) adminUpdateInventoryAccount(c *fiber.Ctx) error {
 
 	var input service.UpdateInventoryAccountInput
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
 	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
@@ -1265,12 +1265,12 @@ func (r *Router) adminUpdateInventoryAccount(c *fiber.Ctx) error {
 	account, err := r.adminInventorySvc.UpdateInventoryAccount(ctx, id, input)
 	if err != nil {
 		if err == service.ErrNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "inventory account not found"})
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Akun inventaris tidak ditemukan"})
 		}
 		if err == service.ErrInvalidInput {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to update inventory account"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui akun inventaris"})
 	}
 
 	account.EncryptedCredentials = nil
@@ -1286,12 +1286,12 @@ func (r *Router) adminDeleteInventoryAccount(c *fiber.Ctx) error {
 	err := r.adminInventorySvc.DeleteInventoryAccount(ctx, id)
 	if err != nil {
 		if err == service.ErrNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "inventory account not found"})
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Akun inventaris tidak ditemukan"})
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to delete inventory account"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menghapus akun inventaris"})
 	}
 
-	return c.JSON(fiber.Map{"message": "inventory account deleted"})
+	return c.JSON(fiber.Map{"message": "Akun inventaris berhasil dihapus"})
 }
 
 func (r *Router) adminListPayments(c *fiber.Ctx) error {
@@ -1312,7 +1312,7 @@ func (r *Router) adminListPayments(c *fiber.Ctx) error {
 
 	orders, total, err := r.adminOrderSvc.ListOrders(ctx, filter, page, perPage)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to list payments"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil daftar pembayaran"})
 	}
 
 	return c.JSON(fiber.Map{"payments": orders, "page": page, "per_page": perPage, "total": total})
@@ -1339,7 +1339,7 @@ func (r *Router) adminListNotifications(c *fiber.Ctx) error {
 
 	logs, total, err := r.adminSvc.ListAuditLogs(ctx, filter, page, perPage)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to list notifications"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil notifikasi"})
 	}
 
 	return c.JSON(fiber.Map{"notifications": logs, "page": page, "per_page": perPage, "total": total})

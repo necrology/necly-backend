@@ -193,9 +193,8 @@ func TestAdminUserService_UpdateUserRole(t *testing.T) {
 	svc := NewAdminUserService(repo)
 
 	id := uuid.NewString()
-	now := time.Now().UTC()
 
-	repo.On("UpdateUserRole", ctx, id, string(domain.RoleAdmin), now).Return(nil)
+	repo.On("UpdateUserRole", ctx, id, string(domain.RoleAdmin), mock.AnythingOfType("time.Time")).Return(nil)
 	repo.On("GetUserByID", ctx, id).Return(&domain.User{ID: id, Role: domain.RoleAdmin}, nil)
 
 	user, err := svc.UpdateUserRole(ctx, id, domain.RoleAdmin)
@@ -222,9 +221,8 @@ func TestAdminUserService_UpdateUserActive(t *testing.T) {
 	svc := NewAdminUserService(repo)
 
 	id := uuid.NewString()
-	now := time.Now().UTC()
 
-	repo.On("UpdateUserActive", ctx, id, false, now).Return(nil)
+	repo.On("UpdateUserActive", ctx, id, false, mock.AnythingOfType("time.Time")).Return(nil)
 	repo.On("GetUserByID", ctx, id).Return(&domain.User{ID: id, Active: false}, nil)
 
 	user, err := svc.UpdateUserActive(ctx, id, false)

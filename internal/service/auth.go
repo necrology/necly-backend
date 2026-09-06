@@ -85,7 +85,7 @@ func (s *AuthService) Register(ctx context.Context, input RegisterInput) (*Regis
 	name := strings.TrimSpace(input.Name)
 	email := normalizeEmail(input.Email)
 	if name == "" || !validEmail(email) || len(input.Password) < 10 || len(input.Password) > 72 {
-		return nil, fmt.Errorf("%w: name, valid email, and password of 10-72 bytes are required", ErrInvalidInput)
+		return nil, fmt.Errorf("%w: Nama, format email valid, dan kata sandi 10-72 karakter wajib diisi", ErrInvalidInput)
 	}
 	hash, err := s.hasher.Hash(input.Password)
 	if err != nil {

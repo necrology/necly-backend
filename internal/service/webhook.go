@@ -8,7 +8,7 @@ import (
 	"github.com/necly/services/internal/domain"
 )
 
-var ErrInvalidWebhookSignature = errors.New("invalid webhook signature")
+var ErrInvalidWebhookSignature = errors.New("Tanda tangan webhook tidak valid")
 
 type WebhookRepository interface {
 	ApplyPaymentEvent(ctx context.Context, event PaymentEvent) (bool, error)

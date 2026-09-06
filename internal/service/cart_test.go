@@ -78,11 +78,10 @@ func TestCartService_AddItem(t *testing.T) {
 	userID := uuid.NewString()
 	cart := &domain.Cart{ID: uuid.NewString(), UserID: userID}
 	productPriceID := uuid.NewString()
-	now := time.Now().UTC()
 	item := &domain.CartItem{ID: uuid.NewString(), CartID: cart.ID, ProductPriceID: productPriceID, Quantity: 2}
 
 	repo.On("GetOrCreateCart", ctx, userID).Return(cart, nil)
-	repo.On("AddItem", ctx, cart.ID, productPriceID, 2, now).Return(item, nil)
+	repo.On("AddItem", ctx, cart.ID, productPriceID, 2, mock.AnythingOfType("time.Time")).Return(item, nil)
 
 	result, err := svc.AddItem(ctx, userID, productPriceID, 2)
 	assert.NoError(t, err)
@@ -237,7 +236,7 @@ func TestCartService_GetCartWithValidation_InactivePrice(t *testing.T) {
 
 	result, err := svc.GetCartWithValidation(ctx, userID)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "no longer available")
+	assert.Contains(t, err.Error(), "sudah tidak tersedia")
 	assert.Nil(t, result)
 	repo.AssertExpectations(t)
 }

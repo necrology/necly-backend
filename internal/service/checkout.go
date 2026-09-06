@@ -115,7 +115,7 @@ func (s *CheckoutService) Checkout(ctx context.Context, input CheckoutInput) (*C
 	}
 	if initiation == nil || initiation.ProviderPaymentID == "" {
 		_ = s.repo.CancelAndRelease(ctx, order.ID, now)
-		return nil, errors.New("payment provider returned an invalid response")
+		return nil, errors.New("Penyedia pembayaran mengembalikan respons yang tidak valid")
 	}
 	payment := domain.Payment{
 		ID: uuid.NewString(), OrderID: order.ID, Provider: s.provider.Name(), ProviderPaymentID: initiation.ProviderPaymentID,

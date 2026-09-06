@@ -83,7 +83,7 @@ func (s *CartService) GetCartWithValidation(ctx context.Context, userID string) 
 			continue
 		}
 		if cart.Items[i].ProductPrice != nil && !cart.Items[i].ProductPrice.Active {
-			return nil, fmt.Errorf("product price %s is no longer available", cart.Items[i].ProductPriceID)
+			return nil, fmt.Errorf("Harga paket langganan %s sudah tidak tersedia", cart.Items[i].ProductPriceID)
 		}
 	}
 	return cart, nil

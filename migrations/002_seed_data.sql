@@ -5,37 +5,37 @@
 -- using the CREDENTIAL_ENCRYPTION_KEY from environment.
 
 -- ============================================================
--- Product Durations
+-- Durasi Produk
 -- ============================================================
 INSERT INTO product_durations (id, name, days) VALUES
-    ('0192f0a1-0000-0000-0000-000000000001', 'Monthly', 30),
-    ('0192f0a1-0000-0000-0000-000000000002', 'Quarterly', 90),
-    ('0192f0a1-0000-0000-0000-000000000003', 'Semi-Annual', 180),
-    ('0192f0a1-0000-0000-0000-000000000004', 'Annual', 365)
+    ('0192f0a1-0000-0000-0000-000000000001', '1 Bulan', 30),
+    ('0192f0a1-0000-0000-0000-000000000002', '3 Bulan', 90),
+    ('0192f0a1-0000-0000-0000-000000000003', '6 Bulan', 180),
+    ('0192f0a1-0000-0000-0000-000000000004', '12 Bulan', 365)
 ON CONFLICT (id) DO NOTHING;
 
 -- ============================================================
--- Categories - Streaming & Productivity Services
+-- Kategori Layanan Berlangganan Bersama
 -- ============================================================
 INSERT INTO categories (id, name, slug, description, active) VALUES
-    ('0192f0a2-0000-0000-0000-000000000001', 'Video Streaming', 'video-streaming', 'Premium video streaming subscriptions', TRUE),
-    ('0192f0a2-0000-0000-0000-000000000002', 'Music Streaming', 'music-streaming', 'High-quality music streaming plans', TRUE),
-    ('0192f0a2-0000-0000-0000-000000000003', 'Productivity Suites', 'productivity-suites', 'Office and collaboration software subscriptions', TRUE),
-    ('0192f0a2-0000-0000-0000-000000000004', 'Cloud Storage', 'cloud-storage', 'Personal and team cloud storage plans', TRUE)
+    ('0192f0a2-0000-0000-0000-000000000001', 'Streaming Video', 'video-streaming', 'Pilihan slot streaming video untuk anggota rumah tangga sesuai ketentuan penyedia.', TRUE),
+    ('0192f0a2-0000-0000-0000-000000000002', 'Streaming Musik', 'music-streaming', 'Paket streaming musik untuk anggota keluarga yang memenuhi ketentuan penyedia.', TRUE),
+    ('0192f0a2-0000-0000-0000-000000000003', 'Produktivitas Bersama', 'productivity-suites', 'Paket produktivitas untuk anggota keluarga atau tim melalui undangan resmi.', TRUE),
+    ('0192f0a2-0000-0000-0000-000000000004', 'Penyimpanan Awan', 'cloud-storage', 'Paket penyimpanan untuk anggota keluarga atau tim sesuai ketentuan penyedia.', TRUE)
 ON CONFLICT (id) DO NOTHING;
 
 -- ============================================================
--- Products
+-- Produk Slot Langganan
 -- ============================================================
 INSERT INTO products (id, category_id, name, slug, description, active) VALUES
-    ('0192f0a3-0000-0000-0000-000000000001', '0192f0a2-0000-0000-0000-000000000001', 'Netflix Premium', 'netflix-premium', '4K HDR streaming on up to 4 devices', TRUE),
-    ('0192f0a3-0000-0000-0000-000000000002', '0192f0a2-0000-0000-0000-000000000001', 'Disney+ Standard', 'disney-plus-standard', 'HD streaming on 2 devices', TRUE),
-    ('0192f0a3-0000-0000-0000-000000000003', '0192f0a2-0000-0000-0000-000000000002', 'Spotify Premium Individual', 'spotify-premium-individual', 'Ad-free music, offline listening, high quality', TRUE),
-    ('0192f0a3-0000-0000-0000-000000000004', '0192f0a2-0000-0000-0000-000000000002', 'Apple Music Individual', 'apple-music-individual', 'Lossless audio, spatial audio, offline', TRUE),
-    ('0192f0a3-0000-0000-0000-000000000005', '0192f0a2-0000-0000-0000-000000000003', 'Microsoft 365 Personal', 'microsoft-365-personal', 'Office apps, 1TB OneDrive, premium features', TRUE),
-    ('0192f0a3-0000-0000-0000-000000000006', '0192f0a2-0000-0000-0000-000000000003', 'Canva Pro', 'canva-pro', 'Premium templates, brand kit, background remover', TRUE),
-    ('0192f0a3-0000-0000-0000-000000000007', '0192f0a2-0000-0000-0000-000000000004', 'Google One 2TB', 'google-one-2tb', '2TB storage across Drive, Gmail, Photos', TRUE),
-    ('0192f0a3-0000-0000-0000-000000000008', '0192f0a2-0000-0000-0000-000000000004', 'Dropbox Plus', 'dropbox-plus', '2TB storage, smart sync, file recovery', TRUE)
+    ('0192f0a3-0000-0000-0000-000000000001', '0192f0a2-0000-0000-0000-000000000001', 'Netflix Premium - Slot Anggota Rumah Tangga', 'netflix-premium', 'Slot profil untuk anggota satu rumah tangga yang berbagi biaya langganan agar lebih hemat, sesuai ketentuan Netflix.', TRUE),
+    ('0192f0a3-0000-0000-0000-000000000002', '0192f0a2-0000-0000-0000-000000000001', 'Disney+ Standard - Slot Anggota Rumah Tangga', 'disney-plus-standard', 'Slot profil untuk anggota satu rumah tangga yang berbagi biaya langganan agar lebih hemat, sesuai ketentuan Disney+.', TRUE),
+    ('0192f0a3-0000-0000-0000-000000000003', '0192f0a2-0000-0000-0000-000000000002', 'Spotify Premium Family - Slot Anggota', 'spotify-premium-individual', 'Slot Premium Family untuk anggota keluarga yang tinggal serumah agar biaya lebih hemat, melalui undangan resmi sesuai ketentuan Spotify.', TRUE),
+    ('0192f0a3-0000-0000-0000-000000000004', '0192f0a2-0000-0000-0000-000000000002', 'Apple Music Family - Slot Anggota', 'apple-music-individual', 'Slot anggota keluarga melalui Family Sharing agar biaya langganan lebih hemat, sesuai ketentuan Apple.', TRUE),
+    ('0192f0a3-0000-0000-0000-000000000005', '0192f0a2-0000-0000-0000-000000000003', 'Microsoft 365 Family - Slot Anggota', 'microsoft-365-personal', 'Slot anggota paket Family dengan akses pribadi melalui undangan resmi agar lebih hemat, sesuai ketentuan Microsoft.', TRUE),
+    ('0192f0a3-0000-0000-0000-000000000006', '0192f0a2-0000-0000-0000-000000000003', 'Canva Teams - Slot Anggota', 'canva-pro', 'Slot anggota tim melalui undangan resmi agar biaya kolaborasi lebih hemat, sesuai ketentuan Canva.', TRUE),
+    ('0192f0a3-0000-0000-0000-000000000007', '0192f0a2-0000-0000-0000-000000000004', 'Google One 2 TB - Slot Keluarga', 'google-one-2tb', 'Slot anggota grup keluarga untuk berbagi manfaat penyimpanan secara lebih hemat, sesuai ketentuan Google.', TRUE),
+    ('0192f0a3-0000-0000-0000-000000000008', '0192f0a2-0000-0000-0000-000000000004', 'Dropbox Family - Slot Anggota', 'dropbox-plus', 'Slot anggota paket Family dengan ruang pribadi melalui undangan resmi agar lebih hemat, sesuai ketentuan Dropbox.', TRUE)
 ON CONFLICT (id) DO NOTHING;
 
 -- ============================================================

@@ -3,12 +3,12 @@ package service
 import "errors"
 
 var (
-	ErrInvalidInput      = errors.New("invalid input")
-	ErrUnauthorized      = errors.New("unauthorized")
-	ErrForbidden         = errors.New("forbidden")
-	ErrNotFound          = errors.New("not found")
-	ErrConflict          = errors.New("conflict")
-	ErrEmailNotVerified  = errors.New("email is not verified")
-	ErrOutOfStock        = errors.New("insufficient stock")
-	ErrInvalidTransition = errors.New("invalid order status transition")
+	ErrInvalidInput      = errors.New("Input tidak valid")
+	ErrUnauthorized      = errors.New("Tidak terotorisasi")
+	ErrForbidden         = errors.New("Akses ditolak")
+	ErrNotFound          = errors.New("Data tidak ditemukan")
+	ErrConflict          = errors.New("Terjadi konflik data")
+	ErrEmailNotVerified  = errors.New("Email belum diverifikasi. Silakan periksa kotak masuk atau spam Anda.")
+	ErrOutOfStock        = errors.New("Slot akun langganan tidak mencukupi atau sedang habis")
+	ErrInvalidTransition = errors.New("Perubahan status pesanan tidak valid")
 )

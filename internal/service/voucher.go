@@ -8,13 +8,13 @@ import (
 )
 
 var (
-	ErrVoucherInactive   = errors.New("voucher is inactive")
-	ErrVoucherNotStarted = errors.New("voucher has not started")
-	ErrVoucherExpired    = errors.New("voucher has expired")
-	ErrVoucherMinimum    = errors.New("order does not meet voucher minimum")
-	ErrVoucherExhausted  = errors.New("voucher usage limit reached")
-	ErrVoucherUserLimit  = errors.New("voucher user limit reached")
-	ErrVoucherInvalid    = errors.New("voucher configuration is invalid")
+	ErrVoucherInactive   = errors.New("Voucher tidak aktif")
+	ErrVoucherNotStarted = errors.New("Periode voucher belum dimulai")
+	ErrVoucherExpired    = errors.New("Masa berlaku voucher telah berakhir")
+	ErrVoucherMinimum    = errors.New("Total pesanan belum memenuhi syarat minimum voucher")
+	ErrVoucherExhausted  = errors.New("Kuota penggunaan voucher telah habis")
+	ErrVoucherUserLimit  = errors.New("Batas penggunaan voucher per pengguna telah tercapai")
+	ErrVoucherInvalid    = errors.New("Konfigurasi voucher tidak valid")
 )
 
 func CalculateVoucherDiscount(v domain.Voucher, subtotal int64, used, userUsed int, now time.Time) (int64, error) {
