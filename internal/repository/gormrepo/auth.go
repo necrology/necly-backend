@@ -1,0 +1,216 @@
+package gormrepo
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/necly/services/internal/domain"
+	"github.com/necly/services/internal/service"
+	"gorm.io/gorm"
+)
+
+type Store struct {
+	db  *gorm.DB
+	now func() time.Time
+}
+
+func NewStore(db *gorm.DB) *Store {
+	return &Store{db: db, now: time.Now}
+}
+
+func (s *Store) nowUTC() time.Time { return s.now().UTC() }
+
+func (s *Store) CreateUser(ctx context.Context, user *domain.User, verification *domain.EmailVerificationToken) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(user).Error; err != nil {
+			if errors.Is(err, gorm.ErrDuplicatedKey) {
+				return service.ErrConflict
+			}
+			return fmt.Errorf("create user: %w", err)
+		}
+		if err := tx.Create(verification).Error; err != nil {
+			return fmt.Errorf("create verification token: %w", err)
+		}
+		return nil
+	})
+}
+
+func (s *Store) CreateUserAdmin(ctx context.Context, u *domain.User) error {
+	return s.db.WithContext(ctx).Create(u).Error
+}
+
+func (s *Store) UserByEmail(ctx context.Context, email string) (*domain.User, error) {
+	var user domain.User
+	err := s.db.WithContext(ctx).Where("email = ?", email).First(&user).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, service.ErrNotFound
+	}
+	return &user, err
+}
+
+func (s *Store) UserByID(ctx context.Context, id string) (*domain.User, error) {
+	var user domain.User
+	err := s.db.WithContext(ctx).Where("id = ?", id).First(&user).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, service.ErrNotFound
+	}
+	return &user, err
+}
+
+func (s *Store) SaveRefreshToken(ctx context.Context, token *domain.RefreshToken) error {
+	return s.db.WithContext(ctx).Create(token).Error
+}
+
+func (s *Store) RefreshTokenByHash(ctx context.Context, hash string) (*domain.RefreshToken, error) {
+	var token domain.RefreshToken
+	err := s.db.WithContext(ctx).Where("token_hash = ?", hash).First(&token).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, service.ErrNotFound
+	}
+	return &token, err
+}
+
+func (s *Store) RotateRefreshToken(ctx context.Context, oldHash string, replacement *domain.RefreshToken, now time.Time) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&domain.RefreshToken{}).
+			Where("token_hash = ? AND revoked_at IS NULL AND expires_at > ?", oldHash, now).
+			Update("revoked_at", now)
+		if result.Error != nil {
+			return fmt.Errorf("revoke old token: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return service.ErrUnauthorized
+		}
+		if err := tx.Create(replacement).Error; err != nil {
+			return fmt.Errorf("save replacement token: %w", err)
+		}
+		return nil
+	})
+}
+
+func (s *Store) RevokeRefreshToken(ctx context.Context, hash string, now time.Time) error {
+	return s.db.WithContext(ctx).
+		Model(&domain.RefreshToken{}).
+		Where("token_hash = ?", hash).
+		Update("revoked_at", now).Error
+}
+
+func (s *Store) ConsumeVerificationToken(ctx context.Context, hash string, now time.Time) (*domain.User, error) {
+	var user *domain.User
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var token domain.EmailVerificationToken
+		if err := tx.Set("gorm:query_option", "FOR UPDATE").
+			Where("token_hash = ? AND used_at IS NULL AND expires_at > ?", hash, now).
+			First(&token).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return service.ErrUnauthorized
+			}
+			return fmt.Errorf("find token: %w", err)
+		}
+		token.UsedAt = &now
+		if err := tx.Save(&token).Error; err != nil {
+			return fmt.Errorf("mark token used: %w", err)
+		}
+		var u domain.User
+		if err := tx.Where("id = ?", token.UserID).First(&u).Error; err != nil {
+			return fmt.Errorf("find user: %w", err)
+		}
+		u.EmailVerifiedAt = &now
+		if err := tx.Save(&u).Error; err != nil {
+			return fmt.Errorf("update user: %w", err)
+		}
+		user = &u
+		return nil
+	})
+	return user, err
+}
+
+func (s *Store) UpsertGoogleUser(ctx context.Context, email, name, subject string, now time.Time) (*domain.User, error) {
+	var user *domain.User
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var u domain.User
+		err := tx.Where("email = ?", email).First(&u).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			u = domain.User{ID: uuid.NewString(), Email: email, Name: name, Role: domain.RoleCustomer, GoogleSubject: &subject, EmailVerifiedAt: &now, CreatedAt: now, UpdatedAt: now}
+			if err := tx.Create(&u).Error; err != nil {
+				return fmt.Errorf("create google user: %w", err)
+			}
+		} else if err != nil {
+			return fmt.Errorf("find user: %w", err)
+		} else {
+			u.GoogleSubject = &subject
+			u.EmailVerifiedAt = &now
+			u.UpdatedAt = now
+			if err := tx.Save(&u).Error; err != nil {
+				return fmt.Errorf("update google user: %w", err)
+			}
+		}
+		user = &u
+		return nil
+	})
+	return user, err
+}
+
+func (s *Store) ListUsers(ctx context.Context, filter service.UserFilter, page, perPage int) ([]domain.User, int64, error) {
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 || perPage > 100 {
+		perPage = 20
+	}
+	query := s.db.WithContext(ctx).Model(&domain.User{}).Where("deleted_at IS NULL")
+	if filter.Role != "" {
+		query = query.Where("role = ?", filter.Role)
+	}
+	if filter.Active != nil {
+		query = query.Where("active = ?", *filter.Active)
+	}
+	if filter.Search != "" {
+		like := "%" + strings.ToLower(filter.Search) + "%"
+		query = query.Where("LOWER(name) LIKE ? OR LOWER(email) LIKE ?", like, like)
+	}
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("count users: %w", err)
+	}
+	var users []domain.User
+	offset := (page - 1) * perPage
+	if err := query.Order("created_at DESC").Offset(offset).Limit(perPage).Find(&users).Error; err != nil {
+		return nil, 0, fmt.Errorf("list users: %w", err)
+	}
+	for i := range users {
+		users[i].PasswordHash = ""
+	}
+	return users, total, nil
+}
+
+func (s *Store) UpdateUserRole(ctx context.Context, id, role string, now time.Time) error {
+	return s.db.WithContext(ctx).Model(&domain.User{}).Where("id = ? AND deleted_at IS NULL", id).Updates(map[string]any{"role": role, "updated_at": now}).Error
+}
+
+func (s *Store) UpdateUserActive(ctx context.Context, id string, active bool, now time.Time) error {
+	return s.db.WithContext(ctx).Model(&domain.User{}).Where("id = ? AND deleted_at IS NULL", id).Updates(map[string]any{"active": active, "updated_at": now}).Error
+}
+
+func (s *Store) DeleteUser(ctx context.Context, id string, now time.Time) error {
+	return s.db.WithContext(ctx).Model(&domain.User{}).
+		Where("id = ? AND deleted_at IS NULL", id).
+		Updates(map[string]any{"deleted_at": now, "updated_at": now}).Error
+}
+
+func (s *Store) UpdateUser(ctx context.Context, u *domain.User) error {
+	u.UpdatedAt = s.nowUTC()
+	return s.db.WithContext(ctx).Where("id = ? AND deleted_at IS NULL", u.ID).Save(u).Error
+}
+
+func (s *Store) GetUserByEmail(ctx context.Context, email string) (*domain.User, error) {
+	return s.UserByEmail(ctx, email)
+}
+
+func (s *Store) GetUserByID(ctx context.Context, id string) (*domain.User, error) {
+	return s.UserByID(ctx, id)
+}
