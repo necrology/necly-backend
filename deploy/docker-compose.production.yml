@@ -1,0 +1,74 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - necly_postgres_data:/var/lib/postgresql/data
+      - ./necly-backend/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - necly_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  api:
+    build:
+      context: ./necly-backend
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB}
+      DB_SSL_MODE: disable
+      DB_ALLOW_INSECURE_TLS: "true"
+      REDIS_ADDR: redis:6379
+    ports:
+      - "127.0.0.1:5050:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+
+  frontend:
+    build:
+      context: ./necly-frontend
+      args:
+        NEXT_PUBLIC_API_URL: https://api.necly-service.my.id/api/v1
+        NEXT_PUBLIC_SITE_URL: https://necly-service.my.id
+        NEXT_PUBLIC_DEMO_MODE: "false"
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3030:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  necly_postgres_data:
+  necly_redis_data:
