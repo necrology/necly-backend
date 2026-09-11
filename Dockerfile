@@ -1,5 +1,5 @@
 # Multi-stage Dockerfile for Necly Services Backend (Go Fiber)
-FROM golang:1.22-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /app
 
@@ -19,7 +19,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o necly-backend ./c
 # Final stage - minimal image
 FROM alpine:3.20
 
-RUN apk add --no-cache ca-certificates tzdata && \
+RUN apk add --no-cache ca-certificates tzdata wget && \
     addgroup -g 1001 -S necly && \
     adduser -u 1001 -S necly -G necly
 
