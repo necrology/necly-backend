@@ -14,6 +14,10 @@ import (
 type CheckoutItemInput struct {
 	ProductPriceID string `json:"product_price_id"`
 	Quantity       int    `json:"quantity"`
+	// DeviceCount is how many devices the subscription should cover (QA baris
+	// 38). Zero means the client did not send it, which is normalised to 1 so a
+	// checkout that predates the picker still succeeds.
+	DeviceCount int `json:"device_count"`
 }
 
 type CheckoutInput struct {
@@ -94,8 +98,11 @@ func (s *CheckoutService) Checkout(ctx context.Context, input CheckoutInput) (*C
 	seen := make(map[string]bool, len(input.Items))
 	for i := range input.Items {
 		input.Items[i].ProductPriceID = strings.TrimSpace(input.Items[i].ProductPriceID)
+		if input.Items[i].DeviceCount == 0 {
+			input.Items[i].DeviceCount = 1
+		}
 		item := input.Items[i]
-		if item.ProductPriceID == "" || item.Quantity <= 0 || item.Quantity > 100 || seen[item.ProductPriceID] {
+		if item.ProductPriceID == "" || item.Quantity <= 0 || item.Quantity > 100 || item.DeviceCount < 1 || item.DeviceCount > 10 || seen[item.ProductPriceID] {
 			return nil, ErrInvalidInput
 		}
 		seen[item.ProductPriceID] = true

@@ -67,6 +67,16 @@ func (m *dummyAuthRepo) UpsertGoogleUser(ctx context.Context, email, name, subje
 	}
 	return nil, args.Error(1)
 }
+func (m *dummyAuthRepo) CreatePasswordResetToken(ctx context.Context, token *domain.PasswordResetToken) error {
+	return m.Called(ctx, token).Error(0)
+}
+func (m *dummyAuthRepo) ConsumePasswordResetToken(ctx context.Context, hash, passwordHash string, now time.Time) (*domain.User, error) {
+	args := m.Called(ctx, hash, passwordHash, now)
+	if u := args.Get(0); u != nil {
+		return u.(*domain.User), args.Error(1)
+	}
+	return nil, args.Error(1)
+}
 
 func setupTestApp(t *testing.T) (*fiber.App, *service.TokenManager, *dummyAuthRepo) {
 	app := fiber.New()
@@ -74,7 +84,7 @@ func setupTestApp(t *testing.T) (*fiber.App, *service.TokenManager, *dummyAuthRe
 	assert.NoError(t, err)
 	hasher := service.NewPasswordHasher(4)
 	authRepo := new(dummyAuthRepo)
-	authSvc := service.NewAuthService(authRepo, hasher, tokens, 24*time.Hour, nil)
+	authSvc := service.NewAuthService(authRepo, hasher, tokens, service.AuthSettings{VerificationTTL: 24 * time.Hour})
 
 	router := handler.NewRouter(
 		authSvc,
@@ -91,6 +101,7 @@ func setupTestApp(t *testing.T) (*fiber.App, *service.TokenManager, *dummyAuthRe
 		nil,
 		nil,
 		tokens,
+		nil,
 		nil,
 		nil,
 	)

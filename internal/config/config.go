@@ -14,9 +14,17 @@ import (
 // Config contains configuration loaded exclusively from environment variables.
 // Secret fields must never be logged or serialized.
 type Config struct {
-	AppEnv            string
-	AppPort           string
-	AppBaseURL        string
+	AppEnv     string
+	AppPort    string
+	AppBaseURL string
+	// AppFrontendURL is the storefront origin. Links a human opens (the
+	// password reset page) point here; AppBaseURL is this API's own origin.
+	AppFrontendURL string
+	// PasswordResetTTL bounds how long a "lupa kata sandi" link stays valid.
+	PasswordResetTTL time.Duration
+	// ReportAdminEmail receives a notification for every issue report. When it
+	// is empty the notification is skipped and the report is only stored.
+	ReportAdminEmail  string
 	Database          DatabaseConfig
 	Redis             RedisConfig
 	JWT               JWTConfig
@@ -206,6 +214,14 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	corsOrigins := splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173"))
+	frontendURL := strings.TrimSpace(os.Getenv("FRONTEND_BASE_URL"))
+	if frontendURL == "" && len(corsOrigins) > 0 {
+		// The storefront always calls this API cross-origin, so the first
+		// allowed origin is the site origin unless it is set explicitly.
+		frontendURL = corsOrigins[0]
+	}
+
 	cfg := &Config{
 		AppEnv:        env,
 		AppPort:       getEnv("APP_PORT", "8080"),
@@ -257,12 +273,15 @@ func Load() (*Config, error) {
 			AccessKey: os.Getenv("S3_ACCESS_KEY"), SecretKey: os.Getenv("S3_SECRET_KEY"), PublicBaseURL: os.Getenv("S3_PUBLIC_BASE_URL"),
 			UsePathStyle: pathStyle, MaxUploadBytes: maxUpload, PresignTTL: mustEnvDuration("S3_PRESIGN_TTL", 15*time.Minute),
 		},
-		CORS: CORSConfig{Origins: splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173")), AllowCredentials: allowCredentials},
+		CORS: CORSConfig{Origins: corsOrigins, AllowCredentials: allowCredentials},
 		Cookie: CookieConfig{
 			Secure: cookieSecure, HTTPOnly: cookieHTTPOnly, SameSite: getEnv("COOKIE_SAME_SITE", "Lax"),
 			Domain: os.Getenv("COOKIE_DOMAIN"), Path: getEnv("COOKIE_PATH", "/api/v1/auth"),
 		},
 		HTTPClientTimeout: mustEnvDuration("HTTP_CLIENT_TIMEOUT", 10*time.Second),
+		AppFrontendURL:    frontendURL,
+		PasswordResetTTL:  mustEnvDuration("PASSWORD_RESET_TTL", 45*time.Minute),
+		ReportAdminEmail:  strings.TrimSpace(os.Getenv("REPORT_ADMIN_EMAIL")),
 	}
 
 	if err := durationLoadError(); err != nil {

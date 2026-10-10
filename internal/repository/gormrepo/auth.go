@@ -129,6 +129,58 @@ func (s *Store) ConsumeVerificationToken(ctx context.Context, hash string, now t
 	return user, err
 }
 
+func (s *Store) CreatePasswordResetToken(ctx context.Context, token *domain.PasswordResetToken) error {
+	if err := s.db.WithContext(ctx).Create(token).Error; err != nil {
+		return fmt.Errorf("create password reset token: %w", err)
+	}
+	return nil
+}
+
+// ConsumePasswordResetToken redeems a reset token and applies the new password
+// in one transaction, so a token can never be spent without the password change
+// landing, and the change can never land on an expired or reused token. Every
+// refresh token of the user is revoked: a reset is a "someone may have had my
+// password" event, so the existing sessions must die with it.
+func (s *Store) ConsumePasswordResetToken(ctx context.Context, hash, passwordHash string, now time.Time) (*domain.User, error) {
+	var user *domain.User
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var token domain.PasswordResetToken
+		if err := tx.Set("gorm:query_option", "FOR UPDATE").
+			Where("token_hash = ? AND used_at IS NULL AND expires_at > ?", hash, now).
+			First(&token).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return service.ErrUnauthorized
+			}
+			return fmt.Errorf("find reset token: %w", err)
+		}
+		token.UsedAt = &now
+		if err := tx.Save(&token).Error; err != nil {
+			return fmt.Errorf("mark reset token used: %w", err)
+		}
+
+		var u domain.User
+		if err := tx.Where("id = ?", token.UserID).First(&u).Error; err != nil {
+			return fmt.Errorf("find user: %w", err)
+		}
+		u.PasswordHash = passwordHash
+		u.UpdatedAt = now
+		if err := tx.Save(&u).Error; err != nil {
+			return fmt.Errorf("update password: %w", err)
+		}
+		if err := tx.Model(&domain.RefreshToken{}).
+			Where("user_id = ? AND revoked_at IS NULL", u.ID).
+			Update("revoked_at", now).Error; err != nil {
+			return fmt.Errorf("revoke sessions: %w", err)
+		}
+		user = &u
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return user, nil
+}
+
 func (s *Store) UpsertGoogleUser(ctx context.Context, email, name, subject string, now time.Time) (*domain.User, error) {
 	var user *domain.User
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {

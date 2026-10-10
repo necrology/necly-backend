@@ -21,6 +21,8 @@ import (
 	"github.com/necly/services/internal/config"
 	"github.com/necly/services/internal/handler"
 	"github.com/necly/services/internal/platform/database"
+	"github.com/necly/services/internal/platform/mailer"
+	"github.com/necly/services/internal/platform/rediscache"
 	"github.com/necly/services/internal/repository/gormrepo"
 	"github.com/necly/services/internal/service"
 	"github.com/redis/go-redis/v9"
@@ -91,10 +93,24 @@ func main() {
 		UserInfoURL:       cfg.Google.UserInfoURL,
 		StateTTL:          cfg.Google.StateTTL,
 	}
-	authSvc := service.NewAuthService(store, hasher, tokenManager, cfg.JWT.VerificationTTL, googleConfig)
+	// mailer.New warns loudly and falls back to a log-only sender when SMTP_HOST
+	// is empty, so a deployment without mail credentials still runs.
+	mail := mailer.New(mailer.Config{
+		Host: cfg.Email.SMTPHost, Port: cfg.Email.SMTPPort, User: cfg.Email.SMTPUser,
+		Password: cfg.Email.SMTPPassword, From: cfg.Email.FromEmail, FromName: cfg.Email.FromName,
+		UseTLS: cfg.Email.UseTLS,
+	})
+	authSvc := service.NewAuthService(store, hasher, tokenManager, service.AuthSettings{
+		VerificationTTL:  cfg.JWT.VerificationTTL,
+		PasswordResetTTL: cfg.PasswordResetTTL,
+		FrontendBaseURL:  cfg.AppFrontendURL,
+		Mailer:           mail,
+		Google:           googleConfig,
+	})
 	catalogSvc := service.NewCatalogService(store)
 	cartSvc := service.NewCartService(store)
 	orderSvc := service.NewOrderService(store, store, store)
+	reportSvc := service.NewReportService(store, rediscache.NewCooldown(redisClient, "report:cooldown:", service.ReportCooldown), mail, cfg.ReportAdminEmail)
 
 	// Create payment provider registry
 	paymentConfig := map[string]string{
@@ -162,7 +178,7 @@ func main() {
 		},
 	}))
 
-	router := handler.NewRouter(authSvc, catalogSvc, cartSvc, checkoutSvc, webhookSvc, orderSvc, adminSvc, adminUserSvc, adminProductSvc, adminCategorySvc, adminOrderSvc, adminVoucherSvc, adminInventorySvc, tokenManager, cipher, redisClient)
+	router := handler.NewRouter(authSvc, catalogSvc, cartSvc, checkoutSvc, webhookSvc, orderSvc, adminSvc, adminUserSvc, adminProductSvc, adminCategorySvc, adminOrderSvc, adminVoucherSvc, adminInventorySvc, tokenManager, cipher, redisClient, reportSvc)
 	router.Register(app)
 
 	go func() {

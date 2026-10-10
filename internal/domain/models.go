@@ -44,6 +44,32 @@ type EmailVerificationToken struct {
 	CreatedAt time.Time  `json:"created_at"`
 }
 
+// PasswordResetToken is a single-use, hashed "lupa kata sandi" token.
+type PasswordResetToken struct {
+	ID        string     `json:"id" gorm:"type:uuid;primaryKey"`
+	UserID    string     `json:"user_id" gorm:"type:uuid;not null;index"`
+	TokenHash string     `json:"-" gorm:"size:64;uniqueIndex;not null"`
+	ExpiresAt time.Time  `json:"expires_at" gorm:"not null;index"`
+	UsedAt    *time.Time `json:"used_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+// IssueReport is a "Laporan Kendala" submission. The order number is stored as
+// text rather than a foreign key on purpose: a report outlives the order it
+// refers to, and the admin still needs to read it afterwards.
+type IssueReport struct {
+	ID          string     `json:"id" gorm:"type:uuid;primaryKey"`
+	Name        string     `json:"name" gorm:"not null"`
+	Email       string     `json:"email" gorm:"not null;index"`
+	OrderNumber string     `json:"order_number" gorm:"not null;index"`
+	Category    string     `json:"category" gorm:"not null"`
+	Message     string     `json:"message" gorm:"not null"`
+	Status      string     `json:"status" gorm:"size:24;not null;default:new"`
+	IPAddress   string     `json:"-" gorm:"size:45"`
+	CreatedAt   time.Time  `json:"created_at" gorm:"index"`
+	HandledAt   *time.Time `json:"handled_at,omitempty"`
+}
+
 type Category struct {
 	ID          string     `json:"id" gorm:"type:uuid;primaryKey"`
 	Name        string     `json:"name" gorm:"not null"`
@@ -185,6 +211,7 @@ type OrderItem struct {
 	DurationName   string `json:"duration_name" gorm:"not null"`
 	UnitPrice      int64  `json:"unit_price" gorm:"not null"`
 	Quantity       int    `json:"quantity" gorm:"not null"`
+	DeviceCount    int    `json:"device_count" gorm:"not null;default:1"`
 	LineTotal      int64  `json:"line_total" gorm:"not null"`
 }
 

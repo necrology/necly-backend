@@ -14,12 +14,14 @@ type fakeAuthRepository struct {
 	usersByID    map[string]*domain.User
 	refresh      map[string]*domain.RefreshToken
 	verification map[string]*domain.EmailVerificationToken
+	reset        map[string]*domain.PasswordResetToken
 }
 
 func newFakeAuthRepository() *fakeAuthRepository {
 	return &fakeAuthRepository{
 		usersByEmail: map[string]*domain.User{}, usersByID: map[string]*domain.User{},
 		refresh: map[string]*domain.RefreshToken{}, verification: map[string]*domain.EmailVerificationToken{},
+		reset: map[string]*domain.PasswordResetToken{},
 	}
 }
 
@@ -104,6 +106,27 @@ func (r *fakeAuthRepository) UpsertGoogleUser(_ context.Context, email, name, su
 	copyUser := *user
 	return &copyUser, nil
 }
+func (r *fakeAuthRepository) CreatePasswordResetToken(_ context.Context, token *domain.PasswordResetToken) error {
+	copyToken := *token
+	r.reset[token.TokenHash] = &copyToken
+	return nil
+}
+func (r *fakeAuthRepository) ConsumePasswordResetToken(_ context.Context, hash, passwordHash string, now time.Time) (*domain.User, error) {
+	token, ok := r.reset[hash]
+	if !ok || token.UsedAt != nil || !token.ExpiresAt.After(now) {
+		return nil, ErrUnauthorized
+	}
+	token.UsedAt = &now
+	user := r.usersByID[token.UserID]
+	user.PasswordHash = passwordHash
+	for _, refresh := range r.refresh {
+		if refresh.UserID == user.ID && refresh.RevokedAt == nil {
+			refresh.RevokedAt = &now
+		}
+	}
+	copyUser := *user
+	return &copyUser, nil
+}
 
 func newAuthServiceForTest(t *testing.T, repo *fakeAuthRepository, now time.Time) *AuthService {
 	t.Helper()
@@ -112,7 +135,7 @@ func newAuthServiceForTest(t *testing.T, repo *fakeAuthRepository, now time.Time
 		t.Fatal(err)
 	}
 	tokens.now = func() time.Time { return now }
-	service := NewAuthService(repo, NewPasswordHasher(4), tokens, 24*time.Hour, nil)
+	service := NewAuthService(repo, NewPasswordHasher(4), tokens, AuthSettings{VerificationTTL: 24 * time.Hour})
 	service.now = func() time.Time { return now }
 	return service
 }

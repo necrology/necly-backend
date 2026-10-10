@@ -144,6 +144,7 @@ func (s *Store) ReserveCheckout(ctx context.Context, cmd service.CheckoutCommand
 				DurationName:   price.DurationName,
 				UnitPrice:      price.Amount,
 				Quantity:       item.Quantity,
+				DeviceCount:    item.DeviceCount,
 				LineTotal:      price.Amount * int64(item.Quantity),
 			}
 			if err := tx.Create(&orderItem).Error; err != nil {

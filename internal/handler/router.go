@@ -2,7 +2,9 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"strconv"
 	"strings"
@@ -39,13 +41,14 @@ type Router struct {
 	adminOrderSvc     *service.AdminOrderService
 	adminVoucherSvc   *service.AdminVoucherService
 	adminInventorySvc *service.AdminInventoryService
+	reportSvc         *service.ReportService
 	tokens            *service.TokenManager
 	cipher            *service.CredentialCipher
 	redis             *redis.Client
 }
 
-func NewRouter(authSvc *service.AuthService, catalogSvc *service.CatalogService, cartSvc *service.CartService, checkoutSvc *service.CheckoutService, webhookSvc *service.WebhookService, orderSvc *service.OrderService, adminSvc *service.AdminDashboardService, adminUserSvc *service.AdminUserService, adminProductSvc *service.AdminProductService, adminCategorySvc *service.AdminCategoryService, adminOrderSvc *service.AdminOrderService, adminVoucherSvc *service.AdminVoucherService, adminInventorySvc *service.AdminInventoryService, tokens *service.TokenManager, cipher *service.CredentialCipher, redis *redis.Client) *Router {
-	return &Router{authSvc: authSvc, catalogSvc: catalogSvc, cartSvc: cartSvc, checkoutSvc: checkoutSvc, webhookSvc: webhookSvc, orderSvc: orderSvc, adminSvc: adminSvc, adminUserSvc: adminUserSvc, adminProductSvc: adminProductSvc, adminCategorySvc: adminCategorySvc, adminOrderSvc: adminOrderSvc, adminVoucherSvc: adminVoucherSvc, adminInventorySvc: adminInventorySvc, tokens: tokens, cipher: cipher, redis: redis}
+func NewRouter(authSvc *service.AuthService, catalogSvc *service.CatalogService, cartSvc *service.CartService, checkoutSvc *service.CheckoutService, webhookSvc *service.WebhookService, orderSvc *service.OrderService, adminSvc *service.AdminDashboardService, adminUserSvc *service.AdminUserService, adminProductSvc *service.AdminProductService, adminCategorySvc *service.AdminCategoryService, adminOrderSvc *service.AdminOrderService, adminVoucherSvc *service.AdminVoucherService, adminInventorySvc *service.AdminInventoryService, tokens *service.TokenManager, cipher *service.CredentialCipher, redis *redis.Client, reportSvc *service.ReportService) *Router {
+	return &Router{authSvc: authSvc, catalogSvc: catalogSvc, cartSvc: cartSvc, checkoutSvc: checkoutSvc, webhookSvc: webhookSvc, orderSvc: orderSvc, adminSvc: adminSvc, adminUserSvc: adminUserSvc, adminProductSvc: adminProductSvc, adminCategorySvc: adminCategorySvc, adminOrderSvc: adminOrderSvc, adminVoucherSvc: adminVoucherSvc, adminInventorySvc: adminInventorySvc, reportSvc: reportSvc, tokens: tokens, cipher: cipher, redis: redis}
 }
 
 func (r *Router) Register(app *fiber.App) {
@@ -97,6 +100,9 @@ func (r *Router) registerPublic(api fiber.Router) {
 	public.Get("/products", r.listProducts)
 	public.Get("/products/:id", r.getProduct)
 	public.Get("/products/:id/prices", r.listProductPrices)
+	// QA baris 55-57: "Laporan Kendala" is filed by visitors who are not signed
+	// in yet, so it sits with the other public routes.
+	public.Post("/reports", r.createReport)
 	// Provider webhook callbacks - public, no auth required
 	public.Post("/webhooks/:provider", r.receiveWebhook)
 }
@@ -108,6 +114,9 @@ func (r *Router) registerAuth(api fiber.Router) {
 	auth.Post("/refresh", r.refresh)
 	auth.Post("/logout", r.logout)
 	auth.Post("/verify-email", r.verifyEmail)
+	// QA baris 60: "Lupa kata sandi" needs a real flow, not a dead button.
+	auth.Post("/forgot-password", r.forgotPassword)
+	auth.Post("/reset-password", r.resetPassword)
 	auth.Get("/google", r.googleLogin)
 	auth.Get("/google/callback", r.googleCallback)
 }
@@ -322,6 +331,102 @@ func (r *Router) verifyEmail(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{"message": "Email berhasil diverifikasi", "user": user})
+}
+
+// forgotPassword always answers 200 with the same body, whether or not the
+// address exists, so the endpoint cannot be used to enumerate accounts.
+func (r *Router) forgotPassword(c *fiber.Ctx) error {
+	var input struct {
+		Email string `json:"email"`
+	}
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
+	}
+
+	ctx, cancel := context.WithTimeout(c.Context(), 10*time.Second)
+	defer cancel()
+
+	if err := r.authSvc.ForgotPassword(ctx, input.Email); err != nil {
+		// Log for the operator, stay generic for the caller.
+		log.Printf("forgot-password failed for %q: %v", input.Email, err)
+	}
+
+	return c.JSON(fiber.Map{"message": "Jika email tersebut terdaftar, tautan atur ulang kata sandi sudah dikirim."})
+}
+
+func (r *Router) resetPassword(c *fiber.Ctx) error {
+	var input struct {
+		Token    string `json:"token"`
+		Password string `json:"password"`
+	}
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
+	}
+
+	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+	defer cancel()
+
+	user, err := r.authSvc.ResetPassword(ctx, input.Token, input.Password)
+	if err != nil {
+		if errors.Is(err, service.ErrUnauthorized) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Tautan atur ulang kata sandi tidak valid atau sudah kedaluwarsa. Silakan minta tautan baru."})
+		}
+		if errors.Is(err, service.ErrInvalidInput) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengatur ulang kata sandi"})
+	}
+
+	return c.JSON(fiber.Map{"message": "Kata sandi berhasil diperbarui. Silakan masuk dengan kata sandi baru Anda.", "user": user})
+}
+
+// createReport accepts a "Laporan Kendala" submission (QA baris 55-57).
+func (r *Router) createReport(c *fiber.Ctx) error {
+	var input service.ReportInput
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
+	}
+
+	ctx, cancel := context.WithTimeout(c.Context(), 10*time.Second)
+	defer cancel()
+
+	report, err := r.reportSvc.Create(ctx, input, clientIP(c))
+	if err != nil {
+		var validation *service.ValidationError
+		var cooldown *service.CooldownError
+		switch {
+		case errors.As(err, &validation):
+			return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": validation.Error(), "fields": validation.Fields})
+		case errors.As(err, &cooldown):
+			retryAfter := int(cooldown.RetryAfter.Seconds()) + 1
+			c.Set("Retry-After", strconv.Itoa(retryAfter))
+			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
+				"error":       cooldown.Error(),
+				"retry_after": retryAfter,
+			})
+		case errors.Is(err, service.ErrReportMismatch):
+			return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengirim laporan kendala"})
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"message": "Laporan kendala diterima", "report": report})
+}
+
+// clientIP resolves the visitor's address. The API runs behind a Cloudflare
+// tunnel, so the socket peer is always the tunnel and never the visitor; the
+// forwarded headers are the only source of the real address. The value is
+// stored for admin review only and never used for an authorization decision.
+func clientIP(c *fiber.Ctx) string {
+	if ip := strings.TrimSpace(c.Get("CF-Connecting-IP")); ip != "" {
+		return ip
+	}
+	if forwarded := c.Get("X-Forwarded-For"); forwarded != "" {
+		if ip := strings.TrimSpace(strings.Split(forwarded, ",")[0]); ip != "" {
+			return ip
+		}
+	}
+	return c.IP()
 }
 
 func (r *Router) googleLogin(c *fiber.Ctx) error {

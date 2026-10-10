@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/mail"
 	"net/url"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/necly/services/internal/domain"
+	"github.com/necly/services/internal/platform/mailer"
 )
 
 type AuthRepository interface {
@@ -27,6 +29,20 @@ type AuthRepository interface {
 	RevokeRefreshToken(ctx context.Context, hash string, now time.Time) error
 	ConsumeVerificationToken(ctx context.Context, hash string, now time.Time) (*domain.User, error)
 	UpsertGoogleUser(ctx context.Context, email, name, subject string, now time.Time) (*domain.User, error)
+	CreatePasswordResetToken(ctx context.Context, token *domain.PasswordResetToken) error
+	ConsumePasswordResetToken(ctx context.Context, hash, passwordHash string, now time.Time) (*domain.User, error)
+}
+
+// AuthSettings groups the constructor arguments that are pure configuration, so
+// adding one does not churn every call site of NewAuthService.
+type AuthSettings struct {
+	VerificationTTL  time.Duration
+	PasswordResetTTL time.Duration
+	// FrontendBaseURL is where reset links point: the storefront origin
+	// (https://necly-service.my.id), not this API's own origin.
+	FrontendBaseURL string
+	Mailer          MailSender
+	Google          *GoogleOAuthConfig
 }
 
 type RegisterInput struct {
@@ -69,16 +85,33 @@ type GoogleOAuthConfig struct {
 }
 
 type AuthService struct {
-	repo            AuthRepository
-	hasher          PasswordHasher
-	tokens          *TokenManager
-	verificationTTL time.Duration
-	now             func() time.Time
-	googleConfig    *GoogleOAuthConfig
+	repo             AuthRepository
+	hasher           PasswordHasher
+	tokens           *TokenManager
+	verificationTTL  time.Duration
+	passwordResetTTL time.Duration
+	frontendBaseURL  string
+	mail             MailSender
+	now              func() time.Time
+	googleConfig     *GoogleOAuthConfig
 }
 
-func NewAuthService(repo AuthRepository, hasher PasswordHasher, tokens *TokenManager, verificationTTL time.Duration, googleConfig *GoogleOAuthConfig) *AuthService {
-	return &AuthService{repo: repo, hasher: hasher, tokens: tokens, verificationTTL: verificationTTL, now: time.Now, googleConfig: googleConfig}
+func NewAuthService(repo AuthRepository, hasher PasswordHasher, tokens *TokenManager, settings AuthSettings) *AuthService {
+	ttl := settings.PasswordResetTTL
+	if ttl <= 0 {
+		ttl = 45 * time.Minute
+	}
+	return &AuthService{
+		repo:             repo,
+		hasher:           hasher,
+		tokens:           tokens,
+		verificationTTL:  settings.VerificationTTL,
+		passwordResetTTL: ttl,
+		frontendBaseURL:  strings.TrimRight(settings.FrontendBaseURL, "/"),
+		mail:             settings.Mailer,
+		now:              time.Now,
+		googleConfig:     settings.Google,
+	}
 }
 
 func (s *AuthService) Register(ctx context.Context, input RegisterInput) (*RegisterResult, error) {
@@ -160,6 +193,98 @@ func (s *AuthService) VerifyEmail(ctx context.Context, raw string) (*domain.User
 		return nil, ErrUnauthorized
 	}
 	return s.repo.ConsumeVerificationToken(ctx, HashToken(raw), s.now().UTC())
+}
+
+// ForgotPassword starts the "lupa kata sandi" flow (QA baris 60). It never
+// reveals whether the address exists: unknown emails and delivery failures both
+// return nil, and the handler answers with the same generic 200 either way.
+func (s *AuthService) ForgotPassword(ctx context.Context, email string) error {
+	email = normalizeEmail(email)
+	if !validEmail(email) {
+		return nil
+	}
+	user, err := s.repo.UserByEmail(ctx, email)
+	if err != nil {
+		// ErrNotFound is the expected path for an unknown address.
+		return nil
+	}
+
+	raw, err := randomToken(32)
+	if err != nil {
+		return fmt.Errorf("generate password reset token: %w", err)
+	}
+	now := s.now().UTC()
+	token := &domain.PasswordResetToken{
+		ID:        uuid.NewString(),
+		UserID:    user.ID,
+		TokenHash: HashToken(raw),
+		ExpiresAt: now.Add(s.passwordResetTTL),
+		CreatedAt: now,
+	}
+	if err := s.repo.CreatePasswordResetToken(ctx, token); err != nil {
+		return err
+	}
+
+	s.sendPasswordResetMail(ctx, user, s.passwordResetURL(raw))
+	return nil
+}
+
+// ResetPassword redeems a reset token and stores the new password. The token is
+// single-use and time-limited, and redeeming it revokes every existing session.
+func (s *AuthService) ResetPassword(ctx context.Context, rawToken, newPassword string) (*domain.User, error) {
+	if strings.TrimSpace(rawToken) == "" {
+		return nil, ErrUnauthorized
+	}
+	if len(newPassword) < 10 || len(newPassword) > 72 {
+		return nil, fmt.Errorf("%w: Kata sandi baru harus 10-72 karakter", ErrInvalidInput)
+	}
+	hash, err := s.hasher.Hash(newPassword)
+	if err != nil {
+		return nil, fmt.Errorf("hash password: %w", err)
+	}
+	return s.repo.ConsumePasswordResetToken(ctx, HashToken(rawToken), hash, s.now().UTC())
+}
+
+// passwordResetURL builds the storefront link. The token travels in the query
+// string because the reset page is a static client component, and it is only
+// ever sent to the account owner's mailbox.
+func (s *AuthService) passwordResetURL(rawToken string) string {
+	base := s.frontendBaseURL
+	if base == "" {
+		base = "http://localhost:3000"
+	}
+	return fmt.Sprintf("%s/reset-password?token=%s", base, url.QueryEscape(rawToken))
+}
+
+func (s *AuthService) sendPasswordResetMail(ctx context.Context, user *domain.User, resetURL string) {
+	if s.mail == nil {
+		return
+	}
+	minutes := int(s.passwordResetTTL.Minutes())
+	body := strings.Join([]string{
+		"Halo " + user.Name + ",",
+		"",
+		"Kami menerima permintaan untuk mengatur ulang kata sandi akun Necly Services Anda.",
+		"Buka tautan berikut untuk membuat kata sandi baru:",
+		resetURL,
+		"",
+		fmt.Sprintf("Tautan ini berlaku %d menit dan hanya dapat dipakai satu kali.", minutes),
+		"Jika Anda tidak meminta pengaturan ulang kata sandi, abaikan email ini. Kata sandi Anda tidak berubah.",
+		"",
+		"Necly Services",
+	}, "\n")
+
+	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
+	defer cancel()
+	if err := s.mail.Send(sendCtx, mailer.Message{
+		To:      user.Email,
+		Subject: "Atur ulang kata sandi Necly Services",
+		Body:    body,
+	}); err != nil {
+		// Never surfaced to the caller: the response stays generic so an
+		// attacker cannot tell a delivery failure from an unknown address.
+		log.Printf("forgot-password: sending reset email to %q failed: %v", user.Email, err)
+	}
 }
 
 func (s *AuthService) LoginGoogleIdentity(ctx context.Context, email, name, subject string, client ClientInfo) (*Session, error) {
