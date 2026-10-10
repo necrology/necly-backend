@@ -104,6 +104,7 @@ func setupTestApp(t *testing.T) (*fiber.App, *service.TokenManager, *dummyAuthRe
 		nil,
 		nil,
 		nil,
+		nil,
 	)
 	router.Register(app)
 	return app, tokens, authRepo

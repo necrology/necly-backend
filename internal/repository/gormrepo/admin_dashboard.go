@@ -188,7 +188,7 @@ func (s *Store) GetTopProducts(ctx context.Context, limit int) ([]service.TopPro
 
 func (s *Store) GetRecentOrders(ctx context.Context, limit int) ([]domain.Order, error) {
 	var orders []domain.Order
-	err := s.db.WithContext(ctx).Preload("User").Preload("Items").Preload("Payments").
+	err := s.db.WithContext(ctx).Preload("Customer").Preload("Items").Preload("Payments").
 		Order("created_at DESC").
 		Limit(limit).
 		Find(&orders).Error

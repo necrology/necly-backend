@@ -13,7 +13,7 @@ import (
 )
 
 type TestimonialRepository interface {
-	ListTestimonials(ctx context.Context, filter TestimonialFilter, page, perPage int) ([]domain.Testimonial, int64, error)
+	ListTestimonials(ctx context.Context, filter service.TestimonialFilter, page, perPage int) ([]domain.Testimonial, int64, error)
 	GetTestimonial(ctx context.Context, id string) (*domain.Testimonial, error)
 	GetUserTestimonials(ctx context.Context, userID string, page, perPage int) ([]domain.Testimonial, int64, error)
 	CreateTestimonial(ctx context.Context, t *domain.Testimonial) error
@@ -22,20 +22,14 @@ type TestimonialRepository interface {
 	ModerateTestimonial(ctx context.Context, id, moderatorID, status string, now time.Time) error
 }
 
-type TestimonialFilter struct {
-	ProductID string
-	Status    string
-	Rating    int
-}
-
-func (s *Store) ListTestimonials(ctx context.Context, filter TestimonialFilter, page, perPage int) ([]domain.Testimonial, int64, error) {
+func (s *Store) ListTestimonials(ctx context.Context, filter service.TestimonialFilter, page, perPage int) ([]domain.Testimonial, int64, error) {
 	if page < 1 {
 		page = 1
 	}
 	if perPage < 1 || perPage > 100 {
 		perPage = 20
 	}
-	query := s.db.WithContext(ctx).Model(&domain.Testimonial{}).Preload("User").Preload("Product")
+	query := s.db.WithContext(ctx).Model(&domain.Testimonial{}).Preload("Reviewer").Preload("Product")
 	if filter.ProductID != "" {
 		query = query.Where("product_id = ?", filter.ProductID)
 	}
@@ -59,7 +53,7 @@ func (s *Store) ListTestimonials(ctx context.Context, filter TestimonialFilter, 
 
 func (s *Store) GetTestimonial(ctx context.Context, id string) (*domain.Testimonial, error) {
 	var t domain.Testimonial
-	err := s.db.WithContext(ctx).Preload("User").Preload("Product").Where("id = ?", id).First(&t).Error
+	err := s.db.WithContext(ctx).Preload("Reviewer").Preload("Product").Where("id = ?", id).First(&t).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, service.ErrNotFound
 	}

@@ -86,7 +86,7 @@ func (s *Store) GetOrdersForAdmin(ctx context.Context, filter service.OrderFilte
 	if perPage < 1 || perPage > 100 {
 		perPage = 20
 	}
-	query := s.db.WithContext(ctx).Model(&domain.Order{}).Preload("User").Preload("Items").Preload("Payments")
+	query := s.db.WithContext(ctx).Model(&domain.Order{}).Preload("Customer").Preload("Items").Preload("Payments")
 	if filter.UserID != "" {
 		query = query.Where("user_id = ?", filter.UserID)
 	}

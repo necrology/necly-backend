@@ -111,6 +111,7 @@ func main() {
 	cartSvc := service.NewCartService(store)
 	orderSvc := service.NewOrderService(store, store, store)
 	reportSvc := service.NewReportService(store, rediscache.NewCooldown(redisClient, "report:cooldown:", service.ReportCooldown), mail, cfg.ReportAdminEmail)
+	testimonialSvc := service.NewTestimonialService(store)
 
 	// Create payment provider registry
 	paymentConfig := map[string]string{
@@ -178,7 +179,7 @@ func main() {
 		},
 	}))
 
-	router := handler.NewRouter(authSvc, catalogSvc, cartSvc, checkoutSvc, webhookSvc, orderSvc, adminSvc, adminUserSvc, adminProductSvc, adminCategorySvc, adminOrderSvc, adminVoucherSvc, adminInventorySvc, tokenManager, cipher, redisClient, reportSvc)
+	router := handler.NewRouter(authSvc, catalogSvc, cartSvc, checkoutSvc, webhookSvc, orderSvc, adminSvc, adminUserSvc, adminProductSvc, adminCategorySvc, adminOrderSvc, adminVoucherSvc, adminInventorySvc, tokenManager, cipher, redisClient, reportSvc, testimonialSvc)
 	router.Register(app)
 
 	go func() {

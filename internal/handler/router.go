@@ -42,13 +42,14 @@ type Router struct {
 	adminVoucherSvc   *service.AdminVoucherService
 	adminInventorySvc *service.AdminInventoryService
 	reportSvc         *service.ReportService
+	testimonialSvc    *service.TestimonialService
 	tokens            *service.TokenManager
 	cipher            *service.CredentialCipher
 	redis             *redis.Client
 }
 
-func NewRouter(authSvc *service.AuthService, catalogSvc *service.CatalogService, cartSvc *service.CartService, checkoutSvc *service.CheckoutService, webhookSvc *service.WebhookService, orderSvc *service.OrderService, adminSvc *service.AdminDashboardService, adminUserSvc *service.AdminUserService, adminProductSvc *service.AdminProductService, adminCategorySvc *service.AdminCategoryService, adminOrderSvc *service.AdminOrderService, adminVoucherSvc *service.AdminVoucherService, adminInventorySvc *service.AdminInventoryService, tokens *service.TokenManager, cipher *service.CredentialCipher, redis *redis.Client, reportSvc *service.ReportService) *Router {
-	return &Router{authSvc: authSvc, catalogSvc: catalogSvc, cartSvc: cartSvc, checkoutSvc: checkoutSvc, webhookSvc: webhookSvc, orderSvc: orderSvc, adminSvc: adminSvc, adminUserSvc: adminUserSvc, adminProductSvc: adminProductSvc, adminCategorySvc: adminCategorySvc, adminOrderSvc: adminOrderSvc, adminVoucherSvc: adminVoucherSvc, adminInventorySvc: adminInventorySvc, reportSvc: reportSvc, tokens: tokens, cipher: cipher, redis: redis}
+func NewRouter(authSvc *service.AuthService, catalogSvc *service.CatalogService, cartSvc *service.CartService, checkoutSvc *service.CheckoutService, webhookSvc *service.WebhookService, orderSvc *service.OrderService, adminSvc *service.AdminDashboardService, adminUserSvc *service.AdminUserService, adminProductSvc *service.AdminProductService, adminCategorySvc *service.AdminCategoryService, adminOrderSvc *service.AdminOrderService, adminVoucherSvc *service.AdminVoucherService, adminInventorySvc *service.AdminInventoryService, tokens *service.TokenManager, cipher *service.CredentialCipher, redis *redis.Client, reportSvc *service.ReportService, testimonialSvc *service.TestimonialService) *Router {
+	return &Router{authSvc: authSvc, catalogSvc: catalogSvc, cartSvc: cartSvc, checkoutSvc: checkoutSvc, webhookSvc: webhookSvc, orderSvc: orderSvc, adminSvc: adminSvc, adminUserSvc: adminUserSvc, adminProductSvc: adminProductSvc, adminCategorySvc: adminCategorySvc, adminOrderSvc: adminOrderSvc, adminVoucherSvc: adminVoucherSvc, adminInventorySvc: adminInventorySvc, reportSvc: reportSvc, testimonialSvc: testimonialSvc, tokens: tokens, cipher: cipher, redis: redis}
 }
 
 func (r *Router) Register(app *fiber.App) {
@@ -103,6 +104,9 @@ func (r *Router) registerPublic(api fiber.Router) {
 	// QA baris 55-57: "Laporan Kendala" is filed by visitors who are not signed
 	// in yet, so it sits with the other public routes.
 	public.Post("/reports", r.createReport)
+	// QA poin 16: halaman "Testimoni" reads the approved reviews. Public because
+	// the page is reachable without signing in.
+	public.Get("/testimonials", r.listTestimonials)
 	// Provider webhook callbacks - public, no auth required
 	public.Post("/webhooks/:provider", r.receiveWebhook)
 }
@@ -549,6 +553,21 @@ func (r *Router) listProductPrices(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil daftar harga paket"})
 	}
 	return c.JSON(fiber.Map{"prices": prices})
+}
+
+func (r *Router) listTestimonials(c *fiber.Ctx) error {
+	ctx, cancel := context.WithTimeout(c.Context(), 3*time.Second)
+	defer cancel()
+	page := c.QueryInt("page", 1)
+	perPage := c.QueryInt("per_page", 20)
+	if perPage > 100 {
+		perPage = 100
+	}
+	testimonials, total, err := r.testimonialSvc.ListPublic(ctx, page, perPage)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil testimoni"})
+	}
+	return c.JSON(fiber.Map{"testimonials": testimonials, "page": page, "per_page": perPage, "total": total})
 }
 
 func (r *Router) getMe(c *fiber.Ctx) error {

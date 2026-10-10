@@ -199,8 +199,11 @@ type Order struct {
 	IdempotencyKey  string      `json:"-" gorm:"uniqueIndex;not null"`
 	Items           []OrderItem `json:"items,omitempty" gorm:"foreignKey:OrderID"`
 	Payments        []Payment   `json:"payments,omitempty" gorm:"foreignKey:OrderID"`
-	CreatedAt       time.Time   `json:"created_at"`
-	UpdatedAt       time.Time   `json:"updated_at"`
+	// Customer backs the admin order list and dashboard, both of which preload
+	// it. Reads that do not preload simply omit the field.
+	Customer  *User     `json:"customer,omitempty" gorm:"foreignKey:UserID"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type OrderItem struct {
@@ -271,14 +274,17 @@ type Notification struct {
 }
 
 type AuditLog struct {
-	ID           string    `json:"id" gorm:"type:uuid;primaryKey"`
-	ActorUserID  *string   `json:"actor_user_id,omitempty" gorm:"type:uuid;index"`
-	Action       string    `json:"action" gorm:"size:96;not null;index"`
-	ResourceType string    `json:"resource_type" gorm:"size:64;not null"`
-	ResourceID   string    `json:"resource_id" gorm:"index"`
-	IPAddress    string    `json:"ip_address"`
-	Metadata     []byte    `json:"metadata" gorm:"type:jsonb"`
-	CreatedAt    time.Time `json:"created_at" gorm:"index"`
+	ID           string  `json:"id" gorm:"type:uuid;primaryKey"`
+	ActorUserID  *string `json:"actor_user_id,omitempty" gorm:"type:uuid;index"`
+	Action       string  `json:"action" gorm:"size:96;not null;index"`
+	ResourceType string  `json:"resource_type" gorm:"size:64;not null"`
+	ResourceID   string  `json:"resource_id" gorm:"index"`
+	IPAddress    string  `json:"ip_address"`
+	Metadata     []byte  `json:"metadata" gorm:"type:jsonb"`
+	// ActorUser is what ListAuditLogs preloads; without the association declared
+	// GORM answers ErrUnsupportedRelation and the audit-log query fails.
+	ActorUser *User     `json:"actor_user,omitempty" gorm:"foreignKey:ActorUserID"`
+	CreatedAt time.Time `json:"created_at" gorm:"index"`
 }
 
 type WebhookEvent struct {
@@ -300,8 +306,27 @@ type Testimonial struct {
 	Status      string     `json:"status" gorm:"size:24;not null;default:pending;index"`
 	ModeratorID *string    `json:"moderator_id,omitempty" gorm:"type:uuid;index"`
 	ModeratedAt *time.Time `json:"moderated_at,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	// Reviewer and Product are the associations the repository preloads. The
+	// foreign keys are spelled out because two columns (user_id and
+	// moderator_id) point at users, so GORM cannot guess which one User means.
+	Reviewer  *User     `json:"reviewer,omitempty" gorm:"foreignKey:UserID"`
+	Product   *Product  `json:"product,omitempty" gorm:"foreignKey:ProductID"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// PublicTestimonial is the only shape the storefront ever sees. It deliberately
+// drops the user id, the moderator columns and the reviewer's email address:
+// approval by an admin is consent to publish the review, not the customer's
+// account details.
+type PublicTestimonial struct {
+	ID           string    `json:"id"`
+	Title        string    `json:"title"`
+	Body         string    `json:"body"`
+	Rating       int       `json:"rating"`
+	ReviewerName string    `json:"reviewer_name"`
+	ProductName  string    `json:"product_name,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 type Asset struct {
