@@ -2,7 +2,9 @@ package gormrepo
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -61,4 +63,36 @@ func (s *Store) CreateAuditLog(ctx context.Context, log *domain.AuditLog) error 
 	log.ID = uuid.NewString()
 	log.CreatedAt = s.nowUTC()
 	return s.db.WithContext(ctx).Create(log).Error
+}
+
+// Record implements service.AuditWriter. The auth service depends on that small
+// interface rather than on this store, so the audit trail can be recorded from
+// the middle of a sign-in without dragging the repository into the domain layer.
+func (s *Store) Record(ctx context.Context, entry service.AuditEntry) {
+	var actor *string
+	if entry.ActorUserID != "" {
+		id := entry.ActorUserID
+		actor = &id
+	}
+	var metadata []byte
+	if len(entry.Metadata) > 0 {
+		encoded, err := json.Marshal(entry.Metadata)
+		if err != nil {
+			log.Printf("audit: encoding metadata for %s failed: %v", entry.Action, err)
+		} else {
+			metadata = encoded
+		}
+	}
+	err := s.CreateAuditLog(ctx, &domain.AuditLog{
+		ActorUserID:  actor,
+		Action:       entry.Action,
+		ResourceType: entry.Resource,
+		ResourceID:   entry.ResourceID,
+		IPAddress:    entry.IPAddress,
+		Metadata:     metadata,
+	})
+	if err != nil {
+		// A failed audit write must never break the request it describes.
+		log.Printf("audit: recording %s failed: %v", entry.Action, err)
+	}
 }

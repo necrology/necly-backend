@@ -106,6 +106,8 @@ func main() {
 		FrontendBaseURL:  cfg.AppFrontendURL,
 		Mailer:           mail,
 		Google:           googleConfig,
+		// Without this the audit log stayed empty: nothing ever wrote a row.
+		Audit: store,
 	})
 	catalogSvc := service.NewCatalogService(store)
 	cartSvc := service.NewCartService(store)
@@ -160,6 +162,14 @@ func main() {
 			return c.Status(code).JSON(fiber.Map{"error": err.Error()})
 		},
 		DisableStartupMessage: true,
+		// Every request arrives through the Cloudflare tunnel, so without this
+		// Fiber reports the tunnel's own address and every visitor shares a single
+		// rate-limit bucket. The trusted-proxy check means the header is only
+		// believed when it comes from the local tunnel or the docker network, so a
+		// direct caller cannot forge its way out of a limit.
+		EnableTrustedProxyCheck: true,
+		TrustedProxies:          []string{"127.0.0.1", "::1", "172.16.0.0/12", "10.0.0.0/8"},
+		ProxyHeader:             "CF-Connecting-IP",
 	})
 
 	app.Use(recover.New())
@@ -175,9 +185,29 @@ func main() {
 			return c.IP()
 		},
 		LimitReached: func(c *fiber.Ctx) error {
-			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{"error": "rate limit exceeded"})
+			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{"error": "Terlalu banyak permintaan. Coba lagi sebentar lagi."})
 		},
 	}))
+
+	// The global budget above is shared by every visitor, so on its own it cannot
+	// slow down credential stuffing — one attacker simply exhausts it for everyone.
+	// These per-endpoint limits use LOGIN_RATE_LIMIT_RPM and REGISTER_RATE_LIMIT_RPH,
+	// which were parsed from the environment and then never read by any code.
+	rateLimited := func(max int, window time.Duration, message string) fiber.Handler {
+		return limiter.New(limiter.Config{
+			Max:          max,
+			Expiration:   window,
+			KeyGenerator: func(c *fiber.Ctx) string { return c.IP() },
+			LimitReached: func(c *fiber.Ctx) error {
+				return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{"error": message})
+			},
+		})
+	}
+	app.Use("/api/v1/auth/login", rateLimited(cfg.RateLimit.LoginPerMinute, time.Minute, "Terlalu banyak percobaan masuk. Tunggu sebentar lalu coba lagi."))
+	app.Use("/api/v1/auth/register", rateLimited(cfg.RateLimit.RegisterPerHour, time.Hour, "Terlalu banyak pendaftaran dari jaringan ini. Coba lagi nanti."))
+	// Both of these send an email to an address the caller chooses.
+	app.Use("/api/v1/auth/forgot-password", rateLimited(5, time.Hour, "Terlalu banyak permintaan atur ulang kata sandi. Coba lagi nanti."))
+	app.Use("/api/v1/auth/resend-verification", rateLimited(5, time.Hour, "Terlalu banyak permintaan tautan aktivasi. Coba lagi nanti."))
 
 	router := handler.NewRouter(authSvc, catalogSvc, cartSvc, checkoutSvc, webhookSvc, orderSvc, adminSvc, adminUserSvc, adminProductSvc, adminCategorySvc, adminOrderSvc, adminVoucherSvc, adminInventorySvc, tokenManager, cipher, redisClient, reportSvc, testimonialSvc)
 	router.Register(app)

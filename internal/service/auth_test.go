@@ -232,3 +232,34 @@ func TestAuthRefreshRotatesWhitelistTokenAndRejectsReplay(t *testing.T) {
 		t.Fatalf("replayed refresh error = %v, want unauthorized", err)
 	}
 }
+
+func (r *fakeAuthRepository) ListRefreshTokens(_ context.Context, userID string, now time.Time) ([]domain.RefreshToken, error) {
+	tokens := make([]domain.RefreshToken, 0, len(r.refresh))
+	for _, token := range r.refresh {
+		if token.UserID == userID && token.RevokedAt == nil && token.ExpiresAt.After(now) {
+			tokens = append(tokens, *token)
+		}
+	}
+	return tokens, nil
+}
+
+func (r *fakeAuthRepository) RevokeRefreshTokenByID(_ context.Context, userID, tokenID string, now time.Time) error {
+	for _, token := range r.refresh {
+		if token.ID == tokenID && token.UserID == userID && token.RevokedAt == nil {
+			revoked := now
+			token.RevokedAt = &revoked
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+func (r *fakeAuthRepository) RevokeUserRefreshTokens(_ context.Context, userID, exceptHash string, now time.Time) error {
+	for hash, token := range r.refresh {
+		if token.UserID == userID && token.RevokedAt == nil && hash != exceptHash {
+			revoked := now
+			token.RevokedAt = &revoked
+		}
+	}
+	return nil
+}

@@ -262,3 +262,17 @@ func TestRequireRole_StillDeniesAnonymous(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
 }
+
+func (m *dummyAuthRepo) ListRefreshTokens(ctx context.Context, userID string, now time.Time) ([]domain.RefreshToken, error) {
+	args := m.Called(ctx, userID, now)
+	if v := args.Get(0); v != nil {
+		return v.([]domain.RefreshToken), args.Error(1)
+	}
+	return nil, args.Error(1)
+}
+func (m *dummyAuthRepo) RevokeRefreshTokenByID(ctx context.Context, userID, tokenID string, now time.Time) error {
+	return m.Called(ctx, userID, tokenID, now).Error(0)
+}
+func (m *dummyAuthRepo) RevokeUserRefreshTokens(ctx context.Context, userID, exceptHash string, now time.Time) error {
+	return m.Called(ctx, userID, exceptHash, now).Error(0)
+}

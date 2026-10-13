@@ -23,6 +23,9 @@ type AuthRepository interface {
 	CreateUser(ctx context.Context, user *domain.User, verification *domain.EmailVerificationToken) error
 	CreateVerificationToken(ctx context.Context, token *domain.EmailVerificationToken, now time.Time) error
 	UpdatePasswordHash(ctx context.Context, userID, hash string, now time.Time) error
+	ListRefreshTokens(ctx context.Context, userID string, now time.Time) ([]domain.RefreshToken, error)
+	RevokeRefreshTokenByID(ctx context.Context, userID, tokenID string, now time.Time) error
+	RevokeUserRefreshTokens(ctx context.Context, userID, exceptHash string, now time.Time) error
 	UserByEmail(ctx context.Context, email string) (*domain.User, error)
 	UserByID(ctx context.Context, id string) (*domain.User, error)
 	SaveRefreshToken(ctx context.Context, token *domain.RefreshToken) error
@@ -45,6 +48,9 @@ type AuthSettings struct {
 	FrontendBaseURL string
 	Mailer          MailSender
 	Google          *GoogleOAuthConfig
+	// Audit is optional; leaving it nil disables recording without affecting the
+	// flows themselves.
+	Audit AuditWriter
 }
 
 type RegisterInput struct {
@@ -73,6 +79,9 @@ type Session struct {
 	AccessToken  string      `json:"access_token"`
 	RefreshToken string      `json:"-"`
 	ExpiresIn    int64       `json:"expires_in"`
+	// RefreshExpiresAt lets the handler size the cookie from the configured
+	// JWT_REFRESH_TTL instead of a hardcoded week.
+	RefreshExpiresAt time.Time `json:"-"`
 }
 
 type GoogleOAuthConfig struct {
@@ -96,6 +105,7 @@ type AuthService struct {
 	mail             MailSender
 	now              func() time.Time
 	googleConfig     *GoogleOAuthConfig
+	audit            AuditWriter
 }
 
 func NewAuthService(repo AuthRepository, hasher PasswordHasher, tokens *TokenManager, settings AuthSettings) *AuthService {
@@ -119,6 +129,7 @@ func NewAuthService(repo AuthRepository, hasher PasswordHasher, tokens *TokenMan
 		mail:             settings.Mailer,
 		now:              time.Now,
 		googleConfig:     settings.Google,
+		audit:            settings.Audit,
 	}
 }
 
@@ -145,6 +156,7 @@ func (s *AuthService) Register(ctx context.Context, input RegisterInput) (*Regis
 	// Login refuses an account whose EmailVerifiedAt is nil, so the activation
 	// link has to reach the mailbox.
 	s.sendVerificationMail(ctx, user, s.verificationURL(rawVerification))
+	s.record(ctx, AuditEntry{Action: AuditRegister, ActorUserID: user.ID, Resource: "user", ResourceID: user.ID, Metadata: map[string]any{"email": user.Email}})
 
 	result := &RegisterResult{User: *user}
 	// The raw token is handed back only when nothing was actually delivered, so a
@@ -168,14 +180,19 @@ func (s *AuthService) Login(ctx context.Context, input LoginInput, client Client
 	}
 	user, err := s.repo.UserByEmail(ctx, email)
 	if err != nil || !s.hasher.Verify(user.PasswordHash, input.Password) {
+		// The attempted address is recorded so repeated failures against one
+		// mailbox are visible, which a bare "unauthorized" would hide.
+		s.record(ctx, AuditEntry{Action: AuditLoginFailed, Resource: "user", IPAddress: client.IPAddress, Metadata: map[string]any{"email": email, "reason": "credentials"}})
 		return nil, ErrUnauthorized
 	}
 	// An account an admin deactivated or deleted must not be able to sign in;
 	// previously neither flag was consulted, so a banned customer kept ordering.
 	if user.DeletedAt != nil || !user.Active {
+		s.record(ctx, AuditEntry{Action: AuditLoginBlocked, ActorUserID: user.ID, Resource: "user", ResourceID: user.ID, IPAddress: client.IPAddress, Metadata: map[string]any{"reason": "inactive or deleted"}})
 		return nil, ErrUnauthorized
 	}
 	if user.EmailVerifiedAt == nil {
+		s.record(ctx, AuditEntry{Action: AuditLoginFailed, ActorUserID: user.ID, Resource: "user", ResourceID: user.ID, IPAddress: client.IPAddress, Metadata: map[string]any{"reason": "email unverified"}})
 		return nil, ErrEmailNotVerified
 	}
 	// Hashes written before the bcrypt cost increase are upgraded here, on the
@@ -187,6 +204,7 @@ func (s *AuthService) Login(ctx context.Context, input LoginInput, client Client
 			}
 		}
 	}
+	s.record(ctx, AuditEntry{Action: AuditLoginSucceeded, ActorUserID: user.ID, Resource: "user", ResourceID: user.ID, IPAddress: client.IPAddress})
 	return s.issueSession(ctx, user, client)
 }
 
@@ -228,14 +246,29 @@ func (s *AuthService) Logout(ctx context.Context, raw string) error {
 	if raw == "" {
 		return nil
 	}
-	return s.repo.RevokeRefreshToken(ctx, HashToken(raw), s.now().UTC())
+	hash := HashToken(raw)
+	// Read before revoking so the trail can name the account that signed out.
+	actor := ""
+	if token, err := s.repo.RefreshTokenByHash(ctx, hash); err == nil {
+		actor = token.UserID
+	}
+	if err := s.repo.RevokeRefreshToken(ctx, hash, s.now().UTC()); err != nil {
+		return err
+	}
+	s.record(ctx, AuditEntry{Action: AuditLogout, ActorUserID: actor, Resource: "user", ResourceID: actor})
+	return nil
 }
 
 func (s *AuthService) VerifyEmail(ctx context.Context, raw string) (*domain.User, error) {
 	if raw == "" {
 		return nil, ErrUnauthorized
 	}
-	return s.repo.ConsumeVerificationToken(ctx, HashToken(raw), s.now().UTC())
+	user, err := s.repo.ConsumeVerificationToken(ctx, HashToken(raw), s.now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	s.record(ctx, AuditEntry{Action: AuditEmailVerified, ActorUserID: user.ID, Resource: "user", ResourceID: user.ID})
+	return user, nil
 }
 
 // ForgotPassword starts the "lupa kata sandi" flow (QA baris 60). The caller
@@ -271,6 +304,7 @@ func (s *AuthService) ForgotPassword(ctx context.Context, email string) error {
 	}
 
 	s.sendPasswordResetMail(ctx, user, s.passwordResetURL(raw))
+	s.record(ctx, AuditEntry{Action: AuditForgotPassword, ActorUserID: user.ID, Resource: "user", ResourceID: user.ID})
 	return nil
 }
 
@@ -287,7 +321,12 @@ func (s *AuthService) ResetPassword(ctx context.Context, rawToken, newPassword s
 	if err != nil {
 		return nil, fmt.Errorf("hash password: %w", err)
 	}
-	return s.repo.ConsumePasswordResetToken(ctx, HashToken(rawToken), hash, s.now().UTC())
+	user, err := s.repo.ConsumePasswordResetToken(ctx, HashToken(rawToken), hash, s.now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	s.record(ctx, AuditEntry{Action: AuditPasswordReset, ActorUserID: user.ID, Resource: "user", ResourceID: user.ID})
+	return user, nil
 }
 
 // passwordResetURL builds the storefront link. The token travels in the query
@@ -414,6 +453,7 @@ func (s *AuthService) ResendVerification(ctx context.Context, email string) erro
 		return err
 	}
 	s.sendVerificationMail(ctx, user, s.verificationURL(raw))
+	s.record(ctx, AuditEntry{Action: AuditVerificationResent, ActorUserID: user.ID, Resource: "user", ResourceID: user.ID})
 	return nil
 }
 
@@ -448,7 +488,7 @@ func (s *AuthService) issueSession(ctx context.Context, user *domain.User, clien
 	if err := s.repo.SaveRefreshToken(ctx, refresh); err != nil {
 		return nil, err
 	}
-	return &Session{User: *user, AccessToken: access, RefreshToken: raw, ExpiresIn: int64(s.tokens.accessTTL.Seconds())}, nil
+	return &Session{User: *user, AccessToken: access, RefreshToken: raw, ExpiresIn: int64(s.tokens.accessTTL.Seconds()), RefreshExpiresAt: expiresAt}, nil
 }
 
 func (s *AuthService) GoogleConfig() *GoogleOAuthConfig {

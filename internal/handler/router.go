@@ -139,6 +139,12 @@ func (r *Router) registerProtected(api fiber.Router) {
 	protected.Post("/checkout", r.checkout)
 	protected.Get("/orders", r.listOrders)
 	protected.Get("/orders/:id", r.getOrder)
+	// Account security: these need the access token and, for the session checks,
+	// the refresh cookie that identifies the device making the request.
+	protected.Post("/auth/change-password", r.changePassword)
+	protected.Get("/auth/sessions", r.listSessions)
+	protected.Delete("/auth/sessions", r.revokeOtherSessions)
+	protected.Delete("/auth/sessions/:id", r.revokeSession)
 }
 
 func (r *Router) registerAdmin(api fiber.Router) {
@@ -260,15 +266,7 @@ func (r *Router) login(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal masuk ke akun"})
 	}
 
-	c.Cookie(&fiber.Cookie{
-		Name:     "refresh_token",
-		Value:    session.RefreshToken,
-		HTTPOnly: true,
-		Secure:   c.Protocol() == "https",
-		SameSite: "Lax",
-		MaxAge:   int(7 * 24 * time.Hour / time.Second),
-		Path:     "/",
-	})
+	setRefreshCookie(c, session.RefreshToken, session.RefreshExpiresAt)
 
 	return c.JSON(fiber.Map{
 		"user":         session.User,
@@ -298,20 +296,31 @@ func (r *Router) refresh(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui sesi"})
 	}
 
-	c.Cookie(&fiber.Cookie{
-		Name:     "refresh_token",
-		Value:    session.RefreshToken,
-		HTTPOnly: true,
-		Secure:   c.Protocol() == "https",
-		SameSite: "Lax",
-		MaxAge:   int(7 * 24 * time.Hour / time.Second),
-		Path:     "/",
-	})
+	setRefreshCookie(c, session.RefreshToken, session.RefreshExpiresAt)
 
 	return c.JSON(fiber.Map{
 		"user":         session.User,
 		"access_token": session.AccessToken,
 		"expires_in":   session.ExpiresIn,
+	})
+}
+
+// setRefreshCookie writes the session cookie. The lifetime comes from the
+// configured refresh TTL, so raising JWT_REFRESH_TTL no longer leaves the cookie
+// expiring at a hardcoded week.
+func setRefreshCookie(c *fiber.Ctx, token string, expiresAt time.Time) {
+	maxAge := int(time.Until(expiresAt).Seconds())
+	if maxAge <= 0 {
+		maxAge = int((7 * 24 * time.Hour).Seconds())
+	}
+	c.Cookie(&fiber.Cookie{
+		Name:     "refresh_token",
+		Value:    token,
+		Path:     "/",
+		MaxAge:   maxAge,
+		HTTPOnly: true,
+		Secure:   c.Protocol() == "https",
+		SameSite: "Lax",
 	})
 }
 
@@ -344,6 +353,87 @@ func (r *Router) logout(c *fiber.Ctx) error {
 	}
 	clearRefreshCookie(c)
 	return c.JSON(fiber.Map{"message": "Berhasil keluar"})
+}
+
+func (r *Router) changePassword(c *fiber.Ctx) error {
+	var input struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
+	}
+	userID, _ := c.Locals("user_id").(string)
+
+	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+	defer cancel()
+
+	err := r.authSvc.ChangePassword(ctx, userID, input.CurrentPassword, input.NewPassword, c.Cookies("refresh_token"), service.ClientInfo{
+		IPAddress: c.IP(),
+		UserAgent: c.Get("User-Agent"),
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrInvalidInput):
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		case errors.Is(err, service.ErrNotFound):
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Akun tidak ditemukan"})
+		}
+		log.Printf("change-password failed for %q: %v", userID, err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Kata sandi gagal diubah"})
+	}
+	return c.JSON(fiber.Map{"message": "Kata sandi berhasil diubah. Sesi lain sudah diakhiri."})
+}
+
+func (r *Router) listSessions(c *fiber.Ctx) error {
+	userID, _ := c.Locals("user_id").(string)
+
+	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+	defer cancel()
+
+	sessions, err := r.authSvc.ListSessions(ctx, userID, c.Cookies("refresh_token"))
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil daftar sesi"})
+	}
+	return c.JSON(fiber.Map{"sessions": sessions})
+}
+
+func (r *Router) revokeSession(c *fiber.Ctx) error {
+	userID, _ := c.Locals("user_id").(string)
+
+	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+	defer cancel()
+
+	err := r.authSvc.RevokeSession(ctx, userID, c.Params("id"), c.Cookies("refresh_token"), service.ClientInfo{
+		IPAddress: c.IP(),
+		UserAgent: c.Get("User-Agent"),
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrInvalidInput):
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		case errors.Is(err, service.ErrNotFound):
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Sesi tidak ditemukan atau sudah berakhir"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Sesi gagal diakhiri"})
+	}
+	return c.JSON(fiber.Map{"message": "Sesi diakhiri"})
+}
+
+func (r *Router) revokeOtherSessions(c *fiber.Ctx) error {
+	userID, _ := c.Locals("user_id").(string)
+
+	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+	defer cancel()
+
+	ended, err := r.authSvc.RevokeOtherSessions(ctx, userID, c.Cookies("refresh_token"), service.ClientInfo{
+		IPAddress: c.IP(),
+		UserAgent: c.Get("User-Agent"),
+	})
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Sesi lain gagal diakhiri"})
+	}
+	return c.JSON(fiber.Map{"message": "Sesi lain sudah diakhiri", "ended": ended})
 }
 
 func (r *Router) verifyEmail(c *fiber.Ctx) error {
@@ -548,9 +638,12 @@ func (r *Router) googleCallback(c *fiber.Ctx) error {
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menghubungkan akun Google"})
 	}
-	// Redirect to frontend with tokens
-	returnUrl := fmt.Sprintf("%s?access_token=%s&refresh_token=%s&expires_in=%d", cfg.FrontendReturnURL, session.AccessToken, session.RefreshToken, session.ExpiresIn)
-	return c.Redirect(returnUrl, fiber.StatusTemporaryRedirect)
+	// The session cookie is set here and the tokens stay out of the redirect: a
+	// query string ends up in browser history, the Referer header, and every
+	// proxy log along the way. The storefront recovers the session on load by
+	// calling /auth/refresh, which sends this cookie.
+	setRefreshCookie(c, session.RefreshToken, session.RefreshExpiresAt)
+	return c.Redirect(cfg.FrontendReturnURL, fiber.StatusTemporaryRedirect)
 }
 
 func (r *Router) listCategories(c *fiber.Ctx) error {

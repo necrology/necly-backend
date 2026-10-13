@@ -291,3 +291,47 @@ func (s *Store) GetUserByEmail(ctx context.Context, email string) (*domain.User,
 func (s *Store) GetUserByID(ctx context.Context, id string) (*domain.User, error) {
 	return s.UserByID(ctx, id)
 }
+
+// ListRefreshTokens returns the account's live sign-ins, newest first. Revoked
+// and expired rows are filtered here so callers never have to.
+func (s *Store) ListRefreshTokens(ctx context.Context, userID string, now time.Time) ([]domain.RefreshToken, error) {
+	var tokens []domain.RefreshToken
+	err := s.db.WithContext(ctx).
+		Where("user_id = ? AND revoked_at IS NULL AND expires_at > ?", userID, now).
+		Order("created_at DESC").
+		Find(&tokens).Error
+	if err != nil {
+		return nil, fmt.Errorf("list refresh tokens: %w", err)
+	}
+	return tokens, nil
+}
+
+// RevokeRefreshTokenByID ends one sign-in. The user id is part of the WHERE so an
+// id belonging to another account can never be ended from someone else's session.
+func (s *Store) RevokeRefreshTokenByID(ctx context.Context, userID, tokenID string, now time.Time) error {
+	result := s.db.WithContext(ctx).Model(&domain.RefreshToken{}).
+		Where("id = ? AND user_id = ? AND revoked_at IS NULL", tokenID, userID).
+		Update("revoked_at", now)
+	if result.Error != nil {
+		return fmt.Errorf("revoke refresh token: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return service.ErrNotFound
+	}
+	return nil
+}
+
+// RevokeUserRefreshTokens ends every live sign-in of an account. The token that
+// made the request can be spared so a password change does not sign you out of
+// the device you are holding.
+func (s *Store) RevokeUserRefreshTokens(ctx context.Context, userID, exceptHash string, now time.Time) error {
+	query := s.db.WithContext(ctx).Model(&domain.RefreshToken{}).
+		Where("user_id = ? AND revoked_at IS NULL AND expires_at > ?", userID, now)
+	if exceptHash != "" {
+		query = query.Where("token_hash <> ?", exceptHash)
+	}
+	if err := query.Update("revoked_at", now).Error; err != nil {
+		return fmt.Errorf("revoke user refresh tokens: %w", err)
+	}
+	return nil
+}
