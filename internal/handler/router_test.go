@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/necly/services/internal/domain"
 	"github.com/necly/services/internal/handler"
 	"github.com/necly/services/internal/service"
@@ -85,6 +86,9 @@ func (m *dummyAuthRepo) ConsumePasswordResetToken(ctx context.Context, hash, pas
 
 func setupTestApp(t *testing.T) (*fiber.App, *service.TokenManager, *dummyAuthRepo) {
 	app := fiber.New()
+	// Without this a handler reached with a nil service would panic the test
+	// process instead of answering, which hides whether the role gate let it past.
+	app.Use(recover.New())
 	tokens, err := service.NewTokenManager("test-jwt-secret-that-has-at-least-32-bytes", "necly", 15*time.Minute, 24*time.Hour)
 	assert.NoError(t, err)
 	hasher := service.NewPasswordHasher(4)
@@ -230,4 +234,31 @@ func TestAuthHandlers_LocalizedRegisterAndLoginErrors(t *testing.T) {
 	body, _ = io.ReadAll(resp.Body)
 	_ = json.Unmarshal(body, &payload)
 	assert.Equal(t, "Berhasil keluar", payload["message"])
+}
+
+// The role gate compared an `any` holding a string against a domain.UserRole,
+// which never matches, so every /admin route answered 403 — including for a
+// genuine admin. The existing test only covered the deny case, which is why the
+// bug survived.
+func TestRequireRole_AdmitsAnAdminToken(t *testing.T) {
+	app, tokens, _ := setupTestApp(t)
+	token, err := tokens.IssueAccess("admin-1", string(domain.RoleAdmin))
+	assert.NoError(t, err)
+
+	req := httptest.NewRequest("GET", "/api/v1/admin/dashboard", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := app.Test(req)
+	assert.NoError(t, err)
+	// The dashboard service is nil in this harness, so anything past the gate is
+	// a 5xx; what matters is that it is no longer rejected on the role.
+	assert.NotEqual(t, fiber.StatusForbidden, resp.StatusCode, "an admin token must get past requireRole")
+}
+
+func TestRequireRole_StillDeniesAnonymous(t *testing.T) {
+	app, _, _ := setupTestApp(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/admin/dashboard", nil)
+	resp, err := app.Test(req)
+	assert.NoError(t, err)
+	assert.Equal(t, fiber.StatusUnauthorized, resp.StatusCode)
 }
