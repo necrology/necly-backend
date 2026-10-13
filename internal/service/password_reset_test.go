@@ -49,16 +49,14 @@ func tokenFromMail(t *testing.T, body string) string {
 	return strings.SplitN(body[index+len(prefix):], "\n", 2)[0]
 }
 
-// QA baris 60: the endpoint must stay silent about which addresses exist, so an
-// unknown email is a success with no token and no mail.
-func TestForgotPasswordStaysSilentForUnknownEmail(t *testing.T) {
+func TestForgotPasswordReportsUnknownEmail(t *testing.T) {
 	now := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
 	repo := newFakeAuthRepository()
 	mail := &fakeMail{enabled: true}
 	auth := newAuthServiceWithResetForTest(t, repo, now, mail, "https://necly-service.my.id")
 
-	if err := auth.ForgotPassword(context.Background(), "nobody@example.com"); err != nil {
-		t.Fatalf("ForgotPassword() error = %v, want nil", err)
+	if err := auth.ForgotPassword(context.Background(), "nobody@example.com"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ForgotPassword() error = %v, want ErrNotFound", err)
 	}
 	if len(repo.reset) != 0 {
 		t.Fatal("no reset token may be issued for an unknown address")

@@ -337,8 +337,6 @@ func (r *Router) verifyEmail(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"message": "Email berhasil diverifikasi", "user": user})
 }
 
-// forgotPassword always answers 200 with the same body, whether or not the
-// address exists, so the endpoint cannot be used to enumerate accounts.
 func (r *Router) forgotPassword(c *fiber.Ctx) error {
 	var input struct {
 		Email string `json:"email"`
@@ -351,11 +349,19 @@ func (r *Router) forgotPassword(c *fiber.Ctx) error {
 	defer cancel()
 
 	if err := r.authSvc.ForgotPassword(ctx, input.Email); err != nil {
-		// Log for the operator, stay generic for the caller.
+		if errors.Is(err, service.ErrNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"error": "Email belum terdaftar. Silakan membuat akun terlebih dahulu.",
+			})
+		}
+		if errors.Is(err, service.ErrInvalidInput) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Masukkan alamat email yang valid."})
+		}
 		log.Printf("forgot-password failed for %q: %v", input.Email, err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Permintaan atur ulang kata sandi gagal."})
 	}
 
-	return c.JSON(fiber.Map{"message": "Jika email tersebut terdaftar, tautan atur ulang kata sandi sudah dikirim."})
+	return c.JSON(fiber.Map{"message": "Tautan atur ulang kata sandi sudah dikirim."})
 }
 
 func (r *Router) resetPassword(c *fiber.Ctx) error {

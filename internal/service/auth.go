@@ -195,18 +195,20 @@ func (s *AuthService) VerifyEmail(ctx context.Context, raw string) (*domain.User
 	return s.repo.ConsumeVerificationToken(ctx, HashToken(raw), s.now().UTC())
 }
 
-// ForgotPassword starts the "lupa kata sandi" flow (QA baris 60). It never
-// reveals whether the address exists: unknown emails and delivery failures both
-// return nil, and the handler answers with the same generic 200 either way.
+// ForgotPassword starts the "lupa kata sandi" flow (QA baris 60). The caller
+// explicitly requires unknown addresses to be reported so the storefront can
+// direct the visitor to registration.
 func (s *AuthService) ForgotPassword(ctx context.Context, email string) error {
 	email = normalizeEmail(email)
 	if !validEmail(email) {
-		return nil
+		return ErrInvalidInput
 	}
 	user, err := s.repo.UserByEmail(ctx, email)
 	if err != nil {
-		// ErrNotFound is the expected path for an unknown address.
-		return nil
+		if errors.Is(err, ErrNotFound) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("find password reset user: %w", err)
 	}
 
 	raw, err := randomToken(32)
