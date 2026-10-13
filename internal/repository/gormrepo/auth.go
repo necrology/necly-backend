@@ -43,6 +43,31 @@ func (s *Store) CreateUserAdmin(ctx context.Context, u *domain.User) error {
 	return s.db.WithContext(ctx).Create(u).Error
 }
 
+// UpdatePasswordHash rewrites a single column, used by the login path to upgrade
+// hashes that were written with the old, cheaper bcrypt cost.
+func (s *Store) UpdatePasswordHash(ctx context.Context, userID, hash string, now time.Time) error {
+	return s.db.WithContext(ctx).Model(&domain.User{}).
+		Where("id = ? AND deleted_at IS NULL", userID).
+		Updates(map[string]any{"password_hash": hash, "updated_at": now}).Error
+}
+
+// CreateVerificationToken issues a replacement verification link and retires the
+// user's previous unused ones in the same transaction, so only the newest email
+// can be used to activate the account.
+func (s *Store) CreateVerificationToken(ctx context.Context, token *domain.EmailVerificationToken, now time.Time) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&domain.EmailVerificationToken{}).
+			Where("user_id = ? AND used_at IS NULL", token.UserID).
+			Update("used_at", now).Error; err != nil {
+			return fmt.Errorf("retire previous verification tokens: %w", err)
+		}
+		if err := tx.Create(token).Error; err != nil {
+			return fmt.Errorf("create verification token: %w", err)
+		}
+		return nil
+	})
+}
+
 func (s *Store) UserByEmail(ctx context.Context, email string) (*domain.User, error) {
 	var user domain.User
 	err := s.db.WithContext(ctx).Where("email = ?", email).First(&user).Error

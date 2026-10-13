@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http/httptest"
 	"testing"
@@ -22,6 +21,12 @@ type dummyAuthRepo struct{ mock.Mock }
 
 func (m *dummyAuthRepo) CreateUser(ctx context.Context, user *domain.User, verification *domain.EmailVerificationToken) error {
 	return m.Called(ctx, user, verification).Error(0)
+}
+func (m *dummyAuthRepo) CreateVerificationToken(ctx context.Context, token *domain.EmailVerificationToken, now time.Time) error {
+	return m.Called(ctx, token, now).Error(0)
+}
+func (m *dummyAuthRepo) UpdatePasswordHash(ctx context.Context, userID, hash string, now time.Time) error {
+	return m.Called(ctx, userID, hash, now).Error(0)
 }
 func (m *dummyAuthRepo) UserByEmail(ctx context.Context, email string) (*domain.User, error) {
 	args := m.Called(ctx, email)
@@ -191,8 +196,9 @@ func TestAuthHandlers_LocalizedRegisterAndLoginErrors(t *testing.T) {
 	_ = json.Unmarshal(body, &payload)
 	assert.Equal(t, "Format data permintaan tidak valid", payload["error"])
 
-	// 2. Duplicate email on register
-	authRepo.On("CreateUser", mock.Anything, mock.Anything, mock.Anything).Return(errors.New("duplicate key error: email conflict")).Once()
+	// 2. Duplicate email on register. The store translates the pq unique violation
+	// into service.ErrConflict, so the handler must match on the sentinel.
+	authRepo.On("CreateUser", mock.Anything, mock.Anything, mock.Anything).Return(service.ErrConflict).Once()
 	regBody, _ := json.Marshal(map[string]string{
 		"name":     "Budi",
 		"email":    "budi@example.com",

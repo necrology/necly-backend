@@ -21,6 +21,8 @@ import (
 
 type AuthRepository interface {
 	CreateUser(ctx context.Context, user *domain.User, verification *domain.EmailVerificationToken) error
+	CreateVerificationToken(ctx context.Context, token *domain.EmailVerificationToken, now time.Time) error
+	UpdatePasswordHash(ctx context.Context, userID, hash string, now time.Time) error
 	UserByEmail(ctx context.Context, email string) (*domain.User, error)
 	UserByID(ctx context.Context, id string) (*domain.User, error)
 	SaveRefreshToken(ctx context.Context, token *domain.RefreshToken) error
@@ -101,11 +103,17 @@ func NewAuthService(repo AuthRepository, hasher PasswordHasher, tokens *TokenMan
 	if ttl <= 0 {
 		ttl = 45 * time.Minute
 	}
+	// Without a fallback a missing JWT_VERIFICATION_TTL would mint activation
+	// links that are already expired the moment they are sent.
+	verificationTTL := settings.VerificationTTL
+	if verificationTTL <= 0 {
+		verificationTTL = 24 * time.Hour
+	}
 	return &AuthService{
 		repo:             repo,
 		hasher:           hasher,
 		tokens:           tokens,
-		verificationTTL:  settings.VerificationTTL,
+		verificationTTL:  verificationTTL,
 		passwordResetTTL: ttl,
 		frontendBaseURL:  strings.TrimRight(settings.FrontendBaseURL, "/"),
 		mail:             settings.Mailer,
@@ -129,12 +137,28 @@ func (s *AuthService) Register(ctx context.Context, input RegisterInput) (*Regis
 		return nil, fmt.Errorf("generate verification token: %w", err)
 	}
 	now := s.now().UTC()
-	user := &domain.User{ID: uuid.NewString(), Email: email, Name: name, PasswordHash: hash, Role: domain.RoleCustomer, CreatedAt: now, UpdatedAt: now}
+	user := &domain.User{ID: uuid.NewString(), Email: email, Name: name, PasswordHash: hash, Role: domain.RoleCustomer, Active: true, CreatedAt: now, UpdatedAt: now}
 	verification := &domain.EmailVerificationToken{ID: uuid.NewString(), UserID: user.ID, TokenHash: HashToken(rawVerification), ExpiresAt: now.Add(s.verificationTTL), CreatedAt: now}
 	if err := s.repo.CreateUser(ctx, user, verification); err != nil {
 		return nil, err
 	}
-	return &RegisterResult{User: *user, VerificationToken: rawVerification}, nil
+	// Login refuses an account whose EmailVerifiedAt is nil, so the activation
+	// link has to reach the mailbox.
+	s.sendVerificationMail(ctx, user, s.verificationURL(rawVerification))
+
+	result := &RegisterResult{User: *user}
+	// The raw token is handed back only when nothing was actually delivered, so a
+	// local or log-only setup stays workable. Returning it in production would let
+	// anyone register with an address they do not own, activate it themselves, and
+	// later absorb the real owner's Google sign-in (accounts are linked by email).
+	if !s.mailEnabled() {
+		result.VerificationToken = rawVerification
+	}
+	return result, nil
+}
+
+func (s *AuthService) mailEnabled() bool {
+	return s.mail != nil && s.mail.Enabled()
 }
 
 func (s *AuthService) Login(ctx context.Context, input LoginInput, client ClientInfo) (*Session, error) {
@@ -146,8 +170,22 @@ func (s *AuthService) Login(ctx context.Context, input LoginInput, client Client
 	if err != nil || !s.hasher.Verify(user.PasswordHash, input.Password) {
 		return nil, ErrUnauthorized
 	}
+	// An account an admin deactivated or deleted must not be able to sign in;
+	// previously neither flag was consulted, so a banned customer kept ordering.
+	if user.DeletedAt != nil || !user.Active {
+		return nil, ErrUnauthorized
+	}
 	if user.EmailVerifiedAt == nil {
 		return nil, ErrEmailNotVerified
+	}
+	// Hashes written before the bcrypt cost increase are upgraded here, on the
+	// one request where the plaintext password is available.
+	if s.hasher.NeedsRehash(user.PasswordHash) {
+		if upgraded, hashErr := s.hasher.Hash(input.Password); hashErr == nil {
+			if storeErr := s.repo.UpdatePasswordHash(ctx, user.ID, upgraded, s.now().UTC()); storeErr == nil {
+				user.PasswordHash = upgraded
+			}
+		}
 	}
 	return s.issueSession(ctx, user, client)
 }
@@ -164,6 +202,11 @@ func (s *AuthService) Refresh(ctx context.Context, raw string, client ClientInfo
 	}
 	user, err := s.repo.UserByID(ctx, old.UserID)
 	if err != nil {
+		return nil, ErrUnauthorized
+	}
+	// Refresh has the same gap Login had: without this a deactivated or deleted
+	// account would keep renewing its session forever.
+	if user.DeletedAt != nil || !user.Active {
 		return nil, ErrUnauthorized
 	}
 	newRaw, newHash, expiresAt, err := s.tokens.IssueRefresh()
@@ -287,6 +330,91 @@ func (s *AuthService) sendPasswordResetMail(ctx context.Context, user *domain.Us
 		// attacker cannot tell a delivery failure from an unknown address.
 		log.Printf("forgot-password: sending reset email to %q failed: %v", user.Email, err)
 	}
+}
+
+// verificationURL mirrors passwordResetURL: the activation token travels in the
+// query string because the verification page is a static client component.
+func (s *AuthService) verificationURL(rawToken string) string {
+	base := s.frontendBaseURL
+	if base == "" {
+		base = "http://localhost:3000"
+	}
+	return fmt.Sprintf("%s/verify-email?token=%s", base, url.QueryEscape(rawToken))
+}
+
+func (s *AuthService) sendVerificationMail(ctx context.Context, user *domain.User, verifyURL string) {
+	if s.mail == nil {
+		return
+	}
+	hours := int(s.verificationTTL.Hours())
+	expiry := fmt.Sprintf("Tautan ini berlaku %d jam dan hanya dapat dipakai satu kali.", hours)
+	if hours < 1 {
+		expiry = fmt.Sprintf("Tautan ini berlaku %d menit dan hanya dapat dipakai satu kali.", int(s.verificationTTL.Minutes()))
+	}
+	body := strings.Join([]string{
+		"Halo " + user.Name + ",",
+		"",
+		"Terima kasih sudah mendaftar di Necly Services.",
+		"Buka tautan berikut untuk mengaktifkan akun Anda:",
+		verifyURL,
+		"",
+		expiry,
+		"Selama akun belum diaktifkan, Anda belum bisa masuk ke Necly Services.",
+		"Jika Anda tidak merasa membuat akun ini, abaikan email ini.",
+		"",
+		"Necly Services",
+	}, "\n")
+
+	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
+	defer cancel()
+	if err := s.mail.Send(sendCtx, mailer.Message{
+		To:      user.Email,
+		Subject: "Aktifkan akun Necly Services",
+		Body:    body,
+	}); err != nil {
+		// The account already exists; a delivery failure must not fail the
+		// request. The user can ask for a fresh link from the verification screen.
+		log.Printf("register: sending verification email to %q failed: %v", user.Email, err)
+	}
+}
+
+// ResendVerification issues a fresh activation link and retires the previous
+// unused ones, so "kirim ulang verifikasi" always yields exactly one working
+// link. The storefront calls it when the registration email was lost, and right
+// after a login attempt is refused because the address is still unverified.
+func (s *AuthService) ResendVerification(ctx context.Context, email string) error {
+	email = normalizeEmail(email)
+	if !validEmail(email) {
+		return ErrInvalidInput
+	}
+	user, err := s.repo.UserByEmail(ctx, email)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("find verification user: %w", err)
+	}
+	if user.EmailVerifiedAt != nil {
+		return ErrAlreadyVerified
+	}
+
+	raw, err := randomToken(32)
+	if err != nil {
+		return fmt.Errorf("generate verification token: %w", err)
+	}
+	now := s.now().UTC()
+	token := &domain.EmailVerificationToken{
+		ID:        uuid.NewString(),
+		UserID:    user.ID,
+		TokenHash: HashToken(raw),
+		ExpiresAt: now.Add(s.verificationTTL),
+		CreatedAt: now,
+	}
+	if err := s.repo.CreateVerificationToken(ctx, token, now); err != nil {
+		return err
+	}
+	s.sendVerificationMail(ctx, user, s.verificationURL(raw))
+	return nil
 }
 
 func (s *AuthService) LoginGoogleIdentity(ctx context.Context, email, name, subject string, client ClientInfo) (*Session, error) {

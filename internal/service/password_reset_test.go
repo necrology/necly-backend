@@ -34,7 +34,7 @@ func seededVerifiedUser(t *testing.T, auth *AuthService, repo *fakeAuthRepositor
 		t.Fatal(err)
 	}
 	verified := now
-	user := &domain.User{ID: "user-1", Email: "alice@example.com", Name: "Alice", PasswordHash: hash, Role: domain.RoleCustomer, EmailVerifiedAt: &verified}
+	user := &domain.User{ID: "user-1", Email: "alice@example.com", Name: "Alice", PasswordHash: hash, Role: domain.RoleCustomer, Active: true, EmailVerifiedAt: &verified}
 	repo.usersByEmail[user.Email], repo.usersByID[user.ID] = user, user
 	return user
 }

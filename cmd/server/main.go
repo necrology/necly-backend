@@ -76,7 +76,7 @@ func main() {
 		log.Fatalf("token manager: %v", err)
 	}
 
-	hasher := service.NewPasswordHasher(4)
+	hasher := service.NewPasswordHasher(service.BcryptCost)
 	cipher, err := service.NewCredentialCipher(cfg.CredentialKey)
 	if err != nil && cfg.CredentialKey != "" {
 		log.Fatalf("credential cipher: %v", err)

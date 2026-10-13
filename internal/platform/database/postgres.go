@@ -57,6 +57,10 @@ func Open(cfg Config) (*gorm.DB, error) {
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		Logger:  logger.Default.LogMode(cfg.LogLevel),
 		NowFunc: func() time.Time { return time.Now().UTC() },
+		// Without this a duplicate email surfaces as a raw pq error, so the
+		// register handler's gorm.ErrDuplicatedKey check never matched and an
+		// address that was already taken answered 500 instead of 409.
+		TranslateError: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("connect to postgres: %w", err)

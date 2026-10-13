@@ -118,6 +118,10 @@ func (r *Router) registerAuth(api fiber.Router) {
 	auth.Post("/refresh", r.refresh)
 	auth.Post("/logout", r.logout)
 	auth.Post("/verify-email", r.verifyEmail)
+	// A registration email that never arrives (spam folder, typo, closed tab)
+	// used to strand the account: login refuses unverified users and there was no
+	// way to request a new link.
+	auth.Post("/resend-verification", r.resendVerification)
 	// QA baris 60: "Lupa kata sandi" needs a real flow, not a dead button.
 	auth.Post("/forgot-password", r.forgotPassword)
 	auth.Post("/reset-password", r.resetPassword)
@@ -198,8 +202,11 @@ func (r *Router) authMiddleware() fiber.Handler {
 
 func (r *Router) requireRole(requiredRole domain.UserRole) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		role := c.Locals("user_role")
-		if role != requiredRole {
+		// The claim is stored in Locals as a plain string. Comparing that `any`
+		// against a domain.UserRole compares the dynamic types, which never match,
+		// so every /admin route answered 403 — including for genuine admins.
+		role, _ := c.Locals("user_role").(string)
+		if domain.UserRole(role) != requiredRole {
 			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Akses ditolak: Anda tidak memiliki izin untuk tindakan ini"})
 		}
 		return c.Next()
@@ -217,12 +224,16 @@ func (r *Router) register(c *fiber.Ctx) error {
 
 	result, err := r.authSvc.Register(ctx, input)
 	if err != nil {
-		if strings.Contains(err.Error(), "conflict") || strings.Contains(err.Error(), "duplicate") {
+		// Matching on the English substrings "conflict"/"invalid" never worked:
+		// both sentinels carry Indonesian messages, so a taken address and a short
+		// password both answered 500.
+		switch {
+		case errors.Is(err, service.ErrConflict):
 			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Email sudah terdaftar"})
-		}
-		if strings.Contains(err.Error(), "invalid") {
+		case errors.Is(err, service.ErrInvalidInput):
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
+		log.Printf("register failed for %q: %v", input.Email, err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Pendaftaran akun gagal"})
 	}
 
@@ -280,7 +291,7 @@ func (r *Router) refresh(c *fiber.Ctx) error {
 		UserAgent: c.Get("User-Agent"),
 	})
 	if err != nil {
-		c.ClearCookie("refresh_token")
+		clearRefreshCookie(c)
 		if err == service.ErrUnauthorized {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Sesi telah kedaluwarsa atau dicabut, silakan masuk kembali"})
 		}
@@ -304,14 +315,34 @@ func (r *Router) refresh(c *fiber.Ctx) error {
 	})
 }
 
+// clearRefreshCookie expires the session cookie. ClearCookie() emits no Path, so
+// the browser scoped the deletion to the request path (..auth) and the real
+// cookie — written with Path=/ — survived a logout.
+func clearRefreshCookie(c *fiber.Ctx) {
+	c.Cookie(&fiber.Cookie{
+		Name:     "refresh_token",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		Expires:  time.Now().Add(-time.Hour),
+		HTTPOnly: true,
+		Secure:   c.Protocol() == "https",
+		SameSite: "Lax",
+	})
+}
+
 func (r *Router) logout(c *fiber.Ctx) error {
 	refreshToken := c.Cookies("refresh_token")
 	if refreshToken != "" {
 		ctx, cancel := context.WithTimeout(c.Context(), 3*time.Second)
 		defer cancel()
-		_ = r.authSvc.Logout(ctx, refreshToken)
+		// A failed revoke leaves a usable token behind, so the operator has to be
+		// able to see it in the log rather than losing it silently.
+		if err := r.authSvc.Logout(ctx, refreshToken); err != nil {
+			log.Printf("logout: revoking refresh token failed: %v", err)
+		}
 	}
-	c.ClearCookie("refresh_token")
+	clearRefreshCookie(c)
 	return c.JSON(fiber.Map{"message": "Berhasil keluar"})
 }
 
@@ -335,6 +366,33 @@ func (r *Router) verifyEmail(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{"message": "Email berhasil diverifikasi", "user": user})
+}
+
+func (r *Router) resendVerification(c *fiber.Ctx) error {
+	var input struct {
+		Email string `json:"email"`
+	}
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
+	}
+
+	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+	defer cancel()
+
+	if err := r.authSvc.ResendVerification(ctx, input.Email); err != nil {
+		switch {
+		case errors.Is(err, service.ErrInvalidInput):
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Masukkan alamat email yang valid."})
+		case errors.Is(err, service.ErrNotFound):
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Email belum terdaftar. Silakan membuat akun terlebih dahulu."})
+		case errors.Is(err, service.ErrAlreadyVerified):
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error()})
+		}
+		log.Printf("resend-verification failed for %q: %v", input.Email, err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengirim ulang tautan verifikasi."})
+	}
+
+	return c.JSON(fiber.Map{"message": "Tautan verifikasi baru sudah dikirim ke email Anda."})
 }
 
 func (r *Router) forgotPassword(c *fiber.Ctx) error {

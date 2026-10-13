@@ -36,6 +36,30 @@ func (r *fakeAuthRepository) CreateUser(_ context.Context, user *domain.User, to
 	r.verification[token.TokenHash] = &copyToken
 	return nil
 }
+
+// CreateVerificationToken mirrors the real store: the user's previous unused
+// links are retired in the same step, so only the newest one still works.
+func (r *fakeAuthRepository) CreateVerificationToken(_ context.Context, token *domain.EmailVerificationToken, now time.Time) error {
+	for hash, existing := range r.verification {
+		if existing.UserID == token.UserID && existing.UsedAt == nil {
+			used := now
+			existing.UsedAt = &used
+			r.verification[hash] = existing
+		}
+	}
+	copyToken := *token
+	r.verification[token.TokenHash] = &copyToken
+	return nil
+}
+
+func (r *fakeAuthRepository) UpdatePasswordHash(_ context.Context, userID, hash string, _ time.Time) error {
+	user, ok := r.usersByID[userID]
+	if !ok {
+		return ErrNotFound
+	}
+	user.PasswordHash = hash
+	return nil
+}
 func (r *fakeAuthRepository) UserByEmail(_ context.Context, email string) (*domain.User, error) {
 	user, ok := r.usersByEmail[email]
 	if !ok {
@@ -101,7 +125,7 @@ func (r *fakeAuthRepository) UpsertGoogleUser(_ context.Context, email, name, su
 		copyUser := *user
 		return &copyUser, nil
 	}
-	user := &domain.User{ID: "google-user", Email: email, Name: name, Role: domain.RoleCustomer, GoogleSubject: &subject, EmailVerifiedAt: &now}
+	user := &domain.User{ID: "google-user", Email: email, Name: name, Role: domain.RoleCustomer, Active: true, GoogleSubject: &subject, EmailVerifiedAt: &now}
 	r.usersByEmail[email], r.usersByID[user.ID] = user, user
 	copyUser := *user
 	return &copyUser, nil
@@ -191,7 +215,7 @@ func TestAuthRefreshRotatesWhitelistTokenAndRejectsReplay(t *testing.T) {
 	auth := newAuthServiceForTest(t, repo, now)
 	hash, _ := auth.hasher.Hash("Str0ng-password!")
 	verified := now
-	user := &domain.User{ID: "user-1", Email: "alice@example.com", Name: "Alice", PasswordHash: hash, Role: domain.RoleCustomer, EmailVerifiedAt: &verified}
+	user := &domain.User{ID: "user-1", Email: "alice@example.com", Name: "Alice", PasswordHash: hash, Role: domain.RoleCustomer, Active: true, EmailVerifiedAt: &verified}
 	repo.usersByEmail[user.Email], repo.usersByID[user.ID] = user, user
 	initial, err := auth.Login(context.Background(), LoginInput{Email: user.Email, Password: "Str0ng-password!"}, ClientInfo{})
 	if err != nil {
