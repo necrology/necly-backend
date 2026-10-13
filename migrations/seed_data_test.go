@@ -149,3 +149,19 @@ func TestExistingCatalogCopyMigrationIsScopedAndIdempotent(t *testing.T) {
 		}
 	}
 }
+
+func TestUsersActiveMigrationIsSafeToRerun(t *testing.T) {
+	sql := readMigration(t, "008_add_users_active.sql")
+	upperSQL := strings.ToUpper(sql)
+
+	for _, required := range []string{
+		"BEGIN;",
+		"ADD COLUMN IF NOT EXISTS ACTIVE BOOLEAN NOT NULL DEFAULT TRUE",
+		"CREATE INDEX IF NOT EXISTS IDX_USERS_ACTIVE ON USERS(ACTIVE)",
+		"COMMIT;",
+	} {
+		if !strings.Contains(upperSQL, required) {
+			t.Errorf("users active migration is missing %q", required)
+		}
+	}
+}
