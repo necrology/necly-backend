@@ -5,12 +5,14 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha512"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -181,6 +183,7 @@ type XenditProvider struct {
 	apiKey        string
 	isProduction  bool
 	baseURL       string
+	returnBaseURL string
 	httpClient    *http.Client
 }
 
@@ -202,27 +205,39 @@ func NewXenditProvider(callbackToken, apiKey string, isProduction bool, options 
 func (x *XenditProvider) Name() string { return "xendit" }
 
 func (x *XenditProvider) CreatePayment(ctx context.Context, req PaymentRequest) (*PaymentInitiation, error) {
-	externalID := req.OrderID
-	amount := req.Amount
-
 	reqBody := map[string]any{
-		"external_id":      externalID,
-		"amount":           amount,
-		"currency":         req.Currency,
-		"description":      "Order " + externalID,
-		"invoice_duration": 86400,
+		"reference_id":   req.OrderID,
+		"session_type":   "PAY",
+		"mode":           "PAYMENT_LINK",
+		"amount":         req.Amount,
+		"currency":       req.Currency,
+		"country":        "ID",
+		"capture_method": "AUTOMATIC",
+		"locale":         "en",
+		"description":    "Pembayaran pesanan " + req.OrderNumber,
+	}
+	if !req.ExpiresAt.IsZero() {
+		reqBody["expires_at"] = req.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+	if returnBaseURL := strings.TrimRight(strings.TrimSpace(x.returnBaseURL), "/"); returnBaseURL != "" {
+		if parsed, err := url.Parse(returnBaseURL); err == nil && parsed.Scheme == "https" && parsed.Host != "" {
+			paymentPath := "/payment/" + url.PathEscape(req.OrderID)
+			reqBody["success_return_url"] = returnBaseURL + paymentPath + "?result=success"
+			reqBody["cancel_return_url"] = returnBaseURL + paymentPath + "?result=cancel"
+		}
 	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, fmt.Errorf("marshal xendit request: %w", err)
+		return nil, fmt.Errorf("marshal xendit session request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, x.baseURL+"/v2/invoices", bytes.NewReader(bodyBytes))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, x.baseURL+"/sessions", bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("create http request: %w", err)
 	}
 	httpReq.SetBasicAuth(x.apiKey, "")
 	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
 
 	resp, err := x.httpClient.Do(httpReq)
 	if err != nil {
@@ -236,60 +251,81 @@ func (x *XenditProvider) CreatePayment(ctx context.Context, req PaymentRequest) 
 	}
 
 	var xenditResp struct {
-		ID         string `json:"id"`
-		InvoiceURL string `json:"invoice_url"`
-		Status     string `json:"status"`
-		ExternalID string `json:"external_id"`
+		PaymentSessionID string `json:"payment_session_id"`
+		PaymentLinkURL   string `json:"payment_link_url"`
+		Status           string `json:"status"`
+		ReferenceID      string `json:"reference_id"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&xenditResp); err != nil {
 		return nil, fmt.Errorf("decode xendit response: %w", err)
 	}
 
-	if xenditResp.ID == "" {
-		return nil, fmt.Errorf("xendit response missing id")
+	if xenditResp.PaymentSessionID == "" || xenditResp.PaymentLinkURL == "" {
+		return nil, fmt.Errorf("xendit session response missing payment_session_id or payment_link_url")
 	}
 
 	return &PaymentInitiation{
-		ProviderPaymentID: xenditResp.ID,
-		Status:            strings.ToLower(xenditResp.Status),
-		CheckoutURL:       xenditResp.InvoiceURL,
+		ProviderPaymentID: xenditResp.PaymentSessionID,
+		Status:            mapXenditStatus(xenditResp.Status),
+		CheckoutURL:       xenditResp.PaymentLinkURL,
 	}, nil
 }
 
 func (x *XenditProvider) VerifyWebhook(headers map[string]string, body []byte) (*PaymentEvent, error) {
-	callbackToken := headers["X-Callback-Token"]
-	if callbackToken == "" {
-		callbackToken = headers["x-callback-token"]
+	var callbackToken string
+	for name, value := range headers {
+		if strings.EqualFold(name, "x-callback-token") {
+			callbackToken = value
+			break
+		}
 	}
-	if callbackToken != x.callbackToken {
+	if callbackToken == "" || subtle.ConstantTimeCompare([]byte(callbackToken), []byte(x.callbackToken)) != 1 {
 		return nil, ErrUnauthorized
 	}
 
-	var notification map[string]any
+	var notification struct {
+		Event   string `json:"event"`
+		Created string `json:"created"`
+		Data    struct {
+			PaymentSessionID string `json:"payment_session_id"`
+			ReferenceID      string `json:"reference_id"`
+			Status           string `json:"status"`
+			Updated          string `json:"updated"`
+		} `json:"data"`
+		// Legacy Invoice fields remain accepted while old pending invoices can
+		// still deliver callbacks during the migration window.
+		ID         string `json:"id"`
+		ExternalID string `json:"external_id"`
+		Status     string `json:"status"`
+		PaidAt     string `json:"paid_at"`
+	}
 	if err := json.Unmarshal(body, &notification); err != nil {
 		return nil, ErrInvalidInput
 	}
 
-	externalID := fmt.Sprintf("%v", notification["external_id"])
-	status := strings.ToLower(fmt.Sprintf("%v", notification["status"]))
-	paymentID := fmt.Sprintf("%v", notification["id"])
-
-	var mappedStatus string
-	switch status {
-	case "paid":
-		mappedStatus = "paid"
-	case "pending":
-		mappedStatus = "pending"
-	case "expired", "failed":
-		mappedStatus = "failed"
-	default:
-		mappedStatus = "pending"
+	paymentID := notification.Data.PaymentSessionID
+	orderID := notification.Data.ReferenceID
+	status := notification.Data.Status
+	paidAtValue := notification.Data.Updated
+	if paymentID == "" {
+		paymentID = notification.ID
+		orderID = notification.ExternalID
+		status = notification.Status
+		paidAtValue = notification.PaidAt
+	}
+	if strings.TrimSpace(paymentID) == "" || strings.TrimSpace(orderID) == "" || strings.TrimSpace(status) == "" {
+		return nil, ErrInvalidInput
 	}
 
 	var paidAt time.Time
-	if paidAtStr, ok := notification["paid_at"].(string); ok && paidAtStr != "" {
-		if t, err := time.Parse(time.RFC3339, paidAtStr); err == nil {
+	if mapXenditStatus(status) == "paid" {
+		if paidAtValue == "" {
+			paidAtValue = notification.Created
+		}
+		if t, err := time.Parse(time.RFC3339, paidAtValue); err == nil {
 			paidAt = t
+		} else {
+			paidAt = time.Now().UTC()
 		}
 	}
 
@@ -297,11 +333,26 @@ func (x *XenditProvider) VerifyWebhook(headers map[string]string, body []byte) (
 		ID:                uuid.NewString(),
 		Provider:          "xendit",
 		ProviderPaymentID: paymentID,
-		OrderID:           externalID,
-		Status:            mappedStatus,
+		OrderID:           orderID,
+		Status:            mapXenditStatus(status),
 		PaidAt:            paidAt,
 		Raw:               body,
 	}, nil
+}
+
+func mapXenditStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "paid", "settled", "succeeded":
+		return "paid"
+	case "expired":
+		return "expired"
+	case "canceled", "cancelled":
+		return "cancelled"
+	case "failed", "failure":
+		return "failed"
+	default:
+		return "pending"
+	}
 }
 
 type PaymentProviderRegistry struct {
@@ -346,9 +397,13 @@ func CreatePaymentProviders(config map[string]string, timeout time.Duration) *Pa
 	if callbackToken := config["XENDIT_CALLBACK_TOKEN"]; callbackToken != "" {
 		apiKey := config["XENDIT_API_KEY"]
 		isProduction := config["XENDIT_IS_PRODUCTION"] == "true"
-		registry.Register("xendit", NewXenditProvider(callbackToken, apiKey, isProduction,
-			WithPaymentHTTPClient(&http.Client{Timeout: timeout}),
-		))
+		options := []paymentProviderOption{WithPaymentHTTPClient(&http.Client{Timeout: timeout})}
+		if baseURL := strings.TrimSpace(config["XENDIT_BASE_URL"]); baseURL != "" {
+			options = append(options, WithPaymentBaseURL(baseURL))
+		}
+		provider := NewXenditProvider(callbackToken, apiKey, isProduction, options...)
+		provider.returnBaseURL = config["FRONTEND_BASE_URL"]
+		registry.Register("xendit", provider)
 	}
 
 	return registry

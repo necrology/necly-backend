@@ -42,6 +42,7 @@ type PaymentRequest struct {
 	Amount      int64
 	Currency    string
 	CustomerID  string
+	ExpiresAt   time.Time
 }
 
 type PaymentInitiation struct {
@@ -115,7 +116,10 @@ func (s *CheckoutService) Checkout(ctx context.Context, input CheckoutInput) (*C
 	if err != nil {
 		return nil, err
 	}
-	initiation, err := s.provider.CreatePayment(ctx, PaymentRequest{OrderID: order.ID, OrderNumber: order.Number, Amount: order.Total, Currency: order.Currency, CustomerID: order.UserID})
+	initiation, err := s.provider.CreatePayment(ctx, PaymentRequest{
+		OrderID: order.ID, OrderNumber: order.Number, Amount: order.Total, Currency: order.Currency,
+		CustomerID: order.UserID, ExpiresAt: order.PaymentDueAt,
+	})
 	if err != nil {
 		_ = s.repo.CancelAndRelease(ctx, order.ID, now)
 		return nil, fmt.Errorf("create payment: %w", err)

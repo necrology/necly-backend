@@ -1306,6 +1306,9 @@ func (r *Router) receiveWebhook(c *fiber.Ctx) error {
 	c.Request().Header.VisitAll(func(key, value []byte) {
 		headers[string(key)] = string(value)
 	})
+	// Route the callback to the provider named in the URL instead of trying all
+	// registered providers in map order.
+	headers["X-Provider"] = strings.ToLower(strings.TrimSpace(provider))
 
 	result, err := r.webhookSvc.Process(ctx, headers, payload)
 	if err != nil {

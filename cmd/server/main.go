@@ -123,6 +123,8 @@ func main() {
 		"XENDIT_CALLBACK_TOKEN":  cfg.Payment.XenditCallbackToken,
 		"XENDIT_API_KEY":         cfg.Payment.XenditAPIKey,
 		"XENDIT_IS_PRODUCTION":   fmt.Sprintf("%v", cfg.Payment.XenditIsProduction),
+		"XENDIT_BASE_URL":        cfg.Payment.XenditBaseURL,
+		"FRONTEND_BASE_URL":      cfg.AppFrontendURL,
 	}
 	providerRegistry := service.CreatePaymentProviders(paymentConfig, cfg.HTTPClientTimeout)
 
