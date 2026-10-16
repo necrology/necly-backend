@@ -11,13 +11,34 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// jsonKeys reports the field names of a JSON object, sorted. It exists so the
+// shape of an unexpected webhook payload can be logged without printing its
+// values, which for a payment callback include the payer's details.
+func jsonKeys(body []byte) []string {
+	if len(body) == 0 {
+		return nil
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(body, &object); err != nil {
+		return nil
+	}
+	keys := make([]string, 0, len(object))
+	for key := range object {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
 
 type paymentProviderOption func(baseURL *string, client **http.Client)
 
@@ -300,6 +321,7 @@ func (x *XenditProvider) VerifyWebhook(headers map[string]string, body []byte) (
 		PaidAt     string `json:"paid_at"`
 	}
 	if err := json.Unmarshal(body, &notification); err != nil {
+		log.Printf("xendit webhook: body is not the expected JSON object (top_keys=%v)", jsonKeys(body))
 		return nil, ErrInvalidInput
 	}
 
@@ -314,6 +336,13 @@ func (x *XenditProvider) VerifyWebhook(headers map[string]string, body []byte) (
 		paidAtValue = notification.PaidAt
 	}
 	if strings.TrimSpace(paymentID) == "" || strings.TrimSpace(orderID) == "" || strings.TrimSpace(status) == "" {
+		// A 400 here means a genuine notification we could not map, which would
+		// leave a paid order stuck on pending_payment. Log the event name and
+		// which fields were missing so the shape can be fixed without guessing.
+		var raw map[string]json.RawMessage
+		_ = json.Unmarshal(body, &raw)
+		log.Printf("xendit webhook: unmappable event=%q missing(payment_id=%t reference_id=%t status=%t) top_keys=%v data_keys=%v",
+			notification.Event, paymentID == "", orderID == "", status == "", jsonKeys(body), jsonKeys(raw["data"]))
 		return nil, ErrInvalidInput
 	}
 
