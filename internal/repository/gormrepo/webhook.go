@@ -15,7 +15,7 @@ import (
 func (s *Store) ApplyPaymentEvent(ctx context.Context, event service.PaymentEvent) (bool, error) {
 	var applied bool
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "provider"}, {Name: "provider_event_id"}}, DoNothing: true}).
+		insert := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "provider"}, {Name: "provider_event_id"}}, DoNothing: true}).
 			Create(&domain.WebhookEvent{
 				ID:              uuid.NewString(),
 				Provider:        event.Provider,
@@ -23,12 +23,16 @@ func (s *Store) ApplyPaymentEvent(ctx context.Context, event service.PaymentEven
 				PayloadHash:     "",
 				ProcessedAt:     s.nowUTC(),
 				CreatedAt:       s.nowUTC(),
-			}).Error
-		if err != nil {
-			return fmt.Errorf("insert webhook event: %w", err)
+			})
+		if insert.Error != nil {
+			return fmt.Errorf("insert webhook event: %w", insert.Error)
 		}
 
-		if tx.RowsAffected == 0 {
+		// Clauses().Create() executes on a clone, so the affected-row count lives
+		// on the returned statement. Reading tx.RowsAffected here was always 0,
+		// which made every callback answer "processed": false and skip the order
+		// update entirely — a paid order stayed on pending_payment forever.
+		if insert.RowsAffected == 0 {
 			return nil
 		}
 

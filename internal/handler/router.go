@@ -1317,12 +1317,20 @@ func (r *Router) receiveWebhook(c *fiber.Ctx) error {
 
 	result, err := r.webhookSvc.Process(ctx, headers, payload)
 	if err != nil {
-		if err == service.ErrUnauthorized {
+		if errors.Is(err, service.ErrUnauthorized) {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tanda tangan webhook tidak valid"})
 		}
-		if err == service.ErrInvalidInput {
+		if errors.Is(err, service.ErrInvalidInput) {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
+		if errors.Is(err, service.ErrNotFound) {
+			// A notification for a payment session we hold no row for. Answering
+			// 2xx stops the provider from retrying something we can never apply,
+			// while the log keeps it visible to the operator.
+			log.Printf("webhook %s: unknown payment reference in callback", provider)
+			return c.JSON(fiber.Map{"processed": false, "reason": "unknown_payment"})
+		}
+		log.Printf("webhook %s: processing failed: %v", provider, err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Pemrosesan webhook gagal"})
 	}
 
