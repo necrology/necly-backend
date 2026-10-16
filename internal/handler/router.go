@@ -183,6 +183,8 @@ func (r *Router) registerAdmin(api fiber.Router) {
 	// Inventory account management
 	admin.Get("/inventory", r.adminListInventoryAccounts)
 	admin.Post("/inventory", r.adminCreateInventoryAccount)
+	// Kapasitas jual sebuah paket: satu baris inventory_slots per kursi.
+	admin.Post("/inventory/slots", r.adminCreateInventorySlots)
 	admin.Get("/inventory/:id", r.adminGetInventoryAccount)
 	admin.Patch("/inventory/:id", r.adminUpdateInventoryAccount)
 	admin.Delete("/inventory/:id", r.adminDeleteInventoryAccount)
@@ -1569,6 +1571,31 @@ func (r *Router) adminCreateInventoryAccount(c *fiber.Ctx) error {
 
 	account.EncryptedCredentials = nil
 	return c.Status(fiber.StatusCreated).JSON(account)
+}
+
+func (r *Router) adminCreateInventorySlots(c *fiber.Ctx) error {
+	var input service.CreateSlotsInput
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
+	}
+
+	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+	defer cancel()
+
+	created, err := r.adminInventorySvc.CreateSlots(ctx, input)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrInvalidInput):
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Jumlah slot harus antara 1 dan 100, dan paket harus dipilih"})
+		case errors.Is(err, service.ErrAccountRequired):
+			return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": err.Error()})
+		case errors.Is(err, service.ErrNotFound):
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Paket tidak ditemukan"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menambahkan slot inventaris"})
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"created": created})
 }
 
 func (r *Router) adminGetInventoryAccount(c *fiber.Ctx) error {

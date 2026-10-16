@@ -35,6 +35,44 @@ type UpdateInventoryAccountInput struct {
 	ExpiresAt   *time.Time `json:"expires_at"`
 }
 
+type CreateSlotsInput struct {
+	ProductPriceID string `json:"product_price_id"`
+	Quantity       int    `json:"quantity"`
+}
+
+// CreateSlots menambah kapasitas jual untuk satu harga paket. Inilah satu-satunya
+// jalan membuat baris inventory_slots: katalog menghitung ketersediaan dari baris
+// berstatus available untuk product_price terkait, dan checkout mengunci baris
+// yang sama. Tanpa slot, produk mustahil dibeli.
+func (s *AdminInventoryService) CreateSlots(ctx context.Context, input CreateSlotsInput) (int, error) {
+	if input.ProductPriceID == "" || input.Quantity < 1 || input.Quantity > 100 {
+		return 0, ErrInvalidInput
+	}
+
+	price, err := s.repo.GetProductPriceByID(ctx, input.ProductPriceID)
+	if err != nil {
+		return 0, err
+	}
+
+	account, err := s.repo.GetAccountByProductID(ctx, price.ProductID)
+	if err != nil {
+		return 0, ErrAccountRequired
+	}
+
+	slots := make([]domain.InventorySlot, 0, input.Quantity)
+	for i := 0; i < input.Quantity; i++ {
+		slots = append(slots, domain.InventorySlot{
+			InventoryAccountID: account.ID,
+			ProductPriceID:     price.ID,
+			Status:             "available",
+		})
+	}
+	if err := s.repo.CreateSlots(ctx, slots); err != nil {
+		return 0, fmt.Errorf("create inventory slots: %w", err)
+	}
+	return len(slots), nil
+}
+
 func (s *AdminInventoryService) ListInventoryAccounts(ctx context.Context, filter InventoryAccountFilter, page, perPage int) ([]domain.InventoryAccount, int64, error) {
 	if page < 1 {
 		page = 1
