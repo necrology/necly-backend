@@ -297,8 +297,12 @@ func (r *Router) refresh(c *fiber.Ctx) error {
 		UserAgent: c.Get("User-Agent"),
 	})
 	if err != nil {
-		clearRefreshCookie(c)
-		if err == service.ErrUnauthorized {
+		// The cookie is deliberately left alone. Refresh rotates the token, so a
+		// second tab presenting the previous one gets a 401 — and deleting the
+		// cookie here would then destroy the replacement that tab was never told
+		// about, signing the whole browser out. An unusable cookie simply fails
+		// again on the next attempt; a valid one survives.
+		if errors.Is(err, service.ErrUnauthorized) {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Sesi telah kedaluwarsa atau dicabut, silakan masuk kembali"})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui sesi"})
