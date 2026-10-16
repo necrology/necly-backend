@@ -1333,6 +1333,11 @@ func (r *Router) receiveWebhook(c *fiber.Ctx) error {
 		log.Printf("webhook %s: processing failed: %v", provider, err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Pemrosesan webhook gagal"})
 	}
+	// Leaves an unambiguous trace that a callback actually changed an order, as
+	// opposed to being a duplicate we only acknowledged.
+	if result.Processed {
+		log.Printf("webhook %s: payment event applied to order", provider)
+	}
 
 	return c.JSON(result)
 }
