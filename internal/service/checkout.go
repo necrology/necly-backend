@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -96,6 +97,10 @@ func (s *CheckoutService) Checkout(ctx context.Context, input CheckoutInput) (*C
 	input.UserID = strings.TrimSpace(input.UserID)
 	input.IdempotencyKey = strings.TrimSpace(input.IdempotencyKey)
 	if input.UserID == "" || input.IdempotencyKey == "" || len(input.IdempotencyKey) > 128 || len(input.Items) == 0 || len(input.Items) > 50 {
+		// Name the failing condition: a bare "Input tidak valid" left the caller
+		// with no way to tell a missing idempotency key from an empty cart.
+		log.Printf("checkout rejected: user_set=%t key_len=%d items=%d",
+			input.UserID != "", len(input.IdempotencyKey), len(input.Items))
 		return nil, ErrInvalidInput
 	}
 	seen := make(map[string]bool, len(input.Items))
@@ -106,6 +111,8 @@ func (s *CheckoutService) Checkout(ctx context.Context, input CheckoutInput) (*C
 		}
 		item := input.Items[i]
 		if item.ProductPriceID == "" || item.Quantity <= 0 || item.Quantity > 100 || item.DeviceCount < 1 || item.DeviceCount > 10 || seen[item.ProductPriceID] {
+			log.Printf("checkout rejected: item[%d] price_id_set=%t qty=%d devices=%d duplicate=%t",
+				i, item.ProductPriceID != "", item.Quantity, item.DeviceCount, seen[item.ProductPriceID])
 			return nil, ErrInvalidInput
 		}
 		seen[item.ProductPriceID] = true

@@ -864,6 +864,8 @@ func (r *Router) checkout(c *fiber.Ctx) error {
 
 	var input service.CheckoutInput
 	if err := c.BodyParser(&input); err != nil {
+		// The caller only sees a generic 400, so record the reason here.
+		log.Printf("checkout: body parse failed: %v", err)
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
 	}
 	input.UserID = userID
