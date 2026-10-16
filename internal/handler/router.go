@@ -95,6 +95,11 @@ func (r *Router) registerHealth(app *fiber.App) {
 }
 
 func (r *Router) registerPublic(api fiber.Router) {
+	// Payment providers cannot send an application access token. Keep the
+	// canonical webhook endpoint outside the authenticated catch-all group;
+	// authenticity is verified by each provider's signature/token instead.
+	api.Post("/webhooks/:provider", r.receiveWebhook)
+
 	public := api.Group("/public")
 	public.Get("/categories", r.listCategories)
 	public.Get("/categories/:id", r.getCategory)
@@ -107,7 +112,7 @@ func (r *Router) registerPublic(api fiber.Router) {
 	// QA poin 16: halaman "Testimoni" reads the approved reviews. Public because
 	// the page is reachable without signing in.
 	public.Get("/testimonials", r.listTestimonials)
-	// Provider webhook callbacks - public, no auth required
+	// Backward-compatible alias used by early development deployments.
 	public.Post("/webhooks/:provider", r.receiveWebhook)
 }
 
