@@ -20,6 +20,7 @@ type InventoryRepository interface {
 	CreateAccount(ctx context.Context, a *domain.InventoryAccount) error
 	UpdateAccount(ctx context.Context, a *domain.InventoryAccount) error
 	DeleteAccount(ctx context.Context, id string) error
+	GetPriceProductID(ctx context.Context, priceID string) (string, error)
 	ListSlots(ctx context.Context, accountID, productPriceID, status string, page, perPage int) ([]domain.InventorySlot, int64, error)
 	GetSlot(ctx context.Context, id string) (*domain.InventorySlot, error)
 	CreateSlots(ctx context.Context, slots []domain.InventorySlot) error
@@ -126,6 +127,27 @@ func (s *Store) GetSlot(ctx context.Context, id string) (*domain.InventorySlot, 
 		return nil, service.ErrNotFound
 	}
 	return &slot, err
+}
+
+// GetPriceProductID melacak produk pemilik sebuah harga paket. Galatnya memakai
+// kosakata service seperti method lain di berkas ini, supaya handler dapat
+// menjawab 404 alih-alih 500 untuk paket yang tidak ada.
+func (s *Store) GetPriceProductID(ctx context.Context, priceID string) (string, error) {
+	// product_prices.id bertipe uuid; id yang bukan uuid tidak mungkin cocok dan
+	// hanya akan membuat Postgres melempar SQLSTATE 22P02.
+	if _, err := uuid.Parse(priceID); err != nil {
+		return "", service.ErrNotFound
+	}
+
+	var price domain.ProductPrice
+	err := s.db.WithContext(ctx).Select("product_id").Where("id = ?", priceID).First(&price).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", service.ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("get price product: %w", err)
+	}
+	return price.ProductID, nil
 }
 
 func (s *Store) CreateSlots(ctx context.Context, slots []domain.InventorySlot) error {

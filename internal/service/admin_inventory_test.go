@@ -12,18 +12,18 @@ import (
 // nil lewat embed karena InventoryRepository punya banyak method.
 type stubInventoryRepo struct {
 	InventoryRepository
-	price    *domain.ProductPrice
-	priceErr error
-	account  *domain.InventoryAccount
-	acctErr  error
-	created  []domain.InventorySlot
+	productID string
+	priceErr  error
+	account   *domain.InventoryAccount
+	acctErr   error
+	created   []domain.InventorySlot
 }
 
-func (s *stubInventoryRepo) GetProductPriceByID(context.Context, string) (*domain.ProductPrice, error) {
+func (s *stubInventoryRepo) GetPriceProductID(context.Context, string) (string, error) {
 	if s.priceErr != nil {
-		return nil, s.priceErr
+		return "", s.priceErr
 	}
-	return s.price, nil
+	return s.productID, nil
 }
 
 func (s *stubInventoryRepo) GetAccountByProductID(context.Context, string) (*domain.InventoryAccount, error) {
@@ -40,8 +40,8 @@ func (s *stubInventoryRepo) CreateSlots(_ context.Context, slots []domain.Invent
 
 func TestCreateSlots_BindsEverySlotToTheProductAccountAndPrice(t *testing.T) {
 	repo := &stubInventoryRepo{
-		price:   &domain.ProductPrice{ID: "price-1", ProductID: "prd-1", Amount: 186000},
-		account: &domain.InventoryAccount{ID: "acc-1", ProductID: "prd-1"},
+		productID: "prd-1",
+		account:   &domain.InventoryAccount{ID: "acc-1", ProductID: "prd-1"},
 	}
 	svc := NewAdminInventoryService(repo, nil)
 
@@ -66,7 +66,7 @@ func TestCreateSlots_BindsEverySlotToTheProductAccountAndPrice(t *testing.T) {
 }
 
 func TestCreateSlots_RejectsQuantitiesOutsideOneToHundred(t *testing.T) {
-	repo := &stubInventoryRepo{price: &domain.ProductPrice{ID: "price-1", ProductID: "prd-1"}}
+	repo := &stubInventoryRepo{productID: "prd-1"}
 	svc := NewAdminInventoryService(repo, nil)
 
 	for _, input := range []CreateSlotsInput{
@@ -88,8 +88,8 @@ func TestCreateSlots_RejectsQuantitiesOutsideOneToHundred(t *testing.T) {
 // akun produknya ada harus dijawab dengan petunjuk yang jelas, bukan galat server.
 func TestCreateSlots_NeedsTheProductAccountFirst(t *testing.T) {
 	repo := &stubInventoryRepo{
-		price:   &domain.ProductPrice{ID: "price-1", ProductID: "prd-1"},
-		acctErr: ErrNotFound,
+		productID: "prd-1",
+		acctErr:   ErrNotFound,
 	}
 	svc := NewAdminInventoryService(repo, nil)
 

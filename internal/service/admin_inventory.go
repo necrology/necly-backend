@@ -49,12 +49,12 @@ func (s *AdminInventoryService) CreateSlots(ctx context.Context, input CreateSlo
 		return 0, ErrInvalidInput
 	}
 
-	price, err := s.repo.GetProductPriceByID(ctx, input.ProductPriceID)
+	productID, err := s.repo.GetPriceProductID(ctx, input.ProductPriceID)
 	if err != nil {
 		return 0, err
 	}
 
-	account, err := s.repo.GetAccountByProductID(ctx, price.ProductID)
+	account, err := s.repo.GetAccountByProductID(ctx, productID)
 	if err != nil {
 		return 0, ErrAccountRequired
 	}
@@ -63,7 +63,7 @@ func (s *AdminInventoryService) CreateSlots(ctx context.Context, input CreateSlo
 	for i := 0; i < input.Quantity; i++ {
 		slots = append(slots, domain.InventorySlot{
 			InventoryAccountID: account.ID,
-			ProductPriceID:     price.ID,
+			ProductPriceID:     input.ProductPriceID,
 			Status:             "available",
 		})
 	}

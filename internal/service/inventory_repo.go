@@ -14,9 +14,9 @@ type InventoryRepository interface {
 	CreateAccount(ctx context.Context, a *domain.InventoryAccount) error
 	UpdateAccount(ctx context.Context, a *domain.InventoryAccount) error
 	DeleteAccount(ctx context.Context, id string) error
-	// Dipakai untuk mengetahui produk mana yang memiliki sebuah harga, karena
-	// slot dicatat per harga sedangkan akun induknya per produk.
-	GetProductPriceByID(ctx context.Context, id string) (*domain.ProductPrice, error)
+	// Produk pemilik sebuah harga. Slot dicatat per harga sedangkan akun
+	// induknya per produk, jadi pemetaan ini dibutuhkan sebelum slot dibuat.
+	GetPriceProductID(ctx context.Context, priceID string) (string, error)
 	ListSlots(ctx context.Context, accountID, productPriceID, status string, page, perPage int) ([]domain.InventorySlot, int64, error)
 	GetSlot(ctx context.Context, id string) (*domain.InventorySlot, error)
 	CreateSlots(ctx context.Context, slots []domain.InventorySlot) error
