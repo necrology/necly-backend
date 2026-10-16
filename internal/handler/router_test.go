@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -308,4 +310,68 @@ func TestCheckoutReadsTheIdempotencyKeyFromTheHeader(t *testing.T) {
 	// that it is no longer rejected as invalid input.
 	assert.NotEqual(t, fiber.StatusBadRequest, post(map[string]string{"Idempotency-Key": "idem-uji-1"}),
 		"the Idempotency-Key header must satisfy the input validation")
+}
+
+// stubCatalogRepo hanya mengisi method yang dipakai tes di bawah; sisanya
+// dibiarkan nil lewat embed, karena CatalogRepository punya banyak method.
+type stubCatalogRepo struct {
+	service.CatalogRepository
+	slugProduct *domain.ProductWithStock
+	slugErr     error
+	prices      []domain.ProductPrice
+}
+
+func (s stubCatalogRepo) GetProductWithStock(context.Context, string) (*domain.ProductWithStock, error) {
+	// Setara perilaku store setelah penjagaan bentuk uuid: id yang bukan uuid
+	// (yaitu slug) tidak pernah sampai ke Postgres dan langsung not found.
+	return nil, errors.New("not found")
+}
+
+func (s stubCatalogRepo) GetProductBySlugWithStock(context.Context, string) (*domain.ProductWithStock, error) {
+	return s.slugProduct, s.slugErr
+}
+
+func (s stubCatalogRepo) ListProductPrices(context.Context, string, bool) ([]domain.ProductPrice, error) {
+	return s.prices, nil
+}
+
+func setupCatalogApp(t *testing.T, repo service.CatalogRepository) *fiber.App {
+	t.Helper()
+	app := fiber.New()
+	app.Use(recover.New())
+	tokens, err := service.NewTokenManager("test-jwt-secret-that-has-at-least-32-bytes", "necly", 15*time.Minute, 24*time.Hour)
+	assert.NoError(t, err)
+	router := handler.NewRouter(nil, service.NewCatalogService(repo), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, tokens, nil, nil, nil, nil)
+	router.Register(app)
+	return app
+}
+
+// product_id bertipe uuid: meneruskan slug apa adanya ke query harga dulu
+// membuat Postgres melempar SQLSTATE 22P02 dan endpoint publik ini menjawab 500
+// padahal produknya sekadar tidak ada.
+func TestListProductPrices_UnknownSlugIsNotFoundNotServerError(t *testing.T) {
+	app := setupCatalogApp(t, stubCatalogRepo{slugErr: errors.New("not found")})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/api/v1/public/products/bukan-produk/prices", nil))
+	assert.NoError(t, err)
+	assert.Equal(t, fiber.StatusNotFound, resp.StatusCode)
+}
+
+func TestListProductPrices_ResolvesSlugBeforeQueryingPrices(t *testing.T) {
+	app := setupCatalogApp(t, stubCatalogRepo{
+		slugProduct: &domain.ProductWithStock{Product: domain.Product{ID: "0192f0a4-0000-0000-0000-000000000001"}},
+		prices:      []domain.ProductPrice{{ID: "price-1", Amount: 186000}},
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/api/v1/public/products/netflix-premium/prices", nil))
+	assert.NoError(t, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+}
+
+func TestGetProduct_UnknownSlugStaysNotFound(t *testing.T) {
+	app := setupCatalogApp(t, stubCatalogRepo{slugErr: errors.New("not found")})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/api/v1/public/products/bukan-produk", nil))
+	assert.NoError(t, err)
+	assert.Equal(t, fiber.StatusNotFound, resp.StatusCode)
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 	"github.com/necly/services/internal/domain"
 	"github.com/necly/services/internal/service"
 	"github.com/redis/go-redis/v9"
@@ -724,6 +725,18 @@ func (r *Router) listProductPrices(c *fiber.Ctx) error {
 	id := c.Params("id")
 	ctx, cancel := context.WithTimeout(c.Context(), 3*time.Second)
 	defer cancel()
+
+	// Sama seperti getProduct: id bisa berupa slug. product_id bertipe uuid, jadi
+	// slug yang diteruskan apa adanya membuat Postgres melempar SQLSTATE 22P02
+	// dan permintaan dijawab 500 padahal produknya hanya tidak ditemukan.
+	if _, err := uuid.Parse(id); err != nil {
+		product, err := r.catalogSvc.GetProductBySlugWithStock(ctx, id)
+		if err != nil {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Produk langganan tidak ditemukan"})
+		}
+		id = product.ID
+	}
+
 	prices, err := r.catalogSvc.ListProductPrices(ctx, id, true)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil daftar harga paket"})

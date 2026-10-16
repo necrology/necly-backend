@@ -347,6 +347,15 @@ func (s *Store) ListProductsWithStock(ctx context.Context, filter service.Produc
 }
 
 func (s *Store) GetProductWithStock(ctx context.Context, id string) (*domain.ProductWithStock, error) {
+	// Kolom products.id bertipe uuid. Pemanggil mencoba id lalu slug, jadi slug
+	// yang sah pun sampai ke sini dan Postgres menjawabnya dengan SQLSTATE
+	// 22P02 — galat yang tercatat di log untuk setiap permintaan slug. Bentuk
+	// id diperiksa lebih dulu; hasilnya sama saja, tidak ada produk dengan id
+	// seperti itu.
+	if _, err := uuid.Parse(id); err != nil {
+		return nil, ErrNotFound
+	}
+
 	var p domain.Product
 	err := s.db.WithContext(ctx).Preload("Category").Preload("Prices.Duration").
 		Where("id = ? AND deleted_at IS NULL", id).First(&p).Error
