@@ -112,6 +112,9 @@ func (r *Router) registerPublic(api fiber.Router) {
 	// QA poin 16: halaman "Testimoni" reads the approved reviews. Public because
 	// the page is reachable without signing in.
 	public.Get("/testimonials", r.listTestimonials)
+	// Lets the storefront show a provider button only when it can actually work,
+	// so enabling Google later needs no frontend rebuild.
+	public.Get("/auth-providers", r.listAuthProviders)
 	// Backward-compatible alias used by early development deployments.
 	public.Post("/webhooks/:provider", r.receiveWebhook)
 }
@@ -590,6 +593,13 @@ func clientIP(c *fiber.Ctx) string {
 		}
 	}
 	return c.IP()
+}
+
+func (r *Router) listAuthProviders(c *fiber.Ctx) error {
+	return c.JSON(fiber.Map{
+		"password": true,
+		"google":   r.authSvc.GoogleConfig() != nil,
+	})
 }
 
 func (r *Router) googleLogin(c *fiber.Ctx) error {

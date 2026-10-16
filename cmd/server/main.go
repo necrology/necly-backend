@@ -83,15 +83,23 @@ func main() {
 	}
 
 	store := gormrepo.NewStore(db)
-	googleConfig := &service.GoogleOAuthConfig{
-		ClientID:          cfg.Google.ClientID,
-		ClientSecret:      cfg.Google.ClientSecret,
-		RedirectURL:       cfg.Google.RedirectURL,
-		FrontendReturnURL: cfg.Google.FrontendReturnURL,
-		AuthURL:           cfg.Google.AuthURL,
-		TokenURL:          cfg.Google.TokenURL,
-		UserInfoURL:       cfg.Google.UserInfoURL,
-		StateTTL:          cfg.Google.StateTTL,
+	// Built only when it is actually configured, so that GoogleConfig() == nil
+	// really means "disabled". It used to be built unconditionally, which made
+	// the guard in the handlers unreachable: clicking "Masuk dengan Google" was
+	// redirected to Google with an empty client_id instead of being told the
+	// feature is switched off.
+	var googleConfig *service.GoogleOAuthConfig
+	if cfg.Google.ClientID != "" {
+		googleConfig = &service.GoogleOAuthConfig{
+			ClientID:          cfg.Google.ClientID,
+			ClientSecret:      cfg.Google.ClientSecret,
+			RedirectURL:       cfg.Google.RedirectURL,
+			FrontendReturnURL: cfg.Google.FrontendReturnURL,
+			AuthURL:           cfg.Google.AuthURL,
+			TokenURL:          cfg.Google.TokenURL,
+			UserInfoURL:       cfg.Google.UserInfoURL,
+			StateTTL:          cfg.Google.StateTTL,
+		}
 	}
 	// mailer.New warns loudly and falls back to a log-only sender when SMTP_HOST
 	// is empty, so a deployment without mail credentials still runs.
