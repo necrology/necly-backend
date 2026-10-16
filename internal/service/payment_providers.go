@@ -308,10 +308,14 @@ func (x *XenditProvider) VerifyWebhook(headers map[string]string, body []byte) (
 		Event   string `json:"event"`
 		Created string `json:"created"`
 		Data    struct {
+			// payment.* events describe a payment and reference the session …
 			PaymentSessionID string `json:"payment_session_id"`
-			ReferenceID      string `json:"reference_id"`
-			Status           string `json:"status"`
-			Updated          string `json:"updated"`
+			// … while payment_session.* events carry the session object itself, so
+			// its id arrives as data.id.
+			ID          string `json:"id"`
+			ReferenceID string `json:"reference_id"`
+			Status      string `json:"status"`
+			Updated     string `json:"updated"`
 		} `json:"data"`
 		// Legacy Invoice fields remain accepted while old pending invoices can
 		// still deliver callbacks during the migration window.
@@ -326,10 +330,18 @@ func (x *XenditProvider) VerifyWebhook(headers map[string]string, body []byte) (
 	}
 
 	paymentID := notification.Data.PaymentSessionID
+	if paymentID == "" {
+		paymentID = notification.Data.ID
+	}
 	orderID := notification.Data.ReferenceID
 	status := notification.Data.Status
 	paidAtValue := notification.Data.Updated
-	if paymentID == "" {
+	// The legacy invoice shape puts its identifiers at the top level. Take that
+	// branch only when they are really there: gating it on paymentID alone wiped
+	// the reference_id and status that had parsed correctly, so every
+	// payment_session.* callback — including completed and expired — was rejected
+	// with a 400, and a lapsed session never released its reserved stock.
+	if notification.ID != "" || notification.ExternalID != "" {
 		paymentID = notification.ID
 		orderID = notification.ExternalID
 		status = notification.Status
