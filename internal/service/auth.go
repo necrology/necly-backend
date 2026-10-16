@@ -575,6 +575,12 @@ func (s *AuthService) ExchangeGoogleCode(ctx context.Context, code string, cfg *
 	if userInfo.Sub == "" || userInfo.Email == "" {
 		return nil, ErrUnauthorized
 	}
+	// An address Google has not confirmed must not be trusted. UpsertGoogleUser
+	// links to an existing account by email, so accepting an unverified one would
+	// hand that account to whoever controls the address.
+	if !userInfo.EmailVerified {
+		return nil, ErrUnauthorized
+	}
 
 	// Upsert user
 	user, err := s.repo.UpsertGoogleUser(ctx, userInfo.Email, userInfo.Name, userInfo.Sub, s.now().UTC())
