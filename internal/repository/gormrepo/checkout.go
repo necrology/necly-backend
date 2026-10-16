@@ -51,11 +51,14 @@ func (s *Store) ReserveCheckout(ctx context.Context, cmd service.CheckoutCommand
 		for i, item := range cmd.Items {
 			priceIDs[i] = item.ProductPriceID
 		}
+		// The slot table was aliased `is`, which is a reserved word in Postgres:
+		// the query never parsed, so every checkout failed with SQLSTATE 42601
+		// before any order could be reserved.
 		if err := tx.Table("product_prices pp").
-			Select("pp.*, p.name as product_name, pd.name as duration_name, count(is.id) as slot_count").
+			Select("pp.*, p.name as product_name, pd.name as duration_name, count(sl.id) as slot_count").
 			Joins("JOIN products p ON p.id = pp.product_id AND p.active = true").
 			Joins("JOIN product_durations pd ON pd.id = pp.duration_id").
-			Joins("LEFT JOIN inventory_slots is ON is.product_price_id = pp.id AND is.status = 'available'").
+			Joins("LEFT JOIN inventory_slots sl ON sl.product_price_id = pp.id AND sl.status = 'available'").
 			Where("pp.id IN ?", priceIDs).
 			Where("pp.active = ?", true).
 			Group("pp.id, p.name, pd.name").
