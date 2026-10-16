@@ -21,8 +21,10 @@ type CheckoutItemInput struct {
 }
 
 type CheckoutInput struct {
-	UserID         string              `json:"-"`
-	IdempotencyKey string              `json:"-"`
+	UserID string `json:"-"`
+	// Normally supplied as an Idempotency-Key header. The JSON tag stays so a
+	// client that sends it in the body still works.
+	IdempotencyKey string              `json:"idempotency_key"`
 	VoucherCode    string              `json:"voucher_code"`
 	Items          []CheckoutItemInput `json:"items"`
 }

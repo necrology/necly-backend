@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -275,4 +276,36 @@ func (m *dummyAuthRepo) RevokeRefreshTokenByID(ctx context.Context, userID, toke
 }
 func (m *dummyAuthRepo) RevokeUserRefreshTokens(ctx context.Context, userID, exceptHash string, now time.Time) error {
 	return m.Called(ctx, userID, exceptHash, now).Error(0)
+}
+
+// The storefront sends the idempotency key as an Idempotency-Key header, and no
+// code ever read it into the service input. The field stayed empty, so the
+// service's first validation rejected every checkout with a 400 — checkout had
+// never worked, since the first commit.
+func TestCheckoutReadsTheIdempotencyKeyFromTheHeader(t *testing.T) {
+	app, tokens, _ := setupTestApp(t)
+	token, err := tokens.IssueAccess("user-1", string(domain.RoleCustomer))
+	assert.NoError(t, err)
+	body := `{"items":[{"product_price_id":"price-1","quantity":1,"device_count":1}]}`
+
+	post := func(headers map[string]string) int {
+		req := httptest.NewRequest("POST", "/api/v1/checkout", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		for name, value := range headers {
+			req.Header.Set(name, value)
+		}
+		resp, err := app.Test(req)
+		assert.NoError(t, err)
+		return resp.StatusCode
+	}
+
+	// Without a key the request is refused on the input validation.
+	assert.Equal(t, fiber.StatusBadRequest, post(nil))
+
+	// With the header it must get past that validation. The checkout service is
+	// nil in this harness, so anything past the gate is a 5xx — what matters is
+	// that it is no longer rejected as invalid input.
+	assert.NotEqual(t, fiber.StatusBadRequest, post(map[string]string{"Idempotency-Key": "idem-uji-1"}),
+		"the Idempotency-Key header must satisfy the input validation")
 }

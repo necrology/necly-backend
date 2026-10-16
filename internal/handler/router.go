@@ -867,6 +867,13 @@ func (r *Router) checkout(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
 	}
 	input.UserID = userID
+	// The storefront sends the idempotency key as an Idempotency-Key header, and
+	// nothing ever read it into the service input. The field therefore stayed
+	// empty and the service's very first validation rejected every checkout with
+	// a 400 — before a single database query, which is why it failed in ~100µs.
+	if header := strings.TrimSpace(c.Get("Idempotency-Key")); header != "" {
+		input.IdempotencyKey = header
+	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), 10*time.Second)
 	defer cancel()
