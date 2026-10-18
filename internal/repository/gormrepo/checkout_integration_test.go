@@ -1,9 +1,12 @@
 package gormrepo
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -26,6 +29,7 @@ type checkoutFixture struct {
 	product   string
 	duration  string
 	price     string
+	priceB    string
 	voucherID string
 }
 
@@ -53,7 +57,7 @@ func newCheckoutFixture(t *testing.T) *checkoutFixture {
 		db: db, store: NewStore(db),
 		userA: uuid.NewString(), userB: uuid.NewString(),
 		category: uuid.NewString(), product: uuid.NewString(),
-		duration: uuid.NewString(), price: uuid.NewString(), voucherID: uuid.NewString(),
+		duration: uuid.NewString(), price: uuid.NewString(), priceB: uuid.NewString(), voucherID: uuid.NewString(),
 	}
 	users := []domain.User{
 		{ID: fixture.userA, Email: "fixture.customer@example.test", Name: "Fixture Customer", PasswordHash: "x", Role: domain.RoleCustomer, Active: true, CreatedAt: now, UpdatedAt: now},
@@ -76,6 +80,9 @@ func newCheckoutFixture(t *testing.T) *checkoutFixture {
 	if err := db.Create(&domain.ProductPrice{ID: fixture.price, ProductID: fixture.product, DurationID: fixture.duration, Amount: 186000, Currency: "IDR", Active: true, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
 		t.Fatalf("seed price: %v", err)
 	}
+	if err := db.Create(&domain.ProductPrice{ID: fixture.priceB, ProductID: fixture.product, DurationID: fixture.duration, Amount: 99000, Currency: "IDR", Active: true, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatalf("seed second price: %v", err)
+	}
 	account := domain.InventoryAccount{ID: uuid.NewString(), ProductID: fixture.product, EncryptedCredentials: []byte("fixture"), Status: "active", CreatedAt: now, UpdatedAt: now}
 	if err := db.Create(&account).Error; err != nil {
 		t.Fatalf("seed inventory account: %v", err)
@@ -85,6 +92,9 @@ func newCheckoutFixture(t *testing.T) *checkoutFixture {
 		if err := db.Create(&slot).Error; err != nil {
 			t.Fatalf("seed slot: %v", err)
 		}
+	}
+	if err := db.Create(&domain.InventorySlot{ID: uuid.NewString(), InventoryAccountID: account.ID, ProductPriceID: fixture.priceB, Status: "available", CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatalf("seed second slot: %v", err)
 	}
 	voucher := domain.Voucher{
 		ID: fixture.voucherID, Code: "WELCOME10", Type: domain.VoucherPercentage, Value: 10,
@@ -203,7 +213,7 @@ func TestInvalidVoucherReturnsNotFoundWithoutMutation(t *testing.T) {
 	if !errors.Is(err, service.ErrNotFound) {
 		t.Fatalf("error = %v, want ErrNotFound", err)
 	}
-	assertCheckoutMutationCounts(t, fixture.db, 0, 0, 2)
+	assertCheckoutMutationCounts(t, fixture.db, 0, 0, 3)
 }
 
 func TestExpiredVoucherReturnsNotFoundWithoutMutation(t *testing.T) {
@@ -216,7 +226,7 @@ func TestExpiredVoucherReturnsNotFoundWithoutMutation(t *testing.T) {
 	if !errors.Is(err, service.ErrNotFound) {
 		t.Fatalf("error = %v, want ErrNotFound", err)
 	}
-	assertCheckoutMutationCounts(t, fixture.db, 0, 0, 2)
+	assertCheckoutMutationCounts(t, fixture.db, 0, 0, 3)
 }
 
 func assertCheckoutMutationCounts(t *testing.T, db *gorm.DB, orders, payments, availableSlots int64) {
@@ -372,7 +382,7 @@ func TestOutOfStockFailsAtomically(t *testing.T) {
 	if provider.calls.Load() != 0 {
 		t.Fatalf("provider calls = %d, want 0", provider.calls.Load())
 	}
-	assertCheckoutMutationCounts(t, fixture.db, 0, 0, 2)
+	assertCheckoutMutationCounts(t, fixture.db, 0, 0, 3)
 	var attempts int64
 	fixture.db.Model(&domain.CheckoutAttempt{}).Count(&attempts)
 	if attempts != 0 {
@@ -395,7 +405,7 @@ func TestExpectedSubtotalMismatchReturnsReviewableConflict(t *testing.T) {
 	if priceChanged.CurrentSubtotal != 186000 || priceChanged.Currency != "IDR" {
 		t.Fatalf("price conflict = %#v", priceChanged)
 	}
-	assertCheckoutMutationCounts(t, fixture.db, 0, 0, 2)
+	assertCheckoutMutationCounts(t, fixture.db, 0, 0, 3)
 	if provider.calls.Load() != 0 {
 		t.Fatalf("provider calls = %d, want 0", provider.calls.Load())
 	}
@@ -510,4 +520,101 @@ func countReservedSlots(t *testing.T, db *gorm.DB) int64 {
 		t.Fatal(err)
 	}
 	return count
+}
+
+func TestReplayBodyIsByteIdenticalToFirstResponse(t *testing.T) {
+	fixture := newCheckoutFixture(t)
+	provider := &stubProvider{}
+	svc := fixture.service(provider)
+	first, err := svc.Checkout(context.Background(), fixture.input(fixture.userA, "fixture-body-0001", "WELCOME10"))
+	if err != nil {
+		t.Fatalf("first checkout: %v", err)
+	}
+	second, err := svc.Checkout(context.Background(), fixture.input(fixture.userA, "fixture-body-0001", "WELCOME10"))
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	firstBody, err := json.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondBody, err := json.Marshal(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(firstBody, secondBody) {
+		t.Fatalf("replay body differs:\nfirst:  %s\nsecond: %s", firstBody, secondBody)
+	}
+	if strings.Contains(string(firstBody), `"payments"`) {
+		t.Fatalf("order.payments leaked into the checkout body: %s", firstBody)
+	}
+}
+
+func TestCheckoutItemsHaveDeterministicOrder(t *testing.T) {
+	fixture := newCheckoutFixture(t)
+	provider := &stubProvider{}
+	svc := fixture.service(provider)
+	input := fixture.input(fixture.userA, "fixture-multi-item", "")
+	input.Items = []service.CheckoutItemInput{
+		{ProductPriceID: fixture.priceB, Quantity: 1},
+		{ProductPriceID: fixture.price, Quantity: 1},
+	}
+	result, err := svc.Checkout(context.Background(), input)
+	if err != nil {
+		t.Fatalf("checkout: %v", err)
+	}
+	if len(result.Order.Items) != 2 {
+		t.Fatalf("items = %d, want 2", len(result.Order.Items))
+	}
+	if result.Order.Items[0].ProductPriceID > result.Order.Items[1].ProductPriceID {
+		t.Fatalf("items not ordered by price id: %s, %s", result.Order.Items[0].ProductPriceID, result.Order.Items[1].ProductPriceID)
+	}
+}
+
+func TestCancelAndReleaseWaitsForConcurrentPaidUpdate(t *testing.T) {
+	fixture := newCheckoutFixture(t)
+	result, err := fixture.checkout(t, fixture.userA, "fixture-paid-race", "")
+	if err != nil {
+		t.Fatalf("checkout: %v", err)
+	}
+
+	admin := fixture.db.Begin()
+	if admin.Error != nil {
+		t.Fatal(admin.Error)
+	}
+	defer admin.Rollback()
+	if err := admin.Model(&domain.Order{}).Where("id = ?", result.Order.ID).Update("status", domain.OrderPaid).Error; err != nil {
+		t.Fatalf("admin update: %v", err)
+	}
+
+	cancelled := make(chan error, 1)
+	go func() {
+		cancelled <- fixture.store.CancelAndRelease(context.Background(), result.Order.ID, time.Now().UTC())
+	}()
+
+	// Give CancelAndRelease time to block on the row lock held by the admin
+	// transaction, then let the paid update commit.
+	time.Sleep(150 * time.Millisecond)
+	if err := admin.Commit().Error; err != nil {
+		t.Fatalf("admin commit: %v", err)
+	}
+	select {
+	case err := <-cancelled:
+		if err != nil {
+			t.Fatalf("cancel: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("CancelAndRelease did not finish")
+	}
+
+	var order domain.Order
+	if err := fixture.db.Where("id = ?", result.Order.ID).First(&order).Error; err != nil {
+		t.Fatal(err)
+	}
+	if order.Status != domain.OrderPaid {
+		t.Fatalf("concurrent paid update was overwritten: status=%s", order.Status)
+	}
+	if reserved := countReservedSlots(t, fixture.db); reserved != 1 {
+		t.Fatalf("reserved slots = %d, want 1 (paid stock must stay allocated)", reserved)
+	}
 }

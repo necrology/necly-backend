@@ -237,7 +237,10 @@ func (s *CheckoutService) Checkout(ctx context.Context, input CheckoutInput) (*C
 		return nil, ErrInvalidInput
 	}
 
-	now := s.now().UTC()
+	// PostgreSQL stores timestamptz at microsecond precision. Truncating before
+	// the first response makes the in-memory 201 body byte-identical to the
+	// 200 body that is later read back from the database.
+	now := s.now().UTC().Truncate(time.Microsecond)
 	fingerprint := CanonicalCheckoutFingerprint(input.Items, input.VoucherCode, "")
 	reservation, err := s.repo.BeginCheckout(ctx, CheckoutCommand{
 		UserID: input.UserID, IdempotencyKey: input.IdempotencyKey,
@@ -259,10 +262,10 @@ func (s *CheckoutService) Checkout(ctx context.Context, input CheckoutInput) (*C
 	case CheckoutInProgress:
 		return s.waitForProgress(ctx, input.UserID, input.IdempotencyKey)
 	}
-	return s.completeReservation(ctx, reservation, now)
+	return s.completeReservation(ctx, reservation, now, false)
 }
 
-func (s *CheckoutService) completeReservation(ctx context.Context, reservation *CheckoutReservation, now time.Time) (*CheckoutResult, error) {
+func (s *CheckoutService) completeReservation(ctx context.Context, reservation *CheckoutReservation, now time.Time, alreadyClaimed bool) (*CheckoutResult, error) {
 	order := reservation.Order
 	attempt := reservation.Attempt
 	if order == nil || attempt == nil {
@@ -281,9 +284,13 @@ func (s *CheckoutService) completeReservation(ctx context.Context, reservation *
 		return resultFrom(order, *saved, reservation.State == CheckoutReplay), nil
 	}
 
-	claimed, err := s.repo.ClaimProviderCall(ctx, attempt.ID, now)
-	if err != nil {
-		return nil, err
+	claimed := alreadyClaimed
+	if !claimed {
+		var err error
+		claimed, err = s.repo.ClaimProviderCall(ctx, attempt.ID, now)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if !claimed {
 		return s.waitForProgress(ctx, order.UserID, attempt.IdempotencyKey)
@@ -341,21 +348,23 @@ func (s *CheckoutService) waitForProgress(ctx context.Context, userID, idempoten
 				}
 				if progress.Attempt.ProviderPaymentID != nil && progress.Order != nil &&
 					strings.TrimSpace(*progress.Attempt.ProviderPaymentID) != "" {
-					now := s.now().UTC()
+					now := s.now().UTC().Truncate(time.Microsecond)
 					payment := paymentFromAttempt(progress.Order, progress.Attempt, now)
 					saved, completeErr := s.repo.CompleteCheckout(ctx, progress.Attempt.ID, payment)
 					if completeErr == nil {
 						return resultFrom(progress.Order, *saved, true), nil
 					}
 				}
-				now := s.now().UTC()
+				now := s.now().UTC().Truncate(time.Microsecond)
 				recoverable := progress.Attempt.State == "reserved" || progress.Attempt.State == "creating" || progress.Attempt.State == "started"
 				if progress.Order != nil && recoverable && now.Sub(progress.Attempt.UpdatedAt) >= attemptRecoveryLease {
 					claimed, claimErr := s.repo.ClaimProviderCall(ctx, progress.Attempt.ID, now)
 					if claimErr == nil && claimed {
+						// The lease was just acquired; completeReservation must
+						// not try to claim the same attempt a second time.
 						return s.completeReservation(ctx, &CheckoutReservation{
 							State: CheckoutInProgress, Order: progress.Order, Attempt: progress.Attempt,
-						}, now)
+						}, now, true)
 					}
 				}
 			}

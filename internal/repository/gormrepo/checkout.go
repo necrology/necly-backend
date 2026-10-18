@@ -23,7 +23,7 @@ func (s *Store) BeginCheckout(ctx context.Context, cmd service.CheckoutCommand) 
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing domain.Order
-		err := tx.Preload("Items").Preload("Payments").
+		err := tx.Preload("Items", orderItemsByProductPrice).
 			Where("user_id = ? AND idempotency_key = ?", cmd.UserID, cmd.IdempotencyKey).
 			First(&existing).Error
 		if err == nil {
@@ -36,9 +36,16 @@ func (s *Store) BeginCheckout(ctx context.Context, cmd service.CheckoutCommand) 
 			if attemptErr != nil {
 				return attemptErr
 			}
+			payment, paymentErr := latestPaymentForOrder(tx, existing.ID)
+			if paymentErr != nil {
+				return paymentErr
+			}
+			// Payments are deliberately not preloaded into the serialized
+			// order: the 201 and 200 bodies must be identical and the C-01
+			// fixture does not include order.payments.
 			result = &service.CheckoutReservation{
 				State: service.CheckoutReplay, Order: &existing,
-				Payment: latestPayment(existing.Payments), Attempt: attempt,
+				Payment: payment, Attempt: attempt,
 			}
 			return nil
 		}
@@ -262,7 +269,7 @@ func (s *Store) BeginCheckout(ctx context.Context, cmd service.CheckoutCommand) 
 		// The checkout fixture requires order.items in the response. GORM does
 		// not fill the association from the per-row inserts above.
 		var loaded domain.Order
-		if err := tx.Preload("Items").Where("id = ?", order.ID).First(&loaded).Error; err != nil {
+		if err := tx.Preload("Items", orderItemsByProductPrice).Where("id = ?", order.ID).First(&loaded).Error; err != nil {
 			return fmt.Errorf("reload order: %w", err)
 		}
 		result = &service.CheckoutReservation{State: service.CheckoutReserved, Order: &loaded, Attempt: attempt}
@@ -286,17 +293,24 @@ func findByKey(tx *gorm.DB, userID, idempotencyKey string) (*domain.CheckoutAtte
 	return &attempt, nil
 }
 
-func latestPayment(payments []domain.Payment) *domain.Payment {
-	if len(payments) == 0 {
-		return nil
+// orderItemsByProductPrice gives the checkout response a deterministic item
+// order. order_items has no created_at column, so "creation order" is not
+// representable; sorting by the canonical price UUID is stable across replays
+// and matches the fingerprint ordering.
+func orderItemsByProductPrice(db *gorm.DB) *gorm.DB {
+	return db.Order("order_items.product_price_id ASC")
+}
+
+func latestPaymentForOrder(tx *gorm.DB, orderID string) (*domain.Payment, error) {
+	var payment domain.Payment
+	err := tx.Where("order_id = ?", orderID).Order("created_at DESC, id DESC").First(&payment).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
 	}
-	latest := payments[0]
-	for _, payment := range payments[1:] {
-		if payment.CreatedAt.After(latest.CreatedAt) {
-			latest = payment
-		}
+	if err != nil {
+		return nil, fmt.Errorf("load payment: %w", err)
 	}
-	return &latest
+	return &payment, nil
 }
 
 func (s *Store) ClaimProviderCall(ctx context.Context, attemptID string, now time.Time) (bool, error) {
@@ -395,7 +409,7 @@ func (s *Store) GetCheckoutProgress(ctx context.Context, userID, idempotencyKey 
 		return nil, err
 	}
 	var order domain.Order
-	err = s.db.WithContext(ctx).Preload("Items").Preload("Payments").
+	err = s.db.WithContext(ctx).Preload("Items", orderItemsByProductPrice).
 		Where("user_id = ? AND idempotency_key = ?", userID, idempotencyKey).
 		First(&order).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -404,19 +418,25 @@ func (s *Store) GetCheckoutProgress(ctx context.Context, userID, idempotencyKey 
 	if err != nil {
 		return nil, fmt.Errorf("load checkout order: %w", err)
 	}
-	return &service.CheckoutProgress{Order: &order, Payment: latestPayment(order.Payments), Attempt: attempt}, nil
+	payment, err := latestPaymentForOrder(s.db.WithContext(ctx), order.ID)
+	if err != nil {
+		return nil, err
+	}
+	return &service.CheckoutProgress{Order: &order, Payment: payment, Attempt: attempt}, nil
 }
 
 // CancelAndRelease releases inventory exactly once and only while the order is
-// still waiting for payment. A paid, fulfilled or already-terminal order is
-// never cancelled by a retry or provider timeout.
+// still waiting for payment. The order row is locked before the status/payment
+// checks, and the cancellation is an atomic conditional update, so an admin or
+// webhook that commits `paid` concurrently can never be overwritten.
 func (s *Store) CancelAndRelease(ctx context.Context, orderID string, now time.Time) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var order domain.Order
-		if err := tx.Where("id = ?", orderID).First(&order).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return nil
-			}
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", orderID).First(&order).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
 			return fmt.Errorf("find order: %w", err)
 		}
 		if order.Status != domain.OrderPending {
@@ -431,6 +451,17 @@ func (s *Store) CancelAndRelease(ctx context.Context, orderID string, now time.T
 			// provider timeout failed.
 			return nil
 		}
+		cancelled := tx.Model(&domain.Order{}).
+			Where("id = ? AND status = ?", orderID, domain.OrderPending).
+			Updates(map[string]any{"status": domain.OrderCancelled, "updated_at": now})
+		if cancelled.Error != nil {
+			return fmt.Errorf("cancel order: %w", cancelled.Error)
+		}
+		if cancelled.RowsAffected != 1 {
+			// A concurrent transaction changed the status after our locked
+			// read. Do not release stock for an order we did not cancel.
+			return nil
+		}
 		if err := tx.Model(&domain.InventorySlot{}).
 			Where("order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)", orderID).
 			Updates(map[string]any{
@@ -441,11 +472,6 @@ func (s *Store) CancelAndRelease(ctx context.Context, orderID string, now time.T
 				"updated_at":     now,
 			}).Error; err != nil {
 			return fmt.Errorf("release slots: %w", err)
-		}
-		order.Status = domain.OrderCancelled
-		order.UpdatedAt = now
-		if err := tx.Save(&order).Error; err != nil {
-			return fmt.Errorf("cancel order: %w", err)
 		}
 		return nil
 	})

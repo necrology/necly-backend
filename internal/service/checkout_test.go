@@ -165,3 +165,73 @@ func TestCheckoutRejectsInvalidInputBeforeRepository(t *testing.T) {
 		t.Fatal("repository was called for invalid input")
 	}
 }
+
+type leaseRecoveryRepository struct {
+	attempt *domain.CheckoutAttempt
+	order   *domain.Order
+	payment *domain.Payment
+	claims  int
+}
+
+func (r *leaseRecoveryRepository) BeginCheckout(_ context.Context, _ CheckoutCommand) (*CheckoutReservation, error) {
+	return &CheckoutReservation{State: CheckoutInProgress, Attempt: r.attempt}, nil
+}
+
+func (r *leaseRecoveryRepository) ClaimProviderCall(_ context.Context, _ string, _ time.Time) (bool, error) {
+	r.claims++
+	return true, nil
+}
+
+func (r *leaseRecoveryRepository) SaveProviderResult(_ context.Context, _, _, _, _ string, _ time.Time) error {
+	return nil
+}
+
+func (r *leaseRecoveryRepository) CompleteCheckout(_ context.Context, _ string, payment *domain.Payment) (*domain.Payment, error) {
+	r.payment = payment
+	return payment, nil
+}
+
+func (r *leaseRecoveryRepository) FailCheckout(_ context.Context, _, _ string, _ time.Time) error {
+	return nil
+}
+
+func (r *leaseRecoveryRepository) GetCheckoutProgress(_ context.Context, _, _ string) (*CheckoutProgress, error) {
+	return &CheckoutProgress{Order: r.order, Payment: r.payment, Attempt: r.attempt}, nil
+}
+
+func (r *leaseRecoveryRepository) CancelAndRelease(_ context.Context, _ string, _ time.Time) error {
+	return nil
+}
+
+func TestWaiterRecoversStaleReservationWithoutDoubleClaim(t *testing.T) {
+	now := time.Now().UTC()
+	order := &domain.Order{
+		ID: "order-lease", Number: "ORD-lease", UserID: "user-lease", Status: domain.OrderPending,
+		Total: 10000, Currency: "IDR", PaymentDueAt: now.Add(time.Minute),
+	}
+	attempt := &domain.CheckoutAttempt{
+		ID: "attempt-lease", UserID: order.UserID, IdempotencyKey: "key-lease",
+		RequestFingerprint: "fixture", State: "reserved", OrderID: &order.ID,
+		UpdatedAt: now.Add(-2 * time.Minute),
+	}
+	repo := &leaseRecoveryRepository{attempt: attempt, order: order}
+	provider := &fakeCheckoutProvider{}
+	checkout := NewCheckoutService(repo, provider, 15*time.Minute)
+
+	result, err := checkout.Checkout(context.Background(), CheckoutInput{
+		UserID: order.UserID, IdempotencyKey: attempt.IdempotencyKey,
+		Items: []CheckoutItemInput{{ProductPriceID: "price-1", Quantity: 1}},
+	})
+	if err != nil {
+		t.Fatalf("checkout: %v", err)
+	}
+	if result == nil || result.Payment.ID == "" {
+		t.Fatalf("recovery returned no payment: %#v", result)
+	}
+	if repo.claims != 1 {
+		t.Fatalf("claims = %d, want 1 (the waiter's claim must be reused)", repo.claims)
+	}
+	if provider.calls.Load() != 1 {
+		t.Fatalf("provider calls = %d, want 1", provider.calls.Load())
+	}
+}
