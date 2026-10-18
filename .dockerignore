@@ -27,3 +27,10 @@ Thumbs.db
 
 # Test coverage
 coverage.out
+
+# W1 validation-only runtime artifacts (never bake secrets or evidence)
+deploy/validation/.runtime.env
+deploy/validation/.runtime.env.example
+deploy/validation/edge/certs/
+deploy/validation/backups/
+deploy/validation/evidence/
