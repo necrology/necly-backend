@@ -10,11 +10,11 @@ Compose project.
 | Boundary | Validation value | Production value (unchanged) |
 |---|---|---|
 | Compose project | `necly-validation` | `necly` |
-| PostgreSQL | `postgres:16-alpine`, volume `necly-validation_postgres_data`, `127.0.0.1:55432` | `necly_necly_postgres_data`, internal only |
-| Redis | `redis:7-alpine`, volume `necly-validation_redis_data`, `127.0.0.1:56379`, password required | `necly_necly_redis_data` |
-| API | local image from the pinned source SHA, `127.0.0.1:58080` | `necly-api:latest` |
-| Frontend | local image from the pinned source SHA, `127.0.0.1:53000` | `necly-frontend:latest` |
-| Edge | nginx with a disposable self-signed cert, `127.0.0.1:58088` -> `127.0.0.1:58443` | Cloudflare tunnel |
+| PostgreSQL | `postgres:16-alpine`, volume `necly-validation_postgres_data`, internal only | `necly_necly_postgres_data`, internal only |
+| Redis | `redis:7-alpine`, volume `necly-validation_redis_data`, password required, internal only | `necly_necly_redis_data` |
+| API | local image from the pinned source SHA, internal only | `necly-api:latest` |
+| Frontend | local image from the pinned source SHA, internal only | `necly-frontend:latest` |
+| Edge | nginx with a disposable self-signed cert, the only published ports: `127.0.0.1:58088` -> `127.0.0.1:58443` | Cloudflare tunnel |
 | Runtime network | `necly-validation`, `internal: true` | `necly_default` |
 | Payment | `PAYMENT_PROVIDER=mock`, `PAYMENT_SANDBOX=true` | unverified (Q2); never changed here |
 | Secrets | generated into `.runtime.env`, mode `0600` | `.env.production`, never read here |
@@ -42,6 +42,8 @@ npm downloads use the Docker builder network, not the runtime network.
 # Stop and delete only the disposable validation project.
 ./scripts/down.sh
 ```
+
+The C14 production procedure is in [RUNBOOK.md](RUNBOOK.md).
 
 Evidence logs are written to `deploy/validation/evidence/` and are excluded
 from git. Each log records the source SHA, counts, checks and measured times.
