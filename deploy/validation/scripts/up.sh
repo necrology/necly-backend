@@ -46,5 +46,10 @@ docker compose --env-file .runtime.env -f docker-compose.yml --profile tools run
 echo "starting API, frontend and isolated TLS edge"
 docker compose --env-file .runtime.env -f docker-compose.yml up -d --no-build --wait api frontend edge
 
+# edge/nginx.conf is a bind mount, so an already-running edge would keep serving
+# the previous config after a file change. Validate and reload it explicitly.
+docker compose --env-file .runtime.env -f docker-compose.yml exec -T edge nginx -t
+docker compose --env-file .runtime.env -f docker-compose.yml exec -T edge nginx -s reload
+
 echo "running smoke checks"
 ./scripts/smoke.sh

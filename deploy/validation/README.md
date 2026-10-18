@@ -12,9 +12,10 @@ Compose project.
 | Compose project | `necly-validation` | `necly` |
 | PostgreSQL | `postgres:16-alpine`, volume `necly-validation_postgres_data`, internal only | `necly_necly_postgres_data`, internal only |
 | Redis | `redis:7-alpine`, volume `necly-validation_redis_data`, password required, internal only | `necly_necly_redis_data` |
-| API | local image from the pinned source SHA, internal only | `necly-api:latest` |
-| Frontend | local image from the pinned source SHA, internal only | `necly-frontend:latest` |
-| Edge | nginx with a disposable self-signed cert, the only published ports: `127.0.0.1:58088` -> `127.0.0.1:58443` | Cloudflare tunnel |
+| API | local image from the pinned source SHA; internal only, no published port | `necly-api:latest` |
+| Frontend | local image from the pinned source SHA; no published port, served through the edge | `necly-frontend:latest` |
+| Edge | nginx with a disposable self-signed cert, published ports `127.0.0.1:58088` (HTTP) and `127.0.0.1:58443` (HTTPS) | Cloudflare tunnel |
+| Browser API path | `https://validation.localhost:58443/api/v1` -> edge nginx -> `api:8080`, same origin as the storefront | Cloudflare tunnel -> production origin |
 | Runtime network | `necly-validation`, `internal: true` | `necly_default` |
 | Payment | `PAYMENT_PROVIDER=mock`, `PAYMENT_SANDBOX=true` | unverified (Q2); never changed here |
 | Secrets | generated into `.runtime.env`, mode `0600` | `.env.production`, never read here |
@@ -22,7 +23,16 @@ Compose project.
 
 The runtime network is `internal: true`. The API cannot reach a real payment
 provider or any other external host from this stack. Build-time base image and
-npm downloads use the Docker builder network, not the runtime network.
+npm downloads use the Docker builder network, not the runtime network. Publishing
+the API on `127.0.0.1:58080` does not add egress: the smoke script checks that an
+external request from the API container still fails.
+
+The browser and host smoke use `https://validation.localhost:58443/api/v1`
+(edge proxied, same origin as the storefront) so `SameSite=Lax` auth cookies stay
+first-party. Direct API checks use `https://api.validation.localhost:58443`. A
+loopback port publish is deliberately absent: Docker does not route published
+ports for `internal: true` networks, so the edge is the single ingress. Server
+side Route Handlers use the runtime `INTERNAL_API_URL=http://api:8080/api/v1`.
 
 ## Commands
 
@@ -32,6 +42,15 @@ npm downloads use the Docker builder network, not the runtime network.
 
 # Restore rehearsal: fresh pg_dump -> separate PostgreSQL volume -> counts + API smoke.
 ./scripts/backup-restore.sh
+
+# Optional browser-level proof that the page itself calls the API through the
+# same-origin /api/v1 path. Needs Playwright + Chromium from the frontend
+# checkout; the disposable certificate is ignored only for this origin.
+FRONTEND_CONTEXT=../../../necly-frontend node ./scripts/browser-smoke.mjs
+# Without host browser libraries, use the Playwright image on the host network:
+# docker run --rm --network host -e FRONTEND_CONTEXT=/frontend \
+#   -v "$PWD/../../..:/repo:ro" -v "$PWD/../../../necly-frontend:/frontend:ro" \
+#   mcr.microsoft.com/playwright:v1.51.1-noble node /repo/deploy/validation/scripts/browser-smoke.mjs
 
 # Prior-image rollback rehearsal with measured /ready time.
 ./scripts/rollback.sh

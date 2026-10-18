@@ -4,7 +4,10 @@
 #   * project name  : necly-validation
 #   * network       : internal-only (no provider or internet egress at runtime)
 #   * volumes       : necly-validation_* only
-#   * host ports    : 55432, 56379, 58080, 53000, 58088, 58443, 55433, 58081
+#   * host ports    : 58088 (edge HTTP), 58443 (edge HTTPS). PostgreSQL, Redis,
+#                     the API and the frontend are never published; all host and
+#                     browser traffic enters through the edge.
+#   * browser API   : https://validation.localhost:58443/api/v1 -> api:8080
 #   * secrets       : generated into deploy/validation/.runtime.env (gitignored)
 #
 # It must never be started with a production env file, production volume or
@@ -37,8 +40,8 @@ x-api-common: &api-common
   environment:
     APP_ENV: development
     APP_PORT: "8080"
-    APP_BASE_URL: http://api.validation.localhost:58080
-    FRONTEND_BASE_URL: http://validation.localhost:53000
+    APP_BASE_URL: https://api.validation.localhost:58443
+    FRONTEND_BASE_URL: https://validation.localhost:58443
     DB_HOST: ${DB_HOST:-postgres}
     DB_PORT: "5432"
     DB_USER: ${POSTGRES_USER}
@@ -172,6 +175,10 @@ services:
 
   api:
     <<: *api-common
+    # No published port. A loopback publish is unreachable while the runtime
+    # network is internal, so every host and browser request enters through the
+    # edge (storefront origin /api/ for the browser, api.validation.localhost for
+    # direct API checks).
     depends_on:
       postgres:
         condition: service_healthy
@@ -190,8 +197,8 @@ services:
     environment:
       APP_ENV: development
       APP_PORT: "8080"
-      APP_BASE_URL: http://api.validation.localhost:58081
-      FRONTEND_BASE_URL: http://validation.localhost:53000
+      APP_BASE_URL: http://127.0.0.1:58081
+      FRONTEND_BASE_URL: https://validation.localhost:58443
       DB_HOST: postgres-restore
       DB_PORT: "5432"
       DB_USER: ${POSTGRES_USER}
@@ -212,7 +219,7 @@ services:
       COOKIE_HTTP_ONLY: "true"
       COOKIE_SAME_SITE: Lax
       COOKIE_PATH: /api/v1/auth
-      CORS_ALLOWED_ORIGINS: http://127.0.0.1:53000,http://localhost:53000
+      CORS_ALLOWED_ORIGINS: https://validation.localhost:58443,http://127.0.0.1:58081
       CORS_ALLOW_CREDENTIALS: "true"
       RATE_LIMIT_RPM: "600"
       RATE_LIMIT_BURST: "100"
@@ -241,8 +248,8 @@ services:
       context: ${FRONTEND_CONTEXT:-../../../necly-frontend}
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: http://127.0.0.1:58080/api/v1
-        NEXT_PUBLIC_SITE_URL: http://127.0.0.1:53000
+        NEXT_PUBLIC_API_URL: https://validation.localhost:58443/api/v1
+        NEXT_PUBLIC_SITE_URL: https://validation.localhost:58443
         NEXT_PUBLIC_DEMO_MODE: "false"
       labels:
         org.opencontainers.image.title: necly-frontend
@@ -251,10 +258,15 @@ services:
         org.opencontainers.image.created: ${BUILD_CREATED:-unknown}
         com.necly.environment: validation
     image: ${FRONTEND_IMAGE:-necly-validation-frontend:local}
+    environment:
+      # Server-side Route Handlers run inside the validation network and must
+      # not call the public edge URL they are served from. The browser bundle
+      # keeps using NEXT_PUBLIC_API_URL (same-origin edge path).
+      INTERNAL_API_URL: http://api:8080/api/v1
     labels:
       org.opencontainers.image.title: necly-frontend
       org.opencontainers.image.source: https://github.com/necrology/necly-frontend
-      org.opencontainers.image.revision: ${SOURCE_SHA:-unknown}
+      org.opencontainers.image.revision: ${FRONTEND_SOURCE_SHA:-unknown}
       org.opencontainers.image.created: ${BUILD_CREATED:-unknown}
       com.necly.environment: validation
     healthcheck:

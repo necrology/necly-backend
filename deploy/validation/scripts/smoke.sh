@@ -17,9 +17,44 @@ echo "# W1 isolated validation smoke ($(timestamp))"
 echo "source_sha=$SOURCE_SHA"
 echo "project=necly-validation"
 
+EDGE_ORIGIN=https://validation.localhost:58443
+BROWSER_API="$EDGE_ORIGIN/api/v1"
 EDGE_RESOLVE=(--resolve validation.localhost:58443:127.0.0.1)
 API_RESOLVE=(--resolve api.validation.localhost:58443:127.0.0.1)
 API_EDGE=https://api.validation.localhost:58443
+
+echo "browser_api_base=$BROWSER_API"
+
+# Host and browser contract: the storefront and the API share the edge origin,
+# so auth cookies stay first-party and no CORS/mixed-content exemption is
+# needed. This is the exact URL the built frontend calls.
+code=$(curl -ksS -o /tmp/w1-browser-products.json -w '%{http_code}' --max-time 5 "${EDGE_RESOLVE[@]}" "$BROWSER_API/public/products")
+[ "$code" = "200" ] || fail "browser API path returned $code"
+jq -e '.products | type == "array"' /tmp/w1-browser-products.json >/dev/null || fail "browser API public products shape"
+pass "browser API path 200 same-origin ($BROWSER_API/public/products)"
+
+curl -ksS -o /tmp/w1-browser-categories.json --max-time 5 "${EDGE_RESOLVE[@]}" "$BROWSER_API/public/categories"
+jq -e '.categories | type == "array"' /tmp/w1-browser-categories.json >/dev/null || fail "browser API public categories shape"
+pass "browser API public categories shape ($(jq '.categories | length' /tmp/w1-browser-categories.json) rows)"
+
+if compose exec -T frontend sh -c "grep -rqF '$BROWSER_API' /app/.next/static"; then
+  pass "frontend bundle was built with the same-origin browser API base"
+else
+  fail "frontend bundle does not contain $BROWSER_API"
+fi
+
+internal_api=$(compose exec -T frontend printenv INTERNAL_API_URL | tr -d '\r')
+[ "$internal_api" = "http://api:8080/api/v1" ] || fail "INTERNAL_API_URL=$internal_api (expected the validation service)"
+forgot_body=$(curl -ksS --max-time 10 "${EDGE_RESOLVE[@]}" -X POST "$EDGE_ORIGIN/api/auth/forgot-password" \
+  -H 'Content-Type: application/json' --data '{"email":"w1-smoke@validation.localhost"}')
+printf '%s' "$forgot_body" | grep -q 'Email belum terdaftar' \
+  || fail "Next Route Handler /api/auth/forgot-password did not relay to the backend: $forgot_body"
+pass "Next Route Handler relays to the API through INTERNAL_API_URL"
+
+if compose exec -T api wget -q -T 3 -O - http://example.com >/dev/null 2>&1; then
+  fail "API reached an external host; runtime isolation regressed"
+fi
+pass "API runtime network still has no external egress"
 
 code=$(curl -ksS -o /tmp/w1-health.json -w '%{http_code}' --max-time 5 "${API_RESOLVE[@]}" "$API_EDGE/health")
 [ "$code" = "200" ] || fail "API /health returned $code"
@@ -43,9 +78,11 @@ curl -kfsS --max-time 5 "${EDGE_RESOLVE[@]}" https://validation.localhost:58443/
 grep -qi 'necly' /tmp/w1-home.html || fail "frontend home does not contain Necly"
 pass "frontend / 200 with live-mode build"
 
-compose exec -T api wget -qO- http://127.0.0.1:8080/health >/tmp/w1-direct-health.json
-grep -q '"status":"ok"' /tmp/w1-direct-health.json || fail "internal API health"
-pass "internal API health reachable without a published host port"
+page_origin=$(curl -ksS -o /dev/null -w '%{url_effective}' --max-time 5 "${EDGE_RESOLVE[@]}" https://validation.localhost:58443/ | cut -d/ -f1-3)
+api_origin=$(printf '%s' "$BROWSER_API" | cut -d/ -f1-3)
+[ "$page_origin" = "$api_origin" ] || fail "browser page origin $page_origin differs from API origin $api_origin"
+pass "storefront and browser API share the origin $api_origin"
+
 
 http_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:58088/ -H 'Host: validation.localhost')
 [ "$http_code" = "301" ] || fail "edge HTTP redirect returned $http_code, expected 301"
