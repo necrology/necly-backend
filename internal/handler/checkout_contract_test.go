@@ -79,16 +79,27 @@ func (checkoutHTTPProvider) VerifyWebhook(_ map[string]string, _ []byte) (*servi
 
 func checkoutTestApp(t *testing.T, repo *checkoutHTTPRepository) (*fiber.App, string) {
 	t.Helper()
+	const (
+		userID    = "0192f0c0-0000-0000-0000-000000000001"
+		sessionID = "checkout-session"
+	)
 	tokens, err := service.NewTokenManager("handler-test-secret-at-least-32-bytes", "test", time.Hour, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// W4 made every protected route check the live session against the auth
+	// repository. Reuse the same dummy repository/helper as router_test.go so
+	// this checkout contract test exercises the real middleware.
+	authRepo := new(dummyAuthRepo)
+	authSvc := service.NewAuthService(authRepo, service.NewPasswordHasher(4), tokens, service.AuthSettings{VerificationTTL: 24 * time.Hour})
+	expectActiveSession(authRepo, userID, sessionID, domain.RoleCustomer)
+
 	checkout := service.NewCheckoutService(repo, checkoutHTTPProvider{}, time.Minute)
-	router := handler.NewRouter(nil, nil, nil, checkout, nil, nil, nil, nil, nil, nil, nil, nil, nil, tokens, nil, nil, nil, nil)
+	router := handler.NewRouter(authSvc, nil, nil, checkout, nil, nil, nil, nil, nil, nil, nil, nil, nil, tokens, nil, nil, nil, nil)
 	app := fiber.New()
 	app.Use(recover.New())
 	router.Register(app)
-	token, err := tokens.IssueAccess("0192f0c0-0000-0000-0000-000000000001", "customer")
+	token, err := tokens.IssueAccess(userID, string(domain.RoleCustomer), sessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
