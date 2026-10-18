@@ -7,8 +7,6 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
-
-	"github.com/necly/services/internal/domain"
 )
 
 type Config struct {
@@ -76,30 +74,4 @@ func Open(cfg Config) (*gorm.DB, error) {
 	sqlDB.SetConnMaxIdleTime(cfg.ConnMaxIdleTime)
 
 	return db, nil
-}
-
-func AutoMigrate(db *gorm.DB) error {
-	return db.AutoMigrate(
-		&domain.User{},
-		&domain.RefreshToken{},
-		&domain.EmailVerificationToken{},
-		&domain.Category{},
-		&domain.Product{},
-		&domain.ProductDuration{},
-		&domain.ProductPrice{},
-		&domain.InventoryAccount{},
-		&domain.InventorySlot{},
-		&domain.Cart{},
-		&domain.CartItem{},
-		&domain.Order{},
-		&domain.OrderItem{},
-		&domain.Payment{},
-		&domain.Voucher{},
-		&domain.VoucherRedemption{},
-		&domain.Notification{},
-		&domain.AuditLog{},
-		&domain.WebhookEvent{},
-		&domain.Testimonial{},
-		&domain.Asset{},
-	)
 }

@@ -14,7 +14,7 @@ cd "$ROOT"
 echo "verifying W0 migration checksums"
 (cd migrations && sha256sum -c ../deploy/validation/migration-checksums.sha256)
 
-FILES="001_initial_schema.sql 003_localize_catalog_copy.sql 004_issue_reports.sql 005_password_reset_tokens.sql 006_product_labels.sql 007_device_count.sql 008_add_users_active.sql"
+FILES="001_initial_schema.sql 003_localize_catalog_copy.sql 004_issue_reports.sql 005_password_reset_tokens.sql 006_product_labels.sql 007_device_count.sql 008_add_users_active.sql 009_order_compatibility.sql"
 
 for pass in 1 2; do
   echo "schema pass $pass"
@@ -33,4 +33,8 @@ PRODUCTS=$(psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM products")
 [ "$CATEGORIES" = "0" ] || { echo "FAIL: production chain inserted categories (002 seed ran)"; exit 1; }
 [ "$PRODUCTS" = "0" ] || { echo "FAIL: production chain inserted products (002 seed ran)"; exit 1; }
 
-echo "PASS: schema applied twice; tables=$TABLES; no development seed rows"
+# Migration 009 is additive and must survive the second pass.
+COLUMNS=$(psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND ((table_name='orders' AND column_name IN ('shipping_address','notes')) OR (table_name='categories' AND column_name='image_url'))")
+[ "$COLUMNS" = "3" ] || { echo "FAIL: expected 3 order/category compatibility columns, got $COLUMNS"; exit 1; }
+
+echo "PASS: schema applied twice; tables=$TABLES; no development seed rows; compatibility columns=$COLUMNS"
