@@ -96,9 +96,21 @@ func (s *Store) ReserveCheckout(ctx context.Context, cmd service.CheckoutCommand
 			}
 			disc, err := service.CalculateVoucherDiscount(*voucher, subtotal, int(used), int(userUsed), cmd.Now)
 			if err != nil {
-				return err
+				// An inactive, expired, exhausted or minimum-not-met voucher is
+				// indistinguishable from an unknown code to the caller, per the
+				// C-01 error contract: 404 not_found with no mutation.
+				return service.ErrNotFound
 			}
 			discount = disc
+		}
+
+		// Persist the resolved voucher UUID, never the human-entered code.
+		// voucher_id is a UUID foreign key; writing the code string here made
+		// every discounted checkout fail (or, worse, stored non-UUID text on a
+		// schema that accepted it).
+		var voucherID *string
+		if voucher != nil {
+			voucherID = &voucher.ID
 		}
 
 		now := cmd.Now
@@ -106,7 +118,7 @@ func (s *Store) ReserveCheckout(ctx context.Context, cmd service.CheckoutCommand
 			ID:             uuid.NewString(),
 			Number:         fmt.Sprintf("ORD-%d-%s", now.UnixMilli(), uuid.NewString()[:8]),
 			UserID:         cmd.UserID,
-			VoucherID:      nullableString(voucherCode),
+			VoucherID:      voucherID,
 			Status:         domain.OrderPending,
 			Subtotal:       subtotal,
 			Discount:       discount,
@@ -224,11 +236,4 @@ func (s *Store) CancelAndRelease(ctx context.Context, orderID string, now time.T
 		}
 		return nil
 	})
-}
-
-func nullableString(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
 }
