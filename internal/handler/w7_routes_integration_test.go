@@ -166,4 +166,16 @@ func TestW7AdminCatalogRoutesExerciseTheRealStore(t *testing.T) {
 	if status != fiber.StatusNotFound {
 		t.Fatalf("missing product delete = %d %s, want 404", status, payload)
 	}
+
+	status, payload = do(http.MethodGet, "/api/v1/admin/products?active=foo", nil)
+	if status != fiber.StatusBadRequest {
+		t.Fatalf("malformed active filter = %d %s, want 400", status, payload)
+	}
+	invalid = struct {
+		Code string `json:"code"`
+	}{}
+	_ = json.Unmarshal(payload, &invalid)
+	if invalid.Code != "invalid_input" {
+		t.Fatalf("malformed active filter code = %q, want invalid_input (%s)", invalid.Code, payload)
+	}
 }

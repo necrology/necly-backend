@@ -75,11 +75,23 @@ func applyProductFilters(query *gorm.DB, filter service.ProductFilter) *gorm.DB 
 		like := "%" + strings.ToLower(filter.Search) + "%"
 		query = query.Where("LOWER(name) LIKE ? OR LOWER(description) LIKE ?", like, like)
 	}
-	if filter.MinPrice != nil {
-		query = query.Where("EXISTS (SELECT 1 FROM product_prices pp WHERE pp.product_id = products.id AND pp.active = TRUE AND pp.amount >= ?)", *filter.MinPrice)
-	}
-	if filter.MaxPrice != nil {
-		query = query.Where("EXISTS (SELECT 1 FROM product_prices pp WHERE pp.product_id = products.id AND pp.active = TRUE AND pp.amount <= ?)", *filter.MaxPrice)
+	if filter.MinPrice != nil || filter.MaxPrice != nil {
+		// Both bounds must hold for the same active price row. Two separate
+		// EXISTS clauses would let a product pass when its cheapest price is
+		// below max and a different expensive price is above min, even though no
+		// single price sits inside the requested range.
+		predicate := "EXISTS (SELECT 1 FROM product_prices pp WHERE pp.product_id = products.id AND pp.active = TRUE"
+		args := make([]any, 0, 2)
+		if filter.MinPrice != nil {
+			predicate += " AND pp.amount >= ?"
+			args = append(args, *filter.MinPrice)
+		}
+		if filter.MaxPrice != nil {
+			predicate += " AND pp.amount <= ?"
+			args = append(args, *filter.MaxPrice)
+		}
+		predicate += ")"
+		query = query.Where(predicate, args...)
 	}
 	if filter.InStock {
 		query = query.Where("EXISTS (SELECT 1 FROM inventory_slots s JOIN product_prices pp ON pp.id = s.product_price_id WHERE pp.product_id = products.id AND pp.active = TRUE AND s.status = 'available')")
@@ -261,8 +273,11 @@ func (s *Store) ListProducts(ctx context.Context, filter service.ProductFilter, 
 	}
 	var products []domain.Product
 	offset := (page - 1) * perPage
-	if err := query.Order("created_at DESC").Offset(offset).Limit(perPage).Find(&products).Error; err != nil {
+	if err := query.Order("created_at DESC, id ASC").Offset(offset).Limit(perPage).Find(&products).Error; err != nil {
 		return nil, 0, fmt.Errorf("list products: %w", err)
+	}
+	for index := range products {
+		sortPricesByDuration(products[index].Prices)
 	}
 	return products, total, nil
 }
@@ -430,7 +445,7 @@ func (s *Store) ListProductsWithStock(ctx context.Context, filter service.Produc
 
 	var products []domain.Product
 	offset := (page - 1) * perPage
-	if err := query.Order("created_at DESC").Offset(offset).Limit(perPage).Find(&products).Error; err != nil {
+	if err := query.Order("created_at DESC, id ASC").Offset(offset).Limit(perPage).Find(&products).Error; err != nil {
 		return nil, 0, fmt.Errorf("list products: %w", err)
 	}
 

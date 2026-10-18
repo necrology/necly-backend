@@ -53,11 +53,11 @@ func (s *Store) ListAuditLogs(ctx context.Context, filter service.AuditLogFilter
 	}
 	var logs []domain.AuditLog
 	offset := (page - 1) * perPage
-	// resource_id and ip_address are nullable in the schema, but the audit DTO
-	// keeps them as strings. COALESCE avoids a Scan error on historical rows and
-	// gives the frontend the documented "always present, empty allowed" shape.
+	// ip_address is nullable in the schema but the DTO keeps it as a string;
+	// COALESCE avoids a Scan error on historical rows. resource_id stays
+	// nullable so "no resource" is distinguishable from an empty identifier.
 	if err := query.
-		Select("audit_logs.id, audit_logs.actor_user_id, audit_logs.action, audit_logs.resource_type, COALESCE(audit_logs.resource_id, '') AS resource_id, COALESCE(audit_logs.ip_address, '') AS ip_address, audit_logs.metadata, audit_logs.created_at").
+		Select("audit_logs.id, audit_logs.actor_user_id, audit_logs.action, audit_logs.resource_type, audit_logs.resource_id, COALESCE(audit_logs.ip_address, '') AS ip_address, audit_logs.metadata, audit_logs.created_at").
 		Order("created_at DESC").Offset(offset).Limit(perPage).Find(&logs).Error; err != nil {
 		return nil, 0, fmt.Errorf("list audit logs: %w", err)
 	}
@@ -79,6 +79,11 @@ func (s *Store) Record(ctx context.Context, entry service.AuditEntry) {
 		id := entry.ActorUserID
 		actor = &id
 	}
+	var resourceID *string
+	if entry.ResourceID != "" {
+		id := entry.ResourceID
+		resourceID = &id
+	}
 	var metadata []byte
 	if len(entry.Metadata) > 0 {
 		encoded, err := json.Marshal(entry.Metadata)
@@ -92,7 +97,7 @@ func (s *Store) Record(ctx context.Context, entry service.AuditEntry) {
 		ActorUserID:  actor,
 		Action:       entry.Action,
 		ResourceType: entry.Resource,
-		ResourceID:   entry.ResourceID,
+		ResourceID:   resourceID,
 		IPAddress:    entry.IPAddress,
 		Metadata:     metadata,
 	})

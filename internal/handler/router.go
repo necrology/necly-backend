@@ -44,6 +44,17 @@ func parseNonNegativeInt64(raw string) (*int64, error) {
 	return &value, nil
 }
 
+func parseOptionalBoolPtr(raw string) (*bool, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return nil, service.ErrInvalidInput
+	}
+	return &value, nil
+}
+
 func parseOptionalBool(raw string) (bool, error) {
 	if raw == "" {
 		return false, nil
@@ -1331,9 +1342,13 @@ func (r *Router) deleteUser(c *fiber.Ctx) error {
 }
 
 func (r *Router) adminListProducts(c *fiber.Ctx) error {
+	active, err := parseOptionalBoolPtr(c.Query("active"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Filter status produk tidak valid", "code": "invalid_input"})
+	}
 	filter := service.AdminProductFilter{
 		CategoryID: c.Query("category_id"),
-		Active:     parseBoolPtr(c.Query("active")),
+		Active:     active,
 		Search:     c.Query("search"),
 	}
 	page := c.QueryInt("page", 1)

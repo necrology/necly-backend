@@ -309,7 +309,7 @@ type AuditLog struct {
 	ActorUserID  *string `json:"actor_user_id" gorm:"type:uuid;index"`
 	Action       string  `json:"action" gorm:"size:96;not null;index"`
 	ResourceType string  `json:"resource_type" gorm:"size:64;not null"`
-	ResourceID   string  `json:"resource_id" gorm:"index"`
+	ResourceID   *string `json:"resource_id" gorm:"index"`
 	IPAddress    string  `json:"ip_address"`
 	Metadata     []byte  `json:"metadata" gorm:"type:jsonb"`
 	// ActorUser is what ListAuditLogs preloads; without the association declared

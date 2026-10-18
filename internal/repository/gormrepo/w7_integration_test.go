@@ -188,6 +188,22 @@ func TestW7PublicCatalogFilterContract(t *testing.T) {
 		t.Fatalf("video products = %v, want netflix+disney", got)
 	}
 
+	products, total, err = fixture.store.ListProductsWithStock(ctx, service.ProductFilter{Active: &active, CategoryID: "0192f0a2-0000-0000-0000-000000000003"}, 1, 20)
+	if err != nil {
+		t.Fatalf("filter productivity: %v", err)
+	}
+	if got := productIDs(products); total != 1 || len(got) != 1 || got[0] != fixture.products["microsoft"] {
+		t.Fatalf("productivity products = %d/%v, want microsoft only", total, got)
+	}
+
+	products, total, err = fixture.store.ListProductsWithStock(ctx, service.ProductFilter{Active: &active, CategoryID: "0192f0a2-0000-0000-0000-000000000004"}, 1, 20)
+	if err != nil {
+		t.Fatalf("filter cloud: %v", err)
+	}
+	if total != 0 || len(products) != 0 {
+		t.Fatalf("cloud products = %d/%d, want empty", total, len(products))
+	}
+
 	products, total, err = fixture.store.ListProductsWithStock(ctx, service.ProductFilter{Active: &active, CategoryID: random}, 1, 20)
 	if err != nil {
 		t.Fatalf("unknown category: %v", err)
@@ -250,6 +266,20 @@ func TestW7PublicCatalogFilterContract(t *testing.T) {
 	}
 	if got := productIDs(products); len(got) != 1 || got[0] != fixture.products["apple"] {
 		t.Fatalf("music min_price products = %v, want apple", got)
+	}
+
+	// Both bounds must match the same active price: Netflix has 186000 and
+	// 250000, neither inside 200000..240000.
+	combinedMin := int64(200000)
+	combinedMax := int64(240000)
+	products, total, err = fixture.store.ListProductsWithStock(ctx, service.ProductFilter{
+		Active: &active, CategoryID: video, MinPrice: &combinedMin, MaxPrice: &combinedMax,
+	}, 1, 20)
+	if err != nil {
+		t.Fatalf("combined price range: %v", err)
+	}
+	if total != 0 || len(products) != 0 {
+		t.Fatalf("combined price range returned %d/%v, want empty", total, productIDs(products))
 	}
 
 	products, total, err = fixture.store.ListProductsWithStock(ctx, service.ProductFilter{Active: &active, InStock: true}, 1, 20)
@@ -374,8 +404,13 @@ func TestW7AdminProductActiveFilterAndDurations(t *testing.T) {
 			netflix = &products[index]
 		}
 	}
-	if netflix == nil || len(netflix.Prices) == 0 || netflix.Prices[0].Duration == nil {
+	if netflix == nil || len(netflix.Prices) != 3 || netflix.Prices[0].Duration == nil {
 		t.Fatalf("admin product list did not preload price durations: %#v", netflix)
+	}
+	// Admin prices are sorted deterministically by duration days, then amount,
+	// so the result does not depend on physical row order.
+	if netflix.Prices[0].Amount != 50000 || netflix.Prices[1].Amount != 186000 || netflix.Prices[2].Amount != 250000 {
+		t.Fatalf("admin price order = %d/%d/%d, want 50000/186000/250000", netflix.Prices[0].Amount, netflix.Prices[1].Amount, netflix.Prices[2].Amount)
 	}
 	if netflix.Prices[0].Duration.Days != 30 {
 		t.Fatalf("first admin duration = %d, want 30", netflix.Prices[0].Duration.Days)
@@ -586,11 +621,13 @@ func TestW7AdminAuditDTOKeysAndFilters(t *testing.T) {
 	if actor["email"] != "fixture.customer@example.test" {
 		t.Fatalf("audit actor = %#v", actor)
 	}
-	var resourceID, ipAddress string
-	_ = json.Unmarshal(payload["resource_id"], &resourceID)
+	var ipAddress string
 	_ = json.Unmarshal(payload["ip_address"], &ipAddress)
-	if resourceID != "" || ipAddress != "" {
-		t.Fatalf("nullable audit fields = %q/%q, want empty strings", resourceID, ipAddress)
+	if string(payload["resource_id"]) != "null" {
+		t.Fatalf("resource_id = %s, want explicit null", payload["resource_id"])
+	}
+	if ipAddress != "" {
+		t.Fatalf("ip_address = %q, want empty string", ipAddress)
 	}
 	if string(payload["metadata"]) != "null" {
 		t.Fatalf("metadata = %s, want null", payload["metadata"])
