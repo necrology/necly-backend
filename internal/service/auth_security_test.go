@@ -106,7 +106,7 @@ func TestRefreshBindsNewAccessTokenToTheRotatedSession(t *testing.T) {
 	}
 }
 
-func TestChangePasswordWithoutCookieRevokesEverySession(t *testing.T) {
+func TestChangePasswordWithoutSessionIdentityRevokesEverySession(t *testing.T) {
 	now := time.Date(2026, 10, 18, 10, 0, 0, 0, time.UTC)
 	repo := newFakeAuthRepository()
 	auth := newAuthServiceWithResetForTest(t, repo, now, nil, "https://necly-service.my.id")

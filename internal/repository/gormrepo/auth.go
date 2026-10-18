@@ -11,6 +11,7 @@ import (
 	"github.com/necly/services/internal/domain"
 	"github.com/necly/services/internal/service"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type Store struct {
@@ -246,7 +247,11 @@ func (s *Store) UpsertGoogleUser(ctx context.Context, email, name, subject strin
 	var user *domain.User
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var u domain.User
-		err := tx.Where("email = ?", email).First(&u).Error
+		// Lock the row for the duration of the transaction so a concurrent
+		// admin deactivation cannot slip between the eligibility check and the
+		// write. The conditional UPDATE below is a second guard against writing
+		// to an account that stopped being eligible.
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("email = ?", email).First(&u).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			u = domain.User{ID: uuid.NewString(), Email: email, Name: name, Role: domain.RoleCustomer, Active: true, GoogleSubject: &subject, EmailVerifiedAt: &now, CreatedAt: now, UpdatedAt: now}
 			if err := tx.Create(&u).Error; err != nil {
@@ -261,12 +266,18 @@ func (s *Store) UpsertGoogleUser(ctx context.Context, email, name, subject strin
 			if u.DeletedAt != nil || !u.Active {
 				return service.ErrUnauthorized
 			}
+			result := tx.Model(&domain.User{}).
+				Where("id = ? AND active = true AND deleted_at IS NULL", u.ID).
+				Updates(map[string]any{"google_subject": subject, "email_verified_at": now, "updated_at": now})
+			if result.Error != nil {
+				return fmt.Errorf("update google user: %w", result.Error)
+			}
+			if result.RowsAffected == 0 {
+				return service.ErrUnauthorized
+			}
 			u.GoogleSubject = &subject
 			u.EmailVerifiedAt = &now
 			u.UpdatedAt = now
-			if err := tx.Save(&u).Error; err != nil {
-				return fmt.Errorf("update google user: %w", err)
-			}
 		}
 		user = &u
 		return nil

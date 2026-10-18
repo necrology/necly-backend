@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -388,10 +389,15 @@ func (r *Router) refresh(c *fiber.Ctx) error {
 
 // writeAuthCookie is the one place authentication cookies are created. Set and
 // clear use identical attributes, so clearing always targets the cookie the
-// browser actually stored.
-func (r *Router) writeAuthCookie(c *fiber.Ctx, name, value, path string, maxAge int, expires time.Time) {
+// browser actually stored. sameSite overrides the configured policy when the
+// browser context requires it (the OAuth nonce must survive a cross-site
+// top-level navigation back from Google).
+func (r *Router) writeAuthCookie(c *fiber.Ctx, name, value, path string, maxAge int, expires time.Time, sameSite string) {
 	if path == "" {
 		path = r.authCookies.Path
+	}
+	if sameSite == "" {
+		sameSite = r.authCookies.SameSite
 	}
 	c.Cookie(&fiber.Cookie{
 		Name:     name,
@@ -405,8 +411,42 @@ func (r *Router) writeAuthCookie(c *fiber.Ctx, name, value, path string, maxAge 
 		// make the request look like plain HTTP, so also honour the request
 		// scheme when it reports HTTPS.
 		Secure:   r.authCookies.Secure || c.Protocol() == "https",
-		SameSite: r.authCookies.SameSite,
+		SameSite: sameSite,
 	})
+}
+
+// appendLegacyRefreshCookieClear targets the Path=/ cookie written by releases
+// before the cookie path became configurable. A Set-Cookie with a different Path
+// does not replace the old cookie, so without this a legacy cookie would survive
+// logout and could mint a new session through /auth/refresh.
+//
+// Fiber/fasthttp stores cookies keyed by name, so a second c.Cookie call would
+// replace the new cookie instead of adding a deletion for the other path. The
+// legacy deletion is therefore appended as a separate Set-Cookie header after
+// the primary cookie has been written.
+func (r *Router) appendLegacyRefreshCookieClear(c *fiber.Ctx) {
+	if r.authCookies.Path == "/" {
+		return
+	}
+	sameSite := http.SameSiteLaxMode
+	switch strings.ToLower(r.authCookies.SameSite) {
+	case "strict":
+		sameSite = http.SameSiteStrictMode
+	case "none":
+		sameSite = http.SameSiteNoneMode
+	}
+	cookie := http.Cookie{
+		Name:     "refresh_token",
+		Value:    "",
+		Path:     "/",
+		Domain:   r.authCookies.Domain,
+		MaxAge:   -1,
+		Expires:  time.Now().Add(-time.Hour),
+		Secure:   r.authCookies.Secure || c.Protocol() == "https",
+		HttpOnly: true,
+		SameSite: sameSite,
+	}
+	c.Response().Header.Add("Set-Cookie", cookie.String())
 }
 
 // setRefreshCookie writes the session cookie. The lifetime comes from the
@@ -417,11 +457,15 @@ func (r *Router) setRefreshCookie(c *fiber.Ctx, token string, expiresAt time.Tim
 	if maxAge <= 0 {
 		maxAge = int((7 * 24 * time.Hour).Seconds())
 	}
-	r.writeAuthCookie(c, "refresh_token", token, "", maxAge, time.Time{})
+	r.writeAuthCookie(c, "refresh_token", token, "", maxAge, time.Time{}, "")
+	// Retire the pre-upgrade cookie on every set, not only on logout, so the
+	// two-cookie state disappears as soon as the user signs in or refreshes.
+	r.appendLegacyRefreshCookieClear(c)
 }
 
 func (r *Router) clearRefreshCookie(c *fiber.Ctx) {
-	r.writeAuthCookie(c, "refresh_token", "", "", -1, time.Now().Add(-time.Hour))
+	r.writeAuthCookie(c, "refresh_token", "", "", -1, time.Now().Add(-time.Hour), "")
+	r.appendLegacyRefreshCookieClear(c)
 }
 
 func (r *Router) setOAuthNonceCookie(c *fiber.Ctx, nonce string, ttl time.Duration) {
@@ -429,11 +473,14 @@ func (r *Router) setOAuthNonceCookie(c *fiber.Ctx, nonce string, ttl time.Durati
 	if maxAge <= 0 {
 		maxAge = int((10 * time.Minute).Seconds())
 	}
-	r.writeAuthCookie(c, "oauth_nonce", nonce, "/api/v1/auth/google", maxAge, time.Time{})
+	// The Google callback is a cross-site top-level GET. SameSite=Strict would
+	// suppress this cookie and make every OAuth login fail with a 401, so the
+	// nonce is deliberately Lax regardless of the refresh-cookie policy.
+	r.writeAuthCookie(c, "oauth_nonce", nonce, "/api/v1/auth/google", maxAge, time.Time{}, "Lax")
 }
 
 func (r *Router) clearOAuthNonceCookie(c *fiber.Ctx) {
-	r.writeAuthCookie(c, "oauth_nonce", "", "/api/v1/auth/google", -1, time.Now().Add(-time.Hour))
+	r.writeAuthCookie(c, "oauth_nonce", "", "/api/v1/auth/google", -1, time.Now().Add(-time.Hour), "Lax")
 }
 
 func (r *Router) logout(c *fiber.Ctx) error {

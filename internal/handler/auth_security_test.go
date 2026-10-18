@@ -119,27 +119,35 @@ func TestAuthCookieAttributesOnSetAndDelete(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 
-	cookies := resp.Cookies()
-	var refreshSet, nonceSet *http.Cookie
-	for _, cookie := range cookies {
+	refreshByPath := map[string]*http.Cookie{}
+	var nonceSet *http.Cookie
+	for _, cookie := range resp.Cookies() {
 		switch cookie.Name {
 		case "refresh_token":
-			refreshSet = cookie
+			refreshByPath[cookie.Path] = cookie
 		case "oauth_nonce":
 			nonceSet = cookie
 		}
 	}
+	refreshSet := refreshByPath["/api/v1/auth"]
 	if refreshSet == nil {
-		t.Fatalf("login did not set refresh_token; cookies = %#v", cookies)
+		t.Fatalf("login did not set refresh_token on the configured path; cookies = %#v", resp.Cookies())
 	}
 	assert.True(t, refreshSet.Secure, "refresh cookie must be Secure")
 	assert.True(t, refreshSet.HttpOnly, "refresh cookie must be HttpOnly")
 	assert.Equal(t, http.SameSiteStrictMode, refreshSet.SameSite)
-	assert.Equal(t, "/api/v1/auth", refreshSet.Path)
 	assert.Equal(t, "necly.example", refreshSet.Domain)
+	assert.NotEmpty(t, refreshSet.Value)
 	assert.Nil(t, nonceSet, "login must not set an OAuth nonce")
+	// Users upgrading from the release that wrote Path=/ must have that cookie
+	// retired as well, otherwise logout would leave it behind.
+	legacyClear := refreshByPath["/"]
+	if legacyClear == nil {
+		t.Fatalf("login did not clear the legacy Path=/ refresh cookie; cookies = %#v", resp.Cookies())
+	}
+	assert.Empty(t, legacyClear.Value)
 
-	// Logout must delete the same cookie it set, with identical attributes.
+	// Logout must delete both the configured cookie and the legacy cookie.
 	repo.On("RefreshTokenByHash", mock.Anything, mock.Anything).Return(&domain.RefreshToken{ID: "session-1", UserID: "user-1"}, nil)
 	repo.On("RevokeRefreshToken", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil)
@@ -148,24 +156,26 @@ func TestAuthCookieAttributesOnSetAndDelete(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 
-	var cleared *http.Cookie
+	clearedByPath := map[string]*http.Cookie{}
 	for _, cookie := range resp.Cookies() {
 		if cookie.Name == "refresh_token" {
-			cleared = cookie
+			clearedByPath[cookie.Path] = cookie
 		}
 	}
-	if cleared == nil {
-		t.Fatal("logout did not clear refresh_token")
+	for _, path := range []string{"/api/v1/auth", "/"} {
+		cleared := clearedByPath[path]
+		if cleared == nil {
+			t.Fatalf("logout did not clear refresh_token at path %q; cookies = %#v", path, resp.Cookies())
+		}
+		assert.True(t, cleared.Secure)
+		assert.True(t, cleared.HttpOnly)
+		assert.Equal(t, http.SameSiteStrictMode, cleared.SameSite)
+		assert.Equal(t, "necly.example", cleared.Domain)
+		assert.Empty(t, cleared.Value)
+		assert.True(t, cleared.MaxAge <= 0)
+		assert.False(t, cleared.Expires.IsZero())
+		assert.True(t, cleared.Expires.Before(time.Now()))
 	}
-	assert.True(t, cleared.Secure)
-	assert.True(t, cleared.HttpOnly)
-	assert.Equal(t, http.SameSiteStrictMode, cleared.SameSite)
-	assert.Equal(t, "/api/v1/auth", cleared.Path)
-	assert.Equal(t, "necly.example", cleared.Domain)
-	assert.Empty(t, cleared.Value)
-	assert.True(t, cleared.MaxAge <= 0)
-	assert.False(t, cleared.Expires.IsZero())
-	assert.True(t, cleared.Expires.Before(time.Now()))
 }
 
 type fakeOAuthStateStore struct {
@@ -258,6 +268,58 @@ func startOAuth(t *testing.T, app *fiber.App) (state, nonce string) {
 		t.Fatal("google login did not set a browser nonce cookie")
 	}
 	return state, nonce
+}
+
+func TestGoogleOAuthNonceCookieIsLaxEvenWithStrictPolicy(t *testing.T) {
+	server, _ := startGoogleStub(t)
+	app, _, router := newAuthRouter(t, new(dummyAuthRepo), googleOAuthConfig(server.URL+"/token", server.URL+"/userinfo"))
+	router.SetOAuthStateStore(newFakeOAuthStateStore())
+	router.SetAuthCookiePolicy(handler.AuthCookiePolicy{Secure: true, HTTPOnly: true, SameSite: "Strict", Path: "/api/v1/auth"})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/api/v1/auth/google", nil))
+	assert.NoError(t, err)
+	assert.Equal(t, fiber.StatusTemporaryRedirect, resp.StatusCode)
+	var nonce *http.Cookie
+	for _, cookie := range resp.Cookies() {
+		if cookie.Name == "oauth_nonce" {
+			nonce = cookie
+		}
+	}
+	if nonce == nil {
+		t.Fatal("google login did not set oauth_nonce")
+	}
+	// A Strict nonce would be withheld on Google's cross-site callback.
+	assert.Equal(t, http.SameSiteLaxMode, nonce.SameSite)
+	assert.Equal(t, "/api/v1/auth/google", nonce.Path)
+	assert.True(t, nonce.HttpOnly)
+}
+
+func TestChangePasswordWithoutRefreshCookieKeepsTheValidatedSession(t *testing.T) {
+	app, tokens, repo := setupTestApp(t)
+	hasher := service.NewPasswordHasher(4)
+	hash, err := hasher.Hash("Str0ng-password!")
+	assert.NoError(t, err)
+	repo.On("UserByID", mock.Anything, "user-1").Return(&domain.User{
+		ID: "user-1", Email: "alice@example.com", Name: "Alice", PasswordHash: hash,
+		Role: domain.RoleCustomer, Active: true,
+	}, nil)
+	repo.On("RefreshTokenByID", mock.Anything, "session-1").Return(&domain.RefreshToken{
+		ID: "session-1", UserID: "user-1", ExpiresAt: time.Now().Add(time.Hour),
+	}, nil)
+	repo.On("UpdatePasswordHashAndRevokeSessions", mock.Anything, "user-1", mock.Anything, "session-1", mock.Anything).Return(nil).Once()
+
+	token, err := tokens.IssueAccess("user-1", string(domain.RoleCustomer), "session-1")
+	assert.NoError(t, err)
+	body := `{"current_password":"Str0ng-password!","new_password":"N3w-strong-password!"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/change-password", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	// No refresh_token cookie on purpose: the validated access session must be
+	// spared while every other session is revoked.
+	resp, err := app.Test(req)
+	assert.NoError(t, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+	repo.AssertCalled(t, "UpdatePasswordHashAndRevokeSessions", mock.Anything, "user-1", mock.Anything, "session-1", mock.Anything)
 }
 
 func TestGoogleOAuthStateIsBoundToTheBrowserNonceAndSingleUse(t *testing.T) {
@@ -376,7 +438,7 @@ func TestGoogleOAuthSetsTheSessionCookieOnlyForAnEligibleAccount(t *testing.T) {
 
 		var refreshSet *http.Cookie
 		for _, cookie := range resp.Cookies() {
-			if cookie.Name == "refresh_token" {
+			if cookie.Name == "refresh_token" && cookie.Path == "/api/v1/auth" {
 				refreshSet = cookie
 			}
 		}
@@ -385,6 +447,7 @@ func TestGoogleOAuthSetsTheSessionCookieOnlyForAnEligibleAccount(t *testing.T) {
 		}
 		assert.True(t, refreshSet.HttpOnly)
 		assert.Equal(t, "/api/v1/auth", refreshSet.Path)
+		assert.NotEmpty(t, refreshSet.Value)
 		assert.Equal(t, 1, *calls)
 
 		// The state was consumed before the exchange and cannot be replayed.

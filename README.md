@@ -132,9 +132,10 @@ go build -o bin/necly-backend.exe ./cmd/server
 - **Idempotency**: Required on checkout; webhook events deduped by `provider_event_id`
 - **Credential encryption**: AES-256-GCM per-record random nonces
 - **Refresh tokens**: Opaque, SHA-256 hashed whitelist in DB, revocable, httpOnly cookie
+- **Cookie path migration**: login, refresh and logout also expire the legacy `Path=/` refresh cookie, so a pre-upgrade cookie cannot survive logout
 - **Access tokens**: Short-lived (15m) HS256 JWT bound to a refresh session (`sid`); account state, role and session revocation are re-checked on every authenticated request
-- **Password changes**: Password update and revocation of other sessions run in one transaction; a cookie-less change revokes every live session
-- **Google OAuth**: State is bound to a browser nonce cookie and consumed atomically from Redis; missing Redis or an unusable state fails closed
+- **Password changes**: Password update and revocation of other sessions run in one transaction. A change made with a validated access session (`sid`) keeps that session and revokes the rest; a service call with no session identity revokes every live session
+- **Google OAuth**: State is bound to a browser nonce cookie (always SameSite=Lax so the cross-site callback carries it) and consumed atomically from Redis; missing Redis or an unusable state fails closed
 - **Email**: In production a missing/TLS-less SMTP transport fails closed instead of logging activation or reset tokens
 - **Rate limiting**: Per-IP on login/register; general API rate limit
 - **Webhook verification**: Midtrans HMAC-SHA512; Xendit callback token
