@@ -14,6 +14,11 @@ import (
 type AccessClaims struct {
 	Role string `json:"role"`
 	Type string `json:"type"`
+	// SessionID is the refresh-token row that backs this access token. The
+	// middleware re-reads it on every request, so ending that sign-in or
+	// deactivating the account invalidates the access token immediately
+	// instead of waiting for its short TTL to expire.
+	SessionID string `json:"sid"`
 	jwt.RegisteredClaims
 }
 
@@ -35,15 +40,19 @@ func NewTokenManager(secret, issuer string, accessTTL, refreshTTL time.Duration)
 	return &TokenManager{secret: []byte(secret), issuer: issuer, accessTTL: accessTTL, refreshTTL: refreshTTL, now: time.Now}, nil
 }
 
-func (m *TokenManager) IssueAccess(userID, role string) (string, error) {
+func (m *TokenManager) IssueAccess(userID, role, sessionID string) (string, error) {
+	if sessionID == "" {
+		return "", errors.New("session id is required")
+	}
 	now := m.now().UTC()
 	jti, err := randomToken(16)
 	if err != nil {
 		return "", err
 	}
 	claims := AccessClaims{
-		Role: role,
-		Type: "access",
+		Role:      role,
+		Type:      "access",
+		SessionID: sessionID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    m.issuer,
 			Subject:   userID,

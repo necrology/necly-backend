@@ -9,6 +9,7 @@ package mailer
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -43,12 +44,23 @@ type Config struct {
 	From     string
 	FromName string
 	UseTLS   bool
+	// Production disables the log-only fallback. In production a missing or
+	// unsafe transport must report Enabled() == false without ever writing the
+	// message body (which can contain activation/reset tokens) to the log.
+	Production bool
 }
 
-// New returns an SMTP mailer when a host is configured, and a log-only mailer
-// with a loud startup warning otherwise. The returned Mailer is always usable.
+// New returns an SMTP mailer when a host is configured with TLS, and a log-only
+// mailer with a loud startup warning otherwise. In production it never returns
+// the log-only sender. The returned Mailer is always usable.
 func New(cfg Config) Mailer {
 	if strings.TrimSpace(cfg.Host) == "" {
+		if cfg.Production {
+			log.Printf("ERROR mailer: SMTP_HOST is empty; transactional email is DISABLED and " +
+				"token-bearing authentication flows will fail closed. Set SMTP_HOST, SMTP_PORT, " +
+				"SMTP_USER, SMTP_PASSWORD, EMAIL_FROM and SMTP_TLS=true to enable delivery.")
+			return &disabledMailer{}
+		}
 		log.Printf("WARN mailer: SMTP_HOST is empty, so transactional email is DISABLED. "+
 			"Password reset links and issue-report notifications will only be written to this log. "+
 			"Set SMTP_HOST, SMTP_USER, SMTP_PASSWORD and EMAIL_FROM to enable delivery (from=%q).", cfg.From)
@@ -57,7 +69,23 @@ func New(cfg Config) Mailer {
 	if cfg.Port == 0 {
 		cfg.Port = 587
 	}
+	if !cfg.UseTLS {
+		// SMTP without TLS would put AUTH credentials and token-bearing mail on
+		// the wire in clear text. Refuse to construct a sender that can do that.
+		log.Printf("ERROR mailer: SMTP_HOST is configured but SMTP_TLS is false; mail delivery is DISABLED")
+		return &disabledMailer{}
+	}
 	return &smtpMailer{cfg: cfg}
+}
+
+// disabledMailer keeps the process running while guaranteeing that no message
+// is delivered or logged. Enabled() is false so token-bearing flows fail closed.
+type disabledMailer struct{}
+
+func (m *disabledMailer) Enabled() bool { return false }
+
+func (m *disabledMailer) Send(context.Context, Message) error {
+	return errors.New("mail delivery is disabled")
 }
 
 // logMailer keeps the surrounding flows working when SMTP is unavailable. It
@@ -97,12 +125,15 @@ func (m *smtpMailer) Send(ctx context.Context, msg Message) error {
 	}
 	defer func() { _ = client.Close() }()
 
-	if m.cfg.UseTLS {
-		if ok, _ := client.Extension("STARTTLS"); ok {
-			if err := client.StartTLS(&tls.Config{ServerName: m.cfg.Host, MinVersion: tls.VersionTLS12}); err != nil {
-				return fmt.Errorf("smtp starttls: %w", err)
-			}
-		}
+	// TLS is mandatory whenever SMTP is configured. Never fall back to a
+	// cleartext session when the server does not advertise STARTTLS: doing so
+	// would expose credentials and token-bearing mail.
+	ok, _ := client.Extension("STARTTLS")
+	if !ok {
+		return errors.New("smtp server does not offer STARTTLS")
+	}
+	if err := client.StartTLS(&tls.Config{ServerName: m.cfg.Host, MinVersion: tls.VersionTLS12}); err != nil {
+		return fmt.Errorf("smtp starttls: %w", err)
 	}
 
 	if m.cfg.User != "" {

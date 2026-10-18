@@ -390,6 +390,17 @@ func (c *Config) Validate() error {
 	if c.HTTPClientTimeout <= 0 {
 		return errors.New("HTTP_CLIENT_TIMEOUT must be positive")
 	}
+	if strings.TrimSpace(c.Email.SMTPHost) != "" {
+		// SMTP credentials and token-bearing mail must never travel in clear
+		// text. The mailer also refuses to construct a cleartext sender, but a
+		// configuration error here is clearer than a silently disabled flow.
+		if !c.Email.UseTLS {
+			return errors.New("SMTP_TLS must be true when SMTP_HOST is configured")
+		}
+		if strings.TrimSpace(c.Email.FromEmail) == "" {
+			return errors.New("EMAIL_FROM is required when SMTP_HOST is configured")
+		}
+	}
 	if c.AppEnv == "production" {
 		if c.Database.Password == "" || isPlaceholder(c.Database.Password) {
 			return errors.New("DB_PASSWORD must be a non-placeholder value in production")

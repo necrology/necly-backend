@@ -23,6 +23,7 @@ type AuthRepository interface {
 	CreateUser(ctx context.Context, user *domain.User, verification *domain.EmailVerificationToken) error
 	CreateVerificationToken(ctx context.Context, token *domain.EmailVerificationToken, now time.Time) error
 	UpdatePasswordHash(ctx context.Context, userID, hash string, now time.Time) error
+	UpdatePasswordHashAndRevokeSessions(ctx context.Context, userID, hash, exceptSessionID string, now time.Time) error
 	ListRefreshTokens(ctx context.Context, userID string, now time.Time) ([]domain.RefreshToken, error)
 	RevokeRefreshTokenByID(ctx context.Context, userID, tokenID string, now time.Time) error
 	RevokeUserRefreshTokens(ctx context.Context, userID, exceptHash string, now time.Time) error
@@ -30,6 +31,7 @@ type AuthRepository interface {
 	UserByID(ctx context.Context, id string) (*domain.User, error)
 	SaveRefreshToken(ctx context.Context, token *domain.RefreshToken) error
 	RefreshTokenByHash(ctx context.Context, hash string) (*domain.RefreshToken, error)
+	RefreshTokenByID(ctx context.Context, id string) (*domain.RefreshToken, error)
 	RotateRefreshToken(ctx context.Context, oldHash string, replacement *domain.RefreshToken, now time.Time) error
 	RevokeRefreshToken(ctx context.Context, hash string, now time.Time) error
 	ConsumeVerificationToken(ctx context.Context, hash string, now time.Time) (*domain.User, error)
@@ -51,6 +53,10 @@ type AuthSettings struct {
 	// Audit is optional; leaving it nil disables recording without affecting the
 	// flows themselves.
 	Audit AuditWriter
+	// Production turns mail delivery into a hard requirement for token-bearing
+	// flows. Without it those flows could fall back to a log-only sender and
+	// expose activation/reset tokens in the server log.
+	Production bool
 }
 
 type RegisterInput struct {
@@ -106,6 +112,7 @@ type AuthService struct {
 	now              func() time.Time
 	googleConfig     *GoogleOAuthConfig
 	audit            AuditWriter
+	production       bool
 }
 
 func NewAuthService(repo AuthRepository, hasher PasswordHasher, tokens *TokenManager, settings AuthSettings) *AuthService {
@@ -130,6 +137,7 @@ func NewAuthService(repo AuthRepository, hasher PasswordHasher, tokens *TokenMan
 		now:              time.Now,
 		googleConfig:     settings.Google,
 		audit:            settings.Audit,
+		production:       settings.Production,
 	}
 }
 
@@ -138,6 +146,12 @@ func (s *AuthService) Register(ctx context.Context, input RegisterInput) (*Regis
 	email := normalizeEmail(input.Email)
 	if name == "" || !validEmail(email) || len(input.Password) < 10 || len(input.Password) > 72 {
 		return nil, fmt.Errorf("%w: Nama, format email valid, dan kata sandi 10-72 karakter wajib diisi", ErrInvalidInput)
+	}
+	// Check mail before creating the account: a production deployment without
+	// working email must not leave an unverifiable account behind, and it must
+	// never return the raw activation token as a fallback.
+	if s.production && !s.mailEnabled() {
+		return nil, ErrMailUnavailable
 	}
 	hash, err := s.hasher.Hash(input.Password)
 	if err != nil {
@@ -163,7 +177,7 @@ func (s *AuthService) Register(ctx context.Context, input RegisterInput) (*Regis
 	// local or log-only setup stays workable. Returning it in production would let
 	// anyone register with an address they do not own, activate it themselves, and
 	// later absorb the real owner's Google sign-in (accounts are linked by email).
-	if !s.mailEnabled() {
+	if !s.mailEnabled() && !s.production {
 		result.VerificationToken = rawVerification
 	}
 	return result, nil
@@ -232,14 +246,14 @@ func (s *AuthService) Refresh(ctx context.Context, raw string, client ClientInfo
 		return nil, err
 	}
 	replacement := &domain.RefreshToken{ID: uuid.NewString(), UserID: user.ID, TokenHash: newHash, ExpiresAt: expiresAt, UserAgent: client.UserAgent, IPAddress: client.IPAddress, CreatedAt: now}
-	if err := s.repo.RotateRefreshToken(ctx, oldHash, replacement, now); err != nil {
-		return nil, ErrUnauthorized
-	}
-	access, err := s.tokens.IssueAccess(user.ID, string(user.Role))
+	access, err := s.tokens.IssueAccess(user.ID, string(user.Role), replacement.ID)
 	if err != nil {
 		return nil, err
 	}
-	return &Session{User: *user, AccessToken: access, RefreshToken: newRaw, ExpiresIn: int64(s.tokens.accessTTL.Seconds())}, nil
+	if err := s.repo.RotateRefreshToken(ctx, oldHash, replacement, now); err != nil {
+		return nil, ErrUnauthorized
+	}
+	return &Session{User: *user, AccessToken: access, RefreshToken: newRaw, ExpiresIn: int64(s.tokens.accessTTL.Seconds()), RefreshExpiresAt: expiresAt}, nil
 }
 
 func (s *AuthService) Logout(ctx context.Context, raw string) error {
@@ -278,6 +292,9 @@ func (s *AuthService) ForgotPassword(ctx context.Context, email string) error {
 	email = normalizeEmail(email)
 	if !validEmail(email) {
 		return ErrInvalidInput
+	}
+	if s.production && !s.mailEnabled() {
+		return ErrMailUnavailable
 	}
 	user, err := s.repo.UserByEmail(ctx, email)
 	if err != nil {
@@ -426,6 +443,9 @@ func (s *AuthService) ResendVerification(ctx context.Context, email string) erro
 	if !validEmail(email) {
 		return ErrInvalidInput
 	}
+	if s.production && !s.mailEnabled() {
+		return ErrMailUnavailable
+	}
 	user, err := s.repo.UserByEmail(ctx, email)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -475,20 +495,42 @@ func (s *AuthService) GetUserByID(ctx context.Context, id string) (*domain.User,
 }
 
 func (s *AuthService) issueSession(ctx context.Context, user *domain.User, client ClientInfo) (*Session, error) {
-	access, err := s.tokens.IssueAccess(user.ID, string(user.Role))
-	if err != nil {
-		return nil, err
-	}
 	raw, hash, expiresAt, err := s.tokens.IssueRefresh()
 	if err != nil {
 		return nil, err
 	}
 	now := s.now().UTC()
 	refresh := &domain.RefreshToken{ID: uuid.NewString(), UserID: user.ID, TokenHash: hash, ExpiresAt: expiresAt, UserAgent: client.UserAgent, IPAddress: client.IPAddress, CreatedAt: now}
+	// Bind the access token to the refresh row that represents this sign-in.
+	// The middleware checks that row on every request, so a revocation takes
+	// effect immediately rather than when the access TTL happens to end.
+	access, err := s.tokens.IssueAccess(user.ID, string(user.Role), refresh.ID)
+	if err != nil {
+		return nil, err
+	}
 	if err := s.repo.SaveRefreshToken(ctx, refresh); err != nil {
 		return nil, err
 	}
 	return &Session{User: *user, AccessToken: access, RefreshToken: raw, ExpiresIn: int64(s.tokens.accessTTL.Seconds()), RefreshExpiresAt: expiresAt}, nil
+}
+
+// AuthorizeSession resolves the current account and sign-in state for an access
+// token. Role and account flags are read from the database, never from the JWT,
+// so demoting or disabling an account takes effect on the next request. A token
+// whose refresh row was revoked or has expired is rejected immediately.
+func (s *AuthService) AuthorizeSession(ctx context.Context, userID, sessionID string) (*domain.User, error) {
+	if strings.TrimSpace(userID) == "" || strings.TrimSpace(sessionID) == "" {
+		return nil, ErrUnauthorized
+	}
+	user, err := s.repo.UserByID(ctx, userID)
+	if err != nil || user == nil || user.DeletedAt != nil || !user.Active {
+		return nil, ErrUnauthorized
+	}
+	token, err := s.repo.RefreshTokenByID(ctx, sessionID)
+	if err != nil || token == nil || token.UserID != userID || token.RevokedAt != nil || !token.ExpiresAt.After(s.now().UTC()) {
+		return nil, ErrUnauthorized
+	}
+	return user, nil
 }
 
 func (s *AuthService) GoogleConfig() *GoogleOAuthConfig {

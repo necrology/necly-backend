@@ -46,6 +46,9 @@ func TestValidateRejectsUnsafeProductionConfiguration(t *testing.T) {
 		{"wildcard credentialed cors", func(c *Config) { c.CORS.Origins = []string{"*"}; c.CORS.AllowCredentials = true }, "CORS_ALLOWED_ORIGINS"},
 		{"mock payment", func(c *Config) { c.Payment.Provider = "mock" }, "PAYMENT_PROVIDER"},
 		{"missing inventory encryption", func(c *Config) { c.CredentialKey = "" }, "CREDENTIAL_ENCRYPTION_KEY"},
+		{"smtp without tls", func(c *Config) {
+			c.Email = EmailConfig{SMTPHost: "smtp.example", SMTPPort: 587, FromEmail: "noreply@necly.example", UseTLS: false}
+		}, "SMTP_TLS"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -55,6 +58,14 @@ func TestValidateRejectsUnsafeProductionConfiguration(t *testing.T) {
 				t.Fatalf("Validate() error = %v, want mention of %s", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestValidateAcceptsConfiguredSMTPWithTLS(t *testing.T) {
+	cfg := validProductionConfig()
+	cfg.Email = EmailConfig{SMTPHost: "smtp.example", SMTPPort: 587, FromEmail: "noreply@necly.example", UseTLS: true}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
 	}
 }
 

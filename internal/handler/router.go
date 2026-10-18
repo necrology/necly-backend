@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log"
@@ -47,10 +48,56 @@ type Router struct {
 	tokens            *service.TokenManager
 	cipher            *service.CredentialCipher
 	redis             *redis.Client
+	authCookies       AuthCookiePolicy
+	oauthStates       OAuthStateStore
 }
 
+// AuthCookiePolicy is the single source of truth for every authentication
+// cookie the API writes. Set and clear use the same values so a browser can
+// always delete the cookie it received.
+type AuthCookiePolicy struct {
+	Secure   bool
+	HTTPOnly bool
+	SameSite string
+	Domain   string
+	Path     string
+}
+
+func defaultAuthCookiePolicy() AuthCookiePolicy {
+	return AuthCookiePolicy{HTTPOnly: true, SameSite: "Lax", Path: "/api/v1/auth"}
+}
+
+// SetAuthCookiePolicy applies the operator's cookie configuration. Empty values
+// fall back to safe defaults rather than emitting an unscoped cookie.
+func (r *Router) SetAuthCookiePolicy(policy AuthCookiePolicy) {
+	if policy.SameSite == "" {
+		policy.SameSite = "Lax"
+	}
+	if policy.Path == "" {
+		policy.Path = "/api/v1/auth"
+	}
+	// HttpOnly is not optional for a refresh-token cookie, even if an operator
+	// tries to disable it.
+	policy.HTTPOnly = true
+	r.authCookies = policy
+}
+
+// SetOAuthStateStore replaces the Redis-backed state store. Tests use this to
+// exercise replay, expiry and outage behaviour without a live Redis.
+func (r *Router) SetOAuthStateStore(store OAuthStateStore) { r.oauthStates = store }
+
 func NewRouter(authSvc *service.AuthService, catalogSvc *service.CatalogService, cartSvc *service.CartService, checkoutSvc *service.CheckoutService, webhookSvc *service.WebhookService, orderSvc *service.OrderService, adminSvc *service.AdminDashboardService, adminUserSvc *service.AdminUserService, adminProductSvc *service.AdminProductService, adminCategorySvc *service.AdminCategoryService, adminOrderSvc *service.AdminOrderService, adminVoucherSvc *service.AdminVoucherService, adminInventorySvc *service.AdminInventoryService, tokens *service.TokenManager, cipher *service.CredentialCipher, redis *redis.Client, reportSvc *service.ReportService, testimonialSvc *service.TestimonialService) *Router {
-	return &Router{authSvc: authSvc, catalogSvc: catalogSvc, cartSvc: cartSvc, checkoutSvc: checkoutSvc, webhookSvc: webhookSvc, orderSvc: orderSvc, adminSvc: adminSvc, adminUserSvc: adminUserSvc, adminProductSvc: adminProductSvc, adminCategorySvc: adminCategorySvc, adminOrderSvc: adminOrderSvc, adminVoucherSvc: adminVoucherSvc, adminInventorySvc: adminInventorySvc, reportSvc: reportSvc, testimonialSvc: testimonialSvc, tokens: tokens, cipher: cipher, redis: redis}
+	r := &Router{authSvc: authSvc, catalogSvc: catalogSvc, cartSvc: cartSvc, checkoutSvc: checkoutSvc, webhookSvc: webhookSvc, orderSvc: orderSvc, adminSvc: adminSvc, adminUserSvc: adminUserSvc, adminProductSvc: adminProductSvc, adminCategorySvc: adminCategorySvc, adminOrderSvc: adminOrderSvc, adminVoucherSvc: adminVoucherSvc, adminInventorySvc: adminInventorySvc, reportSvc: reportSvc, testimonialSvc: testimonialSvc, tokens: tokens, cipher: cipher, redis: redis, authCookies: defaultAuthCookiePolicy()}
+	if redis != nil {
+		r.oauthStates = newRedisOAuthStateStore(redis)
+	}
+	return r
+}
+
+// authError writes the shared sanitized error envelope. Internal error values
+// are never serialized: only this fixed message and machine code reach clients.
+func authError(c *fiber.Ctx, status int, message, code string) error {
+	return c.Status(status).JSON(fiber.Map{"error": message, "code": code})
 }
 
 func (r *Router) Register(app *fiber.App) {
@@ -198,21 +245,33 @@ func (r *Router) authMiddleware() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		authHeader := c.Get("Authorization")
 		if authHeader == "" {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Header otorisasi tidak ditemukan"})
+			return authError(c, fiber.StatusUnauthorized, "Header otorisasi tidak ditemukan", "unauthorized")
 		}
 
 		parts := strings.SplitN(authHeader, " ", 2)
 		if len(parts) != 2 || parts[0] != "Bearer" {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Format otorisasi tidak valid"})
+			return authError(c, fiber.StatusUnauthorized, "Format otorisasi tidak valid", "unauthorized")
 		}
 
 		claims, err := r.tokens.ParseAccess(parts[1])
 		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Token tidak valid atau telah kedaluwarsa"})
+			return authError(c, fiber.StatusUnauthorized, "Token tidak valid atau telah kedaluwarsa", "unauthorized")
 		}
 
-		c.Locals("user_id", claims.Subject)
-		c.Locals("user_role", claims.Role)
+		// The JWT is only proof of past authentication. Authorization reads the
+		// account and sign-in row from the database on every request, so a
+		// disabled/deleted account, a demoted role or a revoked session is
+		// rejected immediately instead of when the access token expires.
+		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+		defer cancel()
+		user, err := r.authSvc.AuthorizeSession(ctx, claims.Subject, claims.SessionID)
+		if err != nil {
+			return authError(c, fiber.StatusUnauthorized, "Sesi tidak valid atau telah berakhir, silakan masuk kembali", "unauthorized")
+		}
+
+		c.Locals("user_id", user.ID)
+		c.Locals("user_role", string(user.Role))
+		c.Locals("session_id", claims.SessionID)
 		return c.Next()
 	}
 }
@@ -224,7 +283,7 @@ func (r *Router) requireRole(requiredRole domain.UserRole) fiber.Handler {
 		// so every /admin route answered 403 — including for genuine admins.
 		role, _ := c.Locals("user_role").(string)
 		if domain.UserRole(role) != requiredRole {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Akses ditolak: Anda tidak memiliki izin untuk tindakan ini"})
+			return authError(c, fiber.StatusForbidden, "Akses ditolak: Anda tidak memiliki izin untuk tindakan ini", "forbidden")
 		}
 		return c.Next()
 	}
@@ -233,7 +292,7 @@ func (r *Router) requireRole(requiredRole domain.UserRole) fiber.Handler {
 func (r *Router) register(c *fiber.Ctx) error {
 	var input service.RegisterInput
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
+		return authError(c, fiber.StatusBadRequest, "Format data permintaan tidak valid", "invalid_input")
 	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
@@ -246,12 +305,16 @@ func (r *Router) register(c *fiber.Ctx) error {
 		// password both answered 500.
 		switch {
 		case errors.Is(err, service.ErrConflict):
-			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Email sudah terdaftar"})
+			return authError(c, fiber.StatusConflict, "Email sudah terdaftar", "conflict")
 		case errors.Is(err, service.ErrInvalidInput):
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+			return authError(c, fiber.StatusBadRequest, err.Error(), "invalid_input")
+		case errors.Is(err, service.ErrMailUnavailable):
+			// Do not reveal whether the account was created; the registration
+			// check runs before any write, so nothing was created here.
+			return authError(c, fiber.StatusServiceUnavailable, "Pendaftaran belum dapat diproses. Silakan coba lagi nanti.", "service_unavailable")
 		}
 		log.Printf("register failed for %q: %v", input.Email, err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Pendaftaran akun gagal"})
+		return authError(c, fiber.StatusInternalServerError, "Pendaftaran akun gagal", "internal_error")
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(result)
@@ -260,7 +323,7 @@ func (r *Router) register(c *fiber.Ctx) error {
 func (r *Router) login(c *fiber.Ctx) error {
 	var input service.LoginInput
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
+		return authError(c, fiber.StatusBadRequest, "Format data permintaan tidak valid", "invalid_input")
 	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
@@ -271,13 +334,16 @@ func (r *Router) login(c *fiber.Ctx) error {
 		UserAgent: c.Get("User-Agent"),
 	})
 	if err != nil {
-		if err == service.ErrUnauthorized || err == service.ErrEmailNotVerified {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": err.Error()})
+		if errors.Is(err, service.ErrUnauthorized) {
+			return authError(c, fiber.StatusUnauthorized, "Email atau kata sandi tidak valid", "unauthorized")
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal masuk ke akun"})
+		if errors.Is(err, service.ErrEmailNotVerified) {
+			return authError(c, fiber.StatusUnauthorized, service.ErrEmailNotVerified.Error(), "unauthorized")
+		}
+		return authError(c, fiber.StatusInternalServerError, "Gagal masuk ke akun", "internal_error")
 	}
 
-	setRefreshCookie(c, session.RefreshToken, session.RefreshExpiresAt)
+	r.setRefreshCookie(c, session.RefreshToken, session.RefreshExpiresAt)
 
 	return c.JSON(fiber.Map{
 		"user":         session.User,
@@ -289,7 +355,7 @@ func (r *Router) login(c *fiber.Ctx) error {
 func (r *Router) refresh(c *fiber.Ctx) error {
 	refreshToken := c.Cookies("refresh_token")
 	if refreshToken == "" {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Token penyegar tidak ditemukan"})
+		return authError(c, fiber.StatusUnauthorized, "Token penyegar tidak ditemukan", "unauthorized")
 	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
@@ -306,12 +372,12 @@ func (r *Router) refresh(c *fiber.Ctx) error {
 		// about, signing the whole browser out. An unusable cookie simply fails
 		// again on the next attempt; a valid one survives.
 		if errors.Is(err, service.ErrUnauthorized) {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Sesi telah kedaluwarsa atau dicabut, silakan masuk kembali"})
+			return authError(c, fiber.StatusUnauthorized, "Sesi telah kedaluwarsa atau dicabut, silakan masuk kembali", "unauthorized")
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui sesi"})
+		return authError(c, fiber.StatusInternalServerError, "Gagal memperbarui sesi", "internal_error")
 	}
 
-	setRefreshCookie(c, session.RefreshToken, session.RefreshExpiresAt)
+	r.setRefreshCookie(c, session.RefreshToken, session.RefreshExpiresAt)
 
 	return c.JSON(fiber.Map{
 		"user":         session.User,
@@ -320,39 +386,54 @@ func (r *Router) refresh(c *fiber.Ctx) error {
 	})
 }
 
+// writeAuthCookie is the one place authentication cookies are created. Set and
+// clear use identical attributes, so clearing always targets the cookie the
+// browser actually stored.
+func (r *Router) writeAuthCookie(c *fiber.Ctx, name, value, path string, maxAge int, expires time.Time) {
+	if path == "" {
+		path = r.authCookies.Path
+	}
+	c.Cookie(&fiber.Cookie{
+		Name:     name,
+		Value:    value,
+		Path:     path,
+		Domain:   r.authCookies.Domain,
+		MaxAge:   maxAge,
+		Expires:  expires,
+		HTTPOnly: true,
+		// The configured policy governs production. A TLS-terminating proxy can
+		// make the request look like plain HTTP, so also honour the request
+		// scheme when it reports HTTPS.
+		Secure:   r.authCookies.Secure || c.Protocol() == "https",
+		SameSite: r.authCookies.SameSite,
+	})
+}
+
 // setRefreshCookie writes the session cookie. The lifetime comes from the
 // configured refresh TTL, so raising JWT_REFRESH_TTL no longer leaves the cookie
 // expiring at a hardcoded week.
-func setRefreshCookie(c *fiber.Ctx, token string, expiresAt time.Time) {
+func (r *Router) setRefreshCookie(c *fiber.Ctx, token string, expiresAt time.Time) {
 	maxAge := int(time.Until(expiresAt).Seconds())
 	if maxAge <= 0 {
 		maxAge = int((7 * 24 * time.Hour).Seconds())
 	}
-	c.Cookie(&fiber.Cookie{
-		Name:     "refresh_token",
-		Value:    token,
-		Path:     "/",
-		MaxAge:   maxAge,
-		HTTPOnly: true,
-		Secure:   c.Protocol() == "https",
-		SameSite: "Lax",
-	})
+	r.writeAuthCookie(c, "refresh_token", token, "", maxAge, time.Time{})
 }
 
-// clearRefreshCookie expires the session cookie. ClearCookie() emits no Path, so
-// the browser scoped the deletion to the request path (..auth) and the real
-// cookie — written with Path=/ — survived a logout.
-func clearRefreshCookie(c *fiber.Ctx) {
-	c.Cookie(&fiber.Cookie{
-		Name:     "refresh_token",
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
-		Expires:  time.Now().Add(-time.Hour),
-		HTTPOnly: true,
-		Secure:   c.Protocol() == "https",
-		SameSite: "Lax",
-	})
+func (r *Router) clearRefreshCookie(c *fiber.Ctx) {
+	r.writeAuthCookie(c, "refresh_token", "", "", -1, time.Now().Add(-time.Hour))
+}
+
+func (r *Router) setOAuthNonceCookie(c *fiber.Ctx, nonce string, ttl time.Duration) {
+	maxAge := int(ttl.Seconds())
+	if maxAge <= 0 {
+		maxAge = int((10 * time.Minute).Seconds())
+	}
+	r.writeAuthCookie(c, "oauth_nonce", nonce, "/api/v1/auth/google", maxAge, time.Time{})
+}
+
+func (r *Router) clearOAuthNonceCookie(c *fiber.Ctx) {
+	r.writeAuthCookie(c, "oauth_nonce", "", "/api/v1/auth/google", -1, time.Now().Add(-time.Hour))
 }
 
 func (r *Router) logout(c *fiber.Ctx) error {
@@ -366,7 +447,7 @@ func (r *Router) logout(c *fiber.Ctx) error {
 			log.Printf("logout: revoking refresh token failed: %v", err)
 		}
 	}
-	clearRefreshCookie(c)
+	r.clearRefreshCookie(c)
 	return c.JSON(fiber.Map{"message": "Berhasil keluar"})
 }
 
@@ -376,26 +457,29 @@ func (r *Router) changePassword(c *fiber.Ctx) error {
 		NewPassword     string `json:"new_password"`
 	}
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
+		return authError(c, fiber.StatusBadRequest, "Format data permintaan tidak valid", "invalid_input")
 	}
 	userID, _ := c.Locals("user_id").(string)
+	sessionID, _ := c.Locals("session_id").(string)
 
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
 	defer cancel()
 
-	err := r.authSvc.ChangePassword(ctx, userID, input.CurrentPassword, input.NewPassword, c.Cookies("refresh_token"), service.ClientInfo{
+	err := r.authSvc.ChangePassword(ctx, userID, input.CurrentPassword, input.NewPassword, c.Cookies("refresh_token"), sessionID, service.ClientInfo{
 		IPAddress: c.IP(),
 		UserAgent: c.Get("User-Agent"),
 	})
 	if err != nil {
 		switch {
+		case errors.Is(err, service.ErrUnauthorized):
+			return authError(c, fiber.StatusUnauthorized, "Sesi tidak valid atau telah berakhir, silakan masuk kembali", "unauthorized")
 		case errors.Is(err, service.ErrInvalidInput):
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+			return authError(c, fiber.StatusBadRequest, err.Error(), "invalid_input")
 		case errors.Is(err, service.ErrNotFound):
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Akun tidak ditemukan"})
+			return authError(c, fiber.StatusNotFound, "Akun tidak ditemukan", "not_found")
 		}
 		log.Printf("change-password failed for %q: %v", userID, err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Kata sandi gagal diubah"})
+		return authError(c, fiber.StatusInternalServerError, "Kata sandi gagal diubah", "internal_error")
 	}
 	return c.JSON(fiber.Map{"message": "Kata sandi berhasil diubah. Sesi lain sudah diakhiri."})
 }
@@ -408,7 +492,7 @@ func (r *Router) listSessions(c *fiber.Ctx) error {
 
 	sessions, err := r.authSvc.ListSessions(ctx, userID, c.Cookies("refresh_token"))
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil daftar sesi"})
+		return authError(c, fiber.StatusInternalServerError, "Gagal mengambil daftar sesi", "internal_error")
 	}
 	return c.JSON(fiber.Map{"sessions": sessions})
 }
@@ -426,11 +510,11 @@ func (r *Router) revokeSession(c *fiber.Ctx) error {
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrInvalidInput):
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+			return authError(c, fiber.StatusBadRequest, err.Error(), "invalid_input")
 		case errors.Is(err, service.ErrNotFound):
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Sesi tidak ditemukan atau sudah berakhir"})
+			return authError(c, fiber.StatusNotFound, "Sesi tidak ditemukan atau sudah berakhir", "not_found")
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Sesi gagal diakhiri"})
+		return authError(c, fiber.StatusInternalServerError, "Sesi gagal diakhiri", "internal_error")
 	}
 	return c.JSON(fiber.Map{"message": "Sesi diakhiri"})
 }
@@ -446,7 +530,7 @@ func (r *Router) revokeOtherSessions(c *fiber.Ctx) error {
 		UserAgent: c.Get("User-Agent"),
 	})
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Sesi lain gagal diakhiri"})
+		return authError(c, fiber.StatusInternalServerError, "Sesi lain gagal diakhiri", "internal_error")
 	}
 	return c.JSON(fiber.Map{"message": "Sesi lain sudah diakhiri", "ended": ended})
 }
@@ -456,7 +540,7 @@ func (r *Router) verifyEmail(c *fiber.Ctx) error {
 		Token string `json:"token"`
 	}
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
+		return authError(c, fiber.StatusBadRequest, "Format data permintaan tidak valid", "invalid_input")
 	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
@@ -464,10 +548,10 @@ func (r *Router) verifyEmail(c *fiber.Ctx) error {
 
 	user, err := r.authSvc.VerifyEmail(ctx, input.Token)
 	if err != nil {
-		if err == service.ErrUnauthorized || err == service.ErrNotFound {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Token verifikasi tidak valid atau telah kedaluwarsa"})
+		if errors.Is(err, service.ErrUnauthorized) || errors.Is(err, service.ErrNotFound) {
+			return authError(c, fiber.StatusBadRequest, "Token verifikasi tidak valid atau telah kedaluwarsa", "invalid_input")
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Verifikasi email gagal"})
+		return authError(c, fiber.StatusInternalServerError, "Verifikasi email gagal", "internal_error")
 	}
 
 	return c.JSON(fiber.Map{"message": "Email berhasil diverifikasi", "user": user})
@@ -478,7 +562,7 @@ func (r *Router) resendVerification(c *fiber.Ctx) error {
 		Email string `json:"email"`
 	}
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
+		return authError(c, fiber.StatusBadRequest, "Format data permintaan tidak valid", "invalid_input")
 	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
@@ -487,14 +571,16 @@ func (r *Router) resendVerification(c *fiber.Ctx) error {
 	if err := r.authSvc.ResendVerification(ctx, input.Email); err != nil {
 		switch {
 		case errors.Is(err, service.ErrInvalidInput):
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Masukkan alamat email yang valid."})
+			return authError(c, fiber.StatusBadRequest, "Masukkan alamat email yang valid.", "invalid_input")
 		case errors.Is(err, service.ErrNotFound):
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Email belum terdaftar. Silakan membuat akun terlebih dahulu."})
+			return authError(c, fiber.StatusNotFound, "Email belum terdaftar. Silakan membuat akun terlebih dahulu.", "not_found")
 		case errors.Is(err, service.ErrAlreadyVerified):
-			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error()})
+			return authError(c, fiber.StatusConflict, err.Error(), "conflict")
+		case errors.Is(err, service.ErrMailUnavailable):
+			return authError(c, fiber.StatusServiceUnavailable, "Layanan email sedang tidak tersedia. Silakan coba lagi nanti.", "service_unavailable")
 		}
 		log.Printf("resend-verification failed for %q: %v", input.Email, err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengirim ulang tautan verifikasi."})
+		return authError(c, fiber.StatusInternalServerError, "Gagal mengirim ulang tautan verifikasi.", "internal_error")
 	}
 
 	return c.JSON(fiber.Map{"message": "Tautan verifikasi baru sudah dikirim ke email Anda."})
@@ -505,7 +591,7 @@ func (r *Router) forgotPassword(c *fiber.Ctx) error {
 		Email string `json:"email"`
 	}
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
+		return authError(c, fiber.StatusBadRequest, "Format data permintaan tidak valid", "invalid_input")
 	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), 10*time.Second)
@@ -513,15 +599,16 @@ func (r *Router) forgotPassword(c *fiber.Ctx) error {
 
 	if err := r.authSvc.ForgotPassword(ctx, input.Email); err != nil {
 		if errors.Is(err, service.ErrNotFound) {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-				"error": "Email belum terdaftar. Silakan membuat akun terlebih dahulu.",
-			})
+			return authError(c, fiber.StatusNotFound, "Email belum terdaftar. Silakan membuat akun terlebih dahulu.", "not_found")
 		}
 		if errors.Is(err, service.ErrInvalidInput) {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Masukkan alamat email yang valid."})
+			return authError(c, fiber.StatusBadRequest, "Masukkan alamat email yang valid.", "invalid_input")
+		}
+		if errors.Is(err, service.ErrMailUnavailable) {
+			return authError(c, fiber.StatusServiceUnavailable, "Layanan email sedang tidak tersedia. Silakan coba lagi nanti.", "service_unavailable")
 		}
 		log.Printf("forgot-password failed for %q: %v", input.Email, err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Permintaan atur ulang kata sandi gagal."})
+		return authError(c, fiber.StatusInternalServerError, "Permintaan atur ulang kata sandi gagal.", "internal_error")
 	}
 
 	return c.JSON(fiber.Map{"message": "Tautan atur ulang kata sandi sudah dikirim."})
@@ -533,7 +620,7 @@ func (r *Router) resetPassword(c *fiber.Ctx) error {
 		Password string `json:"password"`
 	}
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
+		return authError(c, fiber.StatusBadRequest, "Format data permintaan tidak valid", "invalid_input")
 	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
@@ -542,12 +629,12 @@ func (r *Router) resetPassword(c *fiber.Ctx) error {
 	user, err := r.authSvc.ResetPassword(ctx, input.Token, input.Password)
 	if err != nil {
 		if errors.Is(err, service.ErrUnauthorized) {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Tautan atur ulang kata sandi tidak valid atau sudah kedaluwarsa. Silakan minta tautan baru."})
+			return authError(c, fiber.StatusBadRequest, "Tautan atur ulang kata sandi tidak valid atau sudah kedaluwarsa. Silakan minta tautan baru.", "invalid_input")
 		}
 		if errors.Is(err, service.ErrInvalidInput) {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+			return authError(c, fiber.StatusBadRequest, err.Error(), "invalid_input")
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengatur ulang kata sandi"})
+		return authError(c, fiber.StatusInternalServerError, "Gagal mengatur ulang kata sandi", "internal_error")
 	}
 
 	return c.JSON(fiber.Map{"message": "Kata sandi berhasil diperbarui. Silakan masuk dengan kata sandi baru Anda.", "user": user})
@@ -611,21 +698,32 @@ func (r *Router) listAuthProviders(c *fiber.Ctx) error {
 
 func (r *Router) googleLogin(c *fiber.Ctx) error {
 	if r.authSvc.GoogleConfig() == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Autentikasi Google belum dikonfigurasi"})
+		return authError(c, fiber.StatusServiceUnavailable, "Autentikasi Google belum dikonfigurasi", "service_unavailable")
 	}
 	cfg := r.authSvc.GoogleConfig()
+	// The nonce lives in a browser cookie and the state in Redis. Binding the
+	// two means a state value observed by another client (even on the same IP)
+	// cannot be redeemed from a different browser.
 	state, err := r.authSvc.GenerateOAuthState()
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal membuat state autentikasi Google"})
+		return authError(c, fiber.StatusInternalServerError, "Gagal membuat state autentikasi Google", "internal_error")
 	}
-	// Store state in Redis with TTL
-	if r.redis != nil {
-		ctx, cancel := context.WithTimeout(c.Context(), 3*time.Second)
-		defer cancel()
-		if err := r.redis.Set(ctx, "oauth:state:"+state, c.IP(), cfg.StateTTL).Err(); err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menyimpan state autentikasi Google"})
-		}
+	nonce, err := r.authSvc.GenerateOAuthState()
+	if err != nil {
+		return authError(c, fiber.StatusInternalServerError, "Gagal membuat state autentikasi Google", "internal_error")
 	}
+	if r.oauthStates == nil {
+		// State storage is mandatory. Without it the callback cannot prove that
+		// this browser started the flow, so fail closed instead of skipping the
+		// check.
+		return authError(c, fiber.StatusServiceUnavailable, "Layanan masuk dengan Google sedang tidak tersedia", "service_unavailable")
+	}
+	ctx, cancel := context.WithTimeout(c.Context(), 3*time.Second)
+	defer cancel()
+	if err := r.oauthStates.Save(ctx, state, nonce, cfg.StateTTL); err != nil {
+		return authError(c, fiber.StatusServiceUnavailable, "Layanan masuk dengan Google sedang tidak tersedia", "service_unavailable")
+	}
+	r.setOAuthNonceCookie(c, nonce, cfg.StateTTL)
 	authURL := fmt.Sprintf("%s?client_id=%s&redirect_uri=%s&response_type=code&scope=openid%%20email%%20profile&access_type=offline&prompt=consent&state=%s",
 		cfg.AuthURL, url.QueryEscape(cfg.ClientID), url.QueryEscape(cfg.RedirectURL), state)
 	return c.Redirect(authURL, fiber.StatusTemporaryRedirect)
@@ -633,38 +731,49 @@ func (r *Router) googleLogin(c *fiber.Ctx) error {
 
 func (r *Router) googleCallback(c *fiber.Ctx) error {
 	if r.authSvc.GoogleConfig() == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Autentikasi Google belum dikonfigurasi"})
+		return authError(c, fiber.StatusServiceUnavailable, "Autentikasi Google belum dikonfigurasi", "service_unavailable")
 	}
 	cfg := r.authSvc.GoogleConfig()
 	code := c.Query("code")
 	state := c.Query("state")
+	nonce := c.Cookies("oauth_nonce")
 	if code == "" || state == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Kode otorisasi atau state Google tidak lengkap"})
+		return authError(c, fiber.StatusBadRequest, "Kode otorisasi atau state Google tidak lengkap", "invalid_input")
 	}
-	// Verify state
-	if r.redis != nil {
-		ctx, cancel := context.WithTimeout(c.Context(), 3*time.Second)
-		defer cancel()
-		storedIP, err := r.redis.Get(ctx, "oauth:state:"+state).Result()
-		if err != nil || storedIP != c.IP() {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Sesi login Google tidak valid atau kedaluwarsa"})
-		}
-		r.redis.Del(ctx, "oauth:state:"+state)
+	if r.oauthStates == nil {
+		return authError(c, fiber.StatusServiceUnavailable, "Layanan masuk dengan Google sedang tidak tersedia", "service_unavailable")
 	}
-	ctx, cancel := context.WithTimeout(c.Context(), 10*time.Second)
-	defer cancel()
-	session, err := r.authSvc.ExchangeGoogleCode(ctx, code, cfg)
+	// Consume before exchanging the code: a state is valid at most once, even
+	// if the provider call below fails. GetDel makes concurrent callbacks
+	// race-safe.
+	ctx, cancel := context.WithTimeout(c.Context(), 3*time.Second)
+	storedNonce, err := r.oauthStates.Consume(ctx, state)
+	cancel()
+	// Clear the nonce regardless of the outcome so it cannot be reused.
+	r.clearOAuthNonceCookie(c)
 	if err != nil {
-		if err == service.ErrUnauthorized {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Kode otorisasi Google tidak valid"})
+		if errors.Is(err, ErrOAuthStateNotFound) {
+			return authError(c, fiber.StatusUnauthorized, "Sesi login Google tidak valid atau kedaluwarsa", "unauthorized")
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menghubungkan akun Google"})
+		return authError(c, fiber.StatusServiceUnavailable, "Layanan masuk dengan Google sedang tidak tersedia", "service_unavailable")
+	}
+	if nonce == "" || subtle.ConstantTimeCompare([]byte(storedNonce), []byte(nonce)) != 1 {
+		return authError(c, fiber.StatusUnauthorized, "Sesi login Google tidak valid atau kedaluwarsa", "unauthorized")
+	}
+	exchangeCtx, exchangeCancel := context.WithTimeout(c.Context(), 10*time.Second)
+	defer exchangeCancel()
+	session, err := r.authSvc.ExchangeGoogleCode(exchangeCtx, code, cfg)
+	if err != nil {
+		if errors.Is(err, service.ErrUnauthorized) {
+			return authError(c, fiber.StatusUnauthorized, "Akun Google tidak dapat digunakan untuk masuk", "unauthorized")
+		}
+		return authError(c, fiber.StatusInternalServerError, "Gagal menghubungkan akun Google", "internal_error")
 	}
 	// The session cookie is set here and the tokens stay out of the redirect: a
 	// query string ends up in browser history, the Referer header, and every
 	// proxy log along the way. The storefront recovers the session on load by
 	// calling /auth/refresh, which sends this cookie.
-	setRefreshCookie(c, session.RefreshToken, session.RefreshExpiresAt)
+	r.setRefreshCookie(c, session.RefreshToken, session.RefreshExpiresAt)
 	return c.Redirect(cfg.FrontendReturnURL, fiber.StatusTemporaryRedirect)
 }
 

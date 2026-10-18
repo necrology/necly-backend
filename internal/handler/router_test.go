@@ -56,6 +56,16 @@ func (m *dummyAuthRepo) RefreshTokenByHash(ctx context.Context, hash string) (*d
 	}
 	return nil, args.Error(1)
 }
+func (m *dummyAuthRepo) RefreshTokenByID(ctx context.Context, id string) (*domain.RefreshToken, error) {
+	args := m.Called(ctx, id)
+	if r := args.Get(0); r != nil {
+		return r.(*domain.RefreshToken), args.Error(1)
+	}
+	return nil, args.Error(1)
+}
+func (m *dummyAuthRepo) UpdatePasswordHashAndRevokeSessions(ctx context.Context, userID, hash, exceptSessionID string, now time.Time) error {
+	return m.Called(ctx, userID, hash, exceptSessionID, now).Error(0)
+}
 func (m *dummyAuthRepo) RotateRefreshToken(ctx context.Context, oldHash string, replacement *domain.RefreshToken, now time.Time) error {
 	return m.Called(ctx, oldHash, replacement, now).Error(0)
 }
@@ -171,9 +181,17 @@ func TestAuthMiddleware_LocalizedExpiredToken(t *testing.T) {
 	assert.Equal(t, "Token tidak valid atau telah kedaluwarsa", payload["error"])
 }
 
+func expectActiveSession(repo *dummyAuthRepo, userID, sessionID string, role domain.UserRole) {
+	repo.On("UserByID", mock.Anything, userID).Return(&domain.User{ID: userID, Role: role, Active: true, EmailVerifiedAt: ptrTime(time.Now())}, nil)
+	repo.On("RefreshTokenByID", mock.Anything, sessionID).Return(&domain.RefreshToken{ID: sessionID, UserID: userID, ExpiresAt: time.Now().Add(time.Hour)}, nil)
+}
+
+func ptrTime(value time.Time) *time.Time { return &value }
+
 func TestRequireRole_LocalizedInsufficientPermissions(t *testing.T) {
-	app, tokens, _ := setupTestApp(t)
-	token, err := tokens.IssueAccess("user-1", string(domain.RoleCustomer))
+	app, tokens, authRepo := setupTestApp(t)
+	expectActiveSession(authRepo, "user-1", "session-1", domain.RoleCustomer)
+	token, err := tokens.IssueAccess("user-1", string(domain.RoleCustomer), "session-1")
 	assert.NoError(t, err)
 
 	req := httptest.NewRequest("GET", "/api/v1/admin/dashboard", nil)
@@ -244,8 +262,9 @@ func TestAuthHandlers_LocalizedRegisterAndLoginErrors(t *testing.T) {
 // genuine admin. The existing test only covered the deny case, which is why the
 // bug survived.
 func TestRequireRole_AdmitsAnAdminToken(t *testing.T) {
-	app, tokens, _ := setupTestApp(t)
-	token, err := tokens.IssueAccess("admin-1", string(domain.RoleAdmin))
+	app, tokens, authRepo := setupTestApp(t)
+	expectActiveSession(authRepo, "admin-1", "session-admin-1", domain.RoleAdmin)
+	token, err := tokens.IssueAccess("admin-1", string(domain.RoleAdmin), "session-admin-1")
 	assert.NoError(t, err)
 
 	req := httptest.NewRequest("GET", "/api/v1/admin/dashboard", nil)
@@ -285,8 +304,9 @@ func (m *dummyAuthRepo) RevokeUserRefreshTokens(ctx context.Context, userID, exc
 // service's first validation rejected every checkout with a 400 — checkout had
 // never worked, since the first commit.
 func TestCheckoutReadsTheIdempotencyKeyFromTheHeader(t *testing.T) {
-	app, tokens, _ := setupTestApp(t)
-	token, err := tokens.IssueAccess("user-1", string(domain.RoleCustomer))
+	app, tokens, authRepo := setupTestApp(t)
+	expectActiveSession(authRepo, "user-1", "session-1", domain.RoleCustomer)
+	token, err := tokens.IssueAccess("user-1", string(domain.RoleCustomer), "session-1")
 	assert.NoError(t, err)
 	body := `{"items":[{"product_price_id":"price-1","quantity":1,"device_count":1}]}`
 
