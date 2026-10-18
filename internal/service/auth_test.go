@@ -89,6 +89,15 @@ func (r *fakeAuthRepository) RefreshTokenByHash(_ context.Context, hash string) 
 	copyToken := *token
 	return &copyToken, nil
 }
+func (r *fakeAuthRepository) RefreshTokenByID(_ context.Context, id string) (*domain.RefreshToken, error) {
+	for _, token := range r.refresh {
+		if token.ID == id {
+			copyToken := *token
+			return &copyToken, nil
+		}
+	}
+	return nil, ErrNotFound
+}
 func (r *fakeAuthRepository) RotateRefreshToken(_ context.Context, oldHash string, replacement *domain.RefreshToken, now time.Time) error {
 	old, ok := r.refresh[oldHash]
 	if !ok || old.RevokedAt != nil || !old.ExpiresAt.After(now) {
@@ -120,6 +129,9 @@ func (r *fakeAuthRepository) ConsumeVerificationToken(_ context.Context, hash st
 }
 func (r *fakeAuthRepository) UpsertGoogleUser(_ context.Context, email, name, subject string, now time.Time) (*domain.User, error) {
 	if user, ok := r.usersByEmail[email]; ok {
+		if user.DeletedAt != nil || !user.Active {
+			return nil, ErrUnauthorized
+		}
 		user.GoogleSubject = &subject
 		user.EmailVerifiedAt = &now
 		copyUser := *user
@@ -257,6 +269,21 @@ func (r *fakeAuthRepository) RevokeRefreshTokenByID(_ context.Context, userID, t
 func (r *fakeAuthRepository) RevokeUserRefreshTokens(_ context.Context, userID, exceptHash string, now time.Time) error {
 	for hash, token := range r.refresh {
 		if token.UserID == userID && token.RevokedAt == nil && hash != exceptHash {
+			revoked := now
+			token.RevokedAt = &revoked
+		}
+	}
+	return nil
+}
+
+func (r *fakeAuthRepository) UpdatePasswordHashAndRevokeSessions(_ context.Context, userID, hash, exceptSessionID string, now time.Time) error {
+	user, ok := r.usersByID[userID]
+	if !ok || user.DeletedAt != nil {
+		return ErrNotFound
+	}
+	user.PasswordHash = hash
+	for _, token := range r.refresh {
+		if token.UserID == userID && token.RevokedAt == nil && token.ExpiresAt.After(now) && token.ID != exceptSessionID {
 			revoked := now
 			token.RevokedAt = &revoked
 		}

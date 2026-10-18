@@ -11,6 +11,7 @@ import (
 	"github.com/necly/services/internal/domain"
 	"github.com/necly/services/internal/service"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type Store struct {
@@ -49,6 +50,33 @@ func (s *Store) UpdatePasswordHash(ctx context.Context, userID, hash string, now
 	return s.db.WithContext(ctx).Model(&domain.User{}).
 		Where("id = ? AND deleted_at IS NULL", userID).
 		Updates(map[string]any{"password_hash": hash, "updated_at": now}).Error
+}
+
+// UpdatePasswordHashAndRevokeSessions applies a password change and ends the
+// account's other sign-ins in one transaction. A failure on either side leaves
+// both untouched, so a password can never change while the sessions that were
+// supposed to die with it survive.
+func (s *Store) UpdatePasswordHashAndRevokeSessions(ctx context.Context, userID, hash, exceptSessionID string, now time.Time) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&domain.User{}).
+			Where("id = ? AND deleted_at IS NULL", userID).
+			Updates(map[string]any{"password_hash": hash, "updated_at": now})
+		if result.Error != nil {
+			return fmt.Errorf("update password: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return service.ErrNotFound
+		}
+		query := tx.Model(&domain.RefreshToken{}).
+			Where("user_id = ? AND revoked_at IS NULL AND expires_at > ?", userID, now)
+		if exceptSessionID != "" {
+			query = query.Where("id <> ?", exceptSessionID)
+		}
+		if err := query.Update("revoked_at", now).Error; err != nil {
+			return fmt.Errorf("revoke sessions after password change: %w", err)
+		}
+		return nil
+	})
 }
 
 // CreateVerificationToken issues a replacement verification link and retires the
@@ -93,6 +121,15 @@ func (s *Store) SaveRefreshToken(ctx context.Context, token *domain.RefreshToken
 func (s *Store) RefreshTokenByHash(ctx context.Context, hash string) (*domain.RefreshToken, error) {
 	var token domain.RefreshToken
 	err := s.db.WithContext(ctx).Where("token_hash = ?", hash).First(&token).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, service.ErrNotFound
+	}
+	return &token, err
+}
+
+func (s *Store) RefreshTokenByID(ctx context.Context, id string) (*domain.RefreshToken, error) {
+	var token domain.RefreshToken
+	err := s.db.WithContext(ctx).Where("id = ?", id).First(&token).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, service.ErrNotFound
 	}
@@ -210,21 +247,37 @@ func (s *Store) UpsertGoogleUser(ctx context.Context, email, name, subject strin
 	var user *domain.User
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var u domain.User
-		err := tx.Where("email = ?", email).First(&u).Error
+		// Lock the row for the duration of the transaction so a concurrent
+		// admin deactivation cannot slip between the eligibility check and the
+		// write. The conditional UPDATE below is a second guard against writing
+		// to an account that stopped being eligible.
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("email = ?", email).First(&u).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			u = domain.User{ID: uuid.NewString(), Email: email, Name: name, Role: domain.RoleCustomer, GoogleSubject: &subject, EmailVerifiedAt: &now, CreatedAt: now, UpdatedAt: now}
+			u = domain.User{ID: uuid.NewString(), Email: email, Name: name, Role: domain.RoleCustomer, Active: true, GoogleSubject: &subject, EmailVerifiedAt: &now, CreatedAt: now, UpdatedAt: now}
 			if err := tx.Create(&u).Error; err != nil {
 				return fmt.Errorf("create google user: %w", err)
 			}
 		} else if err != nil {
 			return fmt.Errorf("find user: %w", err)
 		} else {
+			// Check eligibility before writing anything. A disabled or deleted
+			// account must not be reactivated, relinked or granted a session just
+			// because Google confirmed the email address.
+			if u.DeletedAt != nil || !u.Active {
+				return service.ErrUnauthorized
+			}
+			result := tx.Model(&domain.User{}).
+				Where("id = ? AND active = true AND deleted_at IS NULL", u.ID).
+				Updates(map[string]any{"google_subject": subject, "email_verified_at": now, "updated_at": now})
+			if result.Error != nil {
+				return fmt.Errorf("update google user: %w", result.Error)
+			}
+			if result.RowsAffected == 0 {
+				return service.ErrUnauthorized
+			}
 			u.GoogleSubject = &subject
 			u.EmailVerifiedAt = &now
 			u.UpdatedAt = now
-			if err := tx.Save(&u).Error; err != nil {
-				return fmt.Errorf("update google user: %w", err)
-			}
 		}
 		user = &u
 		return nil

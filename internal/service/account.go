@@ -22,11 +22,20 @@ type SessionInfo struct {
 // ChangePassword rotates the password of a signed-in account. The current
 // password is required even though the caller already holds a session, so a
 // stolen access token alone cannot lock the owner out. Every other session is
-// ended, because a password change is usually a response to suspicion.
-func (s *AuthService) ChangePassword(ctx context.Context, userID, currentPassword, newPassword, currentRefreshToken string, client ClientInfo) error {
+// ended in the same transaction as the password update, because a password
+// change is usually a response to suspicion.
+//
+// currentSessionID comes from the validated access token and lets the request
+// that performs the change stay signed in. When it is absent (for example a
+// client that only sends an access token without a refresh cookie) every live
+// refresh row is revoked instead.
+func (s *AuthService) ChangePassword(ctx context.Context, userID, currentPassword, newPassword, currentRefreshToken, currentSessionID string, client ClientInfo) error {
 	user, err := s.repo.UserByID(ctx, userID)
 	if err != nil {
 		return err
+	}
+	if user.DeletedAt != nil || !user.Active {
+		return ErrUnauthorized
 	}
 	if !s.hasher.Verify(user.PasswordHash, currentPassword) {
 		s.record(ctx, AuditEntry{Action: AuditLoginFailed, ActorUserID: userID, Resource: "user", ResourceID: userID, IPAddress: client.IPAddress, Metadata: map[string]any{"reason": "wrong current password on change"}})
@@ -43,13 +52,16 @@ func (s *AuthService) ChangePassword(ctx context.Context, userID, currentPasswor
 	if err != nil {
 		return fmt.Errorf("hash password: %w", err)
 	}
-	if err := s.repo.UpdatePasswordHash(ctx, userID, hash, s.now().UTC()); err != nil {
-		return err
-	}
-	if currentRefreshToken != "" {
-		if err := s.repo.RevokeUserRefreshTokens(ctx, userID, HashToken(currentRefreshToken), s.now().UTC()); err != nil {
-			return err
+	exceptSessionID := strings.TrimSpace(currentSessionID)
+	if exceptSessionID == "" && currentRefreshToken != "" {
+		// Older callers only supplied the cookie. Resolve its row so the
+		// device making the change is still spared.
+		if current, lookupErr := s.repo.RefreshTokenByHash(ctx, HashToken(currentRefreshToken)); lookupErr == nil && current != nil {
+			exceptSessionID = current.ID
 		}
+	}
+	if err := s.repo.UpdatePasswordHashAndRevokeSessions(ctx, userID, hash, exceptSessionID, s.now().UTC()); err != nil {
+		return err
 	}
 	s.record(ctx, AuditEntry{Action: AuditPasswordChanged, ActorUserID: userID, Resource: "user", ResourceID: userID, IPAddress: client.IPAddress})
 	return nil

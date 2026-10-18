@@ -106,7 +106,7 @@ func main() {
 	mail := mailer.New(mailer.Config{
 		Host: cfg.Email.SMTPHost, Port: cfg.Email.SMTPPort, User: cfg.Email.SMTPUser,
 		Password: cfg.Email.SMTPPassword, From: cfg.Email.FromEmail, FromName: cfg.Email.FromName,
-		UseTLS: cfg.Email.UseTLS,
+		UseTLS: cfg.Email.UseTLS, Production: cfg.AppEnv == "production",
 	})
 	authSvc := service.NewAuthService(store, hasher, tokenManager, service.AuthSettings{
 		VerificationTTL:  cfg.JWT.VerificationTTL,
@@ -115,7 +115,8 @@ func main() {
 		Mailer:           mail,
 		Google:           googleConfig,
 		// Without this the audit log stayed empty: nothing ever wrote a row.
-		Audit: store,
+		Audit:      store,
+		Production: cfg.AppEnv == "production",
 	})
 	catalogSvc := service.NewCatalogService(store)
 	cartSvc := service.NewCartService(store)
@@ -220,6 +221,10 @@ func main() {
 	app.Use("/api/v1/auth/resend-verification", rateLimited(5, time.Hour, "Terlalu banyak permintaan tautan aktivasi. Coba lagi nanti."))
 
 	router := handler.NewRouter(authSvc, catalogSvc, cartSvc, checkoutSvc, webhookSvc, orderSvc, adminSvc, adminUserSvc, adminProductSvc, adminCategorySvc, adminOrderSvc, adminVoucherSvc, adminInventorySvc, tokenManager, cipher, redisClient, reportSvc, testimonialSvc)
+	router.SetAuthCookiePolicy(handler.AuthCookiePolicy{
+		Secure: cfg.Cookie.Secure, HTTPOnly: cfg.Cookie.HTTPOnly, SameSite: cfg.Cookie.SameSite,
+		Domain: cfg.Cookie.Domain, Path: cfg.Cookie.Path,
+	})
 	router.Register(app)
 
 	go func() {

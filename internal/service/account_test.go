@@ -56,7 +56,7 @@ func TestChangePasswordRotatesThePasswordAndEndsOtherSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := auth.ChangePassword(context.Background(), user.ID, "Str0ng-password!", "N3w-strong-password!", laptop.RefreshToken, ClientInfo{}); err != nil {
+	if err := auth.ChangePassword(context.Background(), user.ID, "Str0ng-password!", "N3w-strong-password!", laptop.RefreshToken, "", ClientInfo{}); err != nil {
 		t.Fatalf("ChangePassword() error = %v", err)
 	}
 
@@ -91,7 +91,7 @@ func TestChangePasswordRejectsWrongShortAndRepeatedPasswords(t *testing.T) {
 		"kata sandi tidak berubah":  {"Str0ng-password!", "Str0ng-password!"},
 	}
 	for name, input := range cases {
-		if err := auth.ChangePassword(context.Background(), user.ID, input.current, input.next, "", ClientInfo{}); !errors.Is(err, ErrInvalidInput) {
+		if err := auth.ChangePassword(context.Background(), user.ID, input.current, input.next, "", "", ClientInfo{}); !errors.Is(err, ErrInvalidInput) {
 			t.Fatalf("%s: error = %v, want ErrInvalidInput", name, err)
 		}
 	}

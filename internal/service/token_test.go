@@ -13,7 +13,7 @@ func TestTokenManagerIssuesShortLivedAccessAndOpaqueRefreshTokens(t *testing.T) 
 	}
 	manager.now = func() time.Time { return now }
 
-	access, err := manager.IssueAccess("user-1", "admin")
+	access, err := manager.IssueAccess("user-1", "admin", "session-1")
 	if err != nil {
 		t.Fatalf("IssueAccess() error = %v", err)
 	}
@@ -21,7 +21,7 @@ func TestTokenManagerIssuesShortLivedAccessAndOpaqueRefreshTokens(t *testing.T) 
 	if err != nil {
 		t.Fatalf("ParseAccess() error = %v", err)
 	}
-	if claims.Subject != "user-1" || claims.Role != "admin" {
+	if claims.Subject != "user-1" || claims.Role != "admin" || claims.SessionID != "session-1" {
 		t.Fatalf("claims = %#v", claims)
 	}
 	if got := claims.ExpiresAt.Time.Sub(now); got != 15*time.Minute {
@@ -46,7 +46,7 @@ func TestTokenManagerIssuesShortLivedAccessAndOpaqueRefreshTokens(t *testing.T) 
 func TestTokenManagerRejectsWrongSecretAndWrongType(t *testing.T) {
 	first, _ := NewTokenManager("first-secret-at-least-thirty-two-bytes-long", "necly", time.Minute, time.Hour)
 	second, _ := NewTokenManager("second-secret-at-least-thirty-two-bytes", "necly", time.Minute, time.Hour)
-	access, _ := first.IssueAccess("user-1", "customer")
+	access, _ := first.IssueAccess("user-1", "customer", "session-1")
 	if _, err := second.ParseAccess(access); err == nil {
 		t.Fatal("ParseAccess accepted a token signed with another secret")
 	}
