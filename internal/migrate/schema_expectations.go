@@ -266,6 +266,7 @@ var baselineSchema = schemaExpectation{
 		{"orders", []string{"idempotency_key"}, true, "baseline", "009"},
 		{"orders", []string{"number"}, true, "baseline", ""},
 		{"orders", []string{"status"}, false, "baseline", ""},
+		{"orders", []string{"status", "payment_due_at"}, false, "011", ""},
 		{"orders", []string{"user_id"}, false, "baseline", ""},
 		{"orders", []string{"user_id", "idempotency_key"}, true, "010", ""},
 		{"password_reset_tokens", []string{"expires_at"}, false, "baseline", ""},

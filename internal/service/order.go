@@ -48,16 +48,20 @@ func (s *OrderService) UpdateOrderStatus(ctx context.Context, orderID string, st
 	if err != nil {
 		return err
 	}
-	if !isValidTransition(current.Status, status) {
+	if !IsValidOrderTransition(current.Status, status) {
 		return ErrInvalidTransition
 	}
 	return s.orderRepo.UpdateOrderStatus(ctx, orderID, status, now)
 }
 
-func isValidTransition(from, to domain.OrderStatus) bool {
+// IsValidOrderTransition is the single admin/fulfilment state machine. It is
+// shared by the service and the transactional repository so a status change
+// cannot be accepted by one layer and rejected by the other.
+func IsValidOrderTransition(from, to domain.OrderStatus) bool {
 	validTransitions := map[domain.OrderStatus][]domain.OrderStatus{
 		domain.OrderPending:    {domain.OrderPaid, domain.OrderCancelled, domain.OrderExpired},
-		domain.OrderPaid:       {domain.OrderProcessing, domain.OrderCancelled, domain.OrderRefunded},
+		domain.OrderPaid:       {domain.OrderFulfilling, domain.OrderProcessing, domain.OrderCancelled, domain.OrderRefunded},
+		domain.OrderFulfilling: {domain.OrderProcessing, domain.OrderShipped, domain.OrderCancelled, domain.OrderRefunded},
 		domain.OrderProcessing: {domain.OrderShipped, domain.OrderCancelled, domain.OrderRefunded},
 		domain.OrderShipped:    {domain.OrderDelivered, domain.OrderCancelled, domain.OrderRefunded},
 		domain.OrderDelivered:  {domain.OrderCompleted, domain.OrderRefunded},

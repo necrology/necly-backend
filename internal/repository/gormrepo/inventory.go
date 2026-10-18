@@ -88,7 +88,33 @@ func (s *Store) UpdateAccount(ctx context.Context, a *domain.InventoryAccount) e
 }
 
 func (s *Store) DeleteAccount(ctx context.Context, id string) error {
-	return s.db.WithContext(ctx).Delete(&domain.InventoryAccount{}, "id = ?", id).Error
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var account domain.InventoryAccount
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).First(&account).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return service.ErrNotFound
+			}
+			return fmt.Errorf("load inventory account: %w", err)
+		}
+
+		var linked int64
+		if err := tx.Model(&domain.InventorySlot{}).
+			Where("inventory_account_id = ? AND (status <> ? OR order_item_id IS NOT NULL OR reserved_by IS NOT NULL)", id, "available").
+			Count(&linked).Error; err != nil {
+			return fmt.Errorf("count linked inventory slots: %w", err)
+		}
+		if linked > 0 {
+			// The schema still has ON DELETE CASCADE for historical rows, so the
+			// guard must run inside the same transaction as the delete. A 409 here
+			// leaves the account and every slot untouched.
+			return service.ErrInventoryAccountInUse
+		}
+
+		if err := tx.Delete(&domain.InventoryAccount{}, "id = ?", id).Error; err != nil {
+			return fmt.Errorf("delete inventory account: %w", err)
+		}
+		return nil
+	})
 }
 
 func (s *Store) ListSlots(ctx context.Context, accountID, productPriceID, status string, page, perPage int) ([]domain.InventorySlot, int64, error) {
