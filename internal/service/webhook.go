@@ -52,7 +52,7 @@ func (s *WebhookService) Process(ctx context.Context, headers map[string]string,
 		for _, name := range s.providers.List() {
 			p, _ := s.providers.Get(name)
 			event, err := p.VerifyWebhook(headers, body)
-			if err == nil && event != nil && event.ID != "" && event.OrderID != "" && event.ProviderPaymentID != "" {
+			if err == nil && event != nil && event.ID != "" && event.OrderID != "" && event.ProviderPaymentID != "" && event.Amount > 0 && event.Currency != "" {
 				provider = p
 				break
 			}
@@ -72,8 +72,13 @@ func (s *WebhookService) Process(ctx context.Context, headers map[string]string,
 		return nil, err
 	}
 	if event == nil || event.ID == "" || event.OrderID == "" || event.ProviderPaymentID == "" || event.Provider != provider.Name() {
-		return nil, ErrInvalidInput
+		return nil, ErrInvalidPaymentEvent
 	}
+	if event.Amount <= 0 || strings.TrimSpace(event.Currency) == "" {
+		return nil, ErrInvalidPaymentEvent
+	}
+	event.OrderID = strings.TrimSpace(event.OrderID)
+	event.Currency = strings.ToUpper(strings.TrimSpace(event.Currency))
 	processed, err := s.repo.ApplyPaymentEvent(ctx, *event)
 	if err != nil {
 		return nil, err

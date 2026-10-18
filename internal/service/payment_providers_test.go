@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -116,6 +117,9 @@ func TestXenditVerifyPaymentSessionWebhook(t *testing.T) {
 	if event.ProviderPaymentID != "ps-123" || event.OrderID != "order-1" || event.Status != "paid" {
 		t.Fatalf("event = %#v", event)
 	}
+	if event.Amount != 149000 || event.Currency != "IDR" {
+		t.Fatalf("amount/currency = %d/%s, want 149000/IDR", event.Amount, event.Currency)
+	}
 	if event.PaidAt.Format(time.RFC3339) != "2026-10-16T12:00:00Z" {
 		t.Fatalf("paid at = %s", event.PaidAt)
 	}
@@ -128,7 +132,7 @@ func TestXenditVerifyExpiredPaymentSessionWebhook(t *testing.T) {
 	body := []byte(`{
 		"event":"payment_session.expired",
 		"created":"2026-10-16T13:00:01Z",
-		"data":{"id":"ps-999","reference_id":"order-2","status":"EXPIRED","updated":"2026-10-16T13:00:00Z"}
+		"data":{"id":"ps-999","reference_id":"order-2","status":"EXPIRED","updated":"2026-10-16T13:00:00Z","amount":99000,"currency":"IDR"}
 	}`)
 
 	event, err := provider.VerifyWebhook(map[string]string{"x-callback-token": "callback-token"}, body)
@@ -146,7 +150,7 @@ func TestXenditVerifyPaymentEventWebhook(t *testing.T) {
 	body := []byte(`{
 		"event":"payment.succeeded",
 		"created":"2026-10-16T12:30:01Z",
-		"data":{"payment_id":"py-1","payment_session_id":"ps-555","reference_id":"order-3","status":"SUCCEEDED","updated":"2026-10-16T12:30:00Z"}
+		"data":{"payment_id":"py-1","payment_session_id":"ps-555","reference_id":"order-3","status":"SUCCEEDED","updated":"2026-10-16T12:30:00Z","amount":125000,"currency":"IDR"}
 	}`)
 
 	event, err := provider.VerifyWebhook(map[string]string{"x-callback-token": "callback-token"}, body)
@@ -161,7 +165,7 @@ func TestXenditVerifyPaymentEventWebhook(t *testing.T) {
 // The legacy invoice callback keeps its identifiers at the top level.
 func TestXenditVerifyLegacyInvoiceWebhook(t *testing.T) {
 	provider := NewXenditProvider("callback-token", "xendit-api-key", false)
-	body := []byte(`{"id":"inv-1","external_id":"order-4","status":"PAID","paid_at":"2026-10-16T11:00:00Z"}`)
+	body := []byte(`{"id":"inv-1","external_id":"order-4","status":"PAID","paid_at":"2026-10-16T11:00:00Z","amount":75000,"currency":"IDR"}`)
 
 	event, err := provider.VerifyWebhook(map[string]string{"x-callback-token": "callback-token"}, body)
 	if err != nil {
@@ -177,5 +181,115 @@ func TestXenditRejectsInvalidWebhookToken(t *testing.T) {
 	_, err := provider.VerifyWebhook(map[string]string{"X-Callback-Token": "wrong-token"}, []byte(`{}`))
 	if err != ErrUnauthorized {
 		t.Fatalf("VerifyWebhook() error = %v, want ErrUnauthorized", err)
+	}
+}
+
+// Midtrans documents the notification signature as
+// SHA512(order_id + status_code + gross_amount + ServerKey), carried in the
+// JSON body as signature_key. These fixtures mirror that contract, including
+// the decimal gross_amount shape used by real settlement notifications.
+func midtransFixture(t *testing.T, transactionStatus, fraudStatus, grossAmount, settlementTime string) []byte {
+	t.Helper()
+	const orderID = "2f1d4a6e-4f0c-4c1b-9d0e-7a3b5c8d9e01"
+	const statusCode = "200"
+	signature := generateMidtransSignature(orderID, statusCode, grossAmount, "server-key")
+	body := map[string]any{
+		"transaction_status": transactionStatus,
+		"status_code":        statusCode,
+		"transaction_id":     "57d5293c-e65f-4a29-95e4-5959c3fa335b",
+		"order_id":           orderID,
+		"gross_amount":       grossAmount,
+		"signature_key":      signature,
+	}
+	if fraudStatus != "" {
+		body["fraud_status"] = fraudStatus
+	}
+	if settlementTime != "" {
+		body["settlement_time"] = settlementTime
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+func TestMidtransVerifySettlementFixture(t *testing.T) {
+	provider := NewMidtransProvider("server-key", "client-key", false)
+	body := midtransFixture(t, "settlement", "accept", "154600.00", "2021-06-15 18:45:28")
+	event, err := provider.VerifyWebhook(nil, body)
+	if err != nil {
+		t.Fatalf("VerifyWebhook() error = %v", err)
+	}
+	if event.Provider != "midtrans" || event.Status != "paid" {
+		t.Fatalf("event = %#v", event)
+	}
+	if event.OrderID != "2f1d4a6e-4f0c-4c1b-9d0e-7a3b5c8d9e01" || event.ProviderPaymentID != "57d5293c-e65f-4a29-95e4-5959c3fa335b" {
+		t.Fatalf("identity = %#v", event)
+	}
+	if event.Amount != 154600 || event.Currency != "IDR" {
+		t.Fatalf("amount/currency = %d/%s", event.Amount, event.Currency)
+	}
+	if event.PaidAt.Format(time.RFC3339) != "2021-06-15T11:45:28Z" {
+		t.Fatalf("paid at = %s", event.PaidAt.Format(time.RFC3339))
+	}
+	if event.ID == "" || len(event.ID) > 255 {
+		t.Fatalf("unstable event key = %q", event.ID)
+	}
+}
+
+func TestMidtransEventKeyDistinguishesStatusesAndDeduplicatesReplays(t *testing.T) {
+	provider := NewMidtransProvider("server-key", "client-key", false)
+	pending := midtransFixture(t, "pending", "", "154600.00", "")
+	settlement := midtransFixture(t, "settlement", "accept", "154600.00", "2021-06-15 18:45:28")
+
+	pendingEvent, err := provider.VerifyWebhook(nil, pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settlementEvent, err := provider.VerifyWebhook(nil, settlement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pendingEvent.ID == settlementEvent.ID {
+		t.Fatal("different statuses produced the same event key; later status would be dropped as a duplicate")
+	}
+	replayed, err := provider.VerifyWebhook(nil, settlement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.ID != settlementEvent.ID {
+		t.Fatalf("identical notification changed event key: %q != %q", replayed.ID, settlementEvent.ID)
+	}
+}
+
+func TestMidtransVerifyCaptureChallengeStaysPending(t *testing.T) {
+	provider := NewMidtransProvider("server-key", "client-key", false)
+	event, err := provider.VerifyWebhook(nil, midtransFixture(t, "capture", "challenge", "10000", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Status != "pending" {
+		t.Fatalf("challenge status = %q, want pending", event.Status)
+	}
+}
+
+func TestMidtransRejectsInvalidSignatureAndMissingFields(t *testing.T) {
+	provider := NewMidtransProvider("server-key", "client-key", false)
+	body := midtransFixture(t, "settlement", "accept", "154600.00", "")
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	payload["signature_key"] = "deadbeef"
+	badSignature, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.VerifyWebhook(nil, badSignature); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("bad signature error = %v, want ErrUnauthorized", err)
+	}
+	if _, err := provider.VerifyWebhook(nil, []byte(`{"order_id":"x"}`)); !errors.Is(err, ErrInvalidPaymentEvent) {
+		t.Fatalf("missing fields error = %v, want ErrInvalidPaymentEvent", err)
 	}
 }

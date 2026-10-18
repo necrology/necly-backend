@@ -20,4 +20,14 @@ var (
 	// dibuat lebih dulu.
 	ErrAccountRequired   = errors.New("Buat akun inventaris untuk produk ini terlebih dahulu sebelum menambah slot")
 	ErrInvalidTransition = errors.New("Perubahan status pesanan tidak valid")
+	// ErrInvalidPaymentEvent covers a callback whose fields are incomplete or
+	// whose state cannot be mapped. It is rejected before any row is mutated.
+	ErrInvalidPaymentEvent = errors.New("Notifikasi pembayaran tidak valid")
+	// ErrPaymentMismatch means the callback's order, amount, currency or
+	// provider payment identity does not match the stored payment. Processing
+	// aborts in the same transaction, so a wrong notification cannot change state.
+	ErrPaymentMismatch = errors.New("Notifikasi pembayaran tidak cocok dengan pesanan")
+	// ErrInventoryAccountInUse protects slots that belong to a live order or
+	// are currently reserved by a customer.
+	ErrInventoryAccountInUse = errors.New("Akun inventaris masih terhubung ke pesanan atau slot yang dipesan")
 )

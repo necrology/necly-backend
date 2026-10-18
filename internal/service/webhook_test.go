@@ -29,7 +29,7 @@ func (p hmacTestProvider) VerifyWebhook(headers map[string]string, body []byte) 
 	if !hmac.Equal(provided, mac.Sum(nil)) {
 		return nil, ErrInvalidWebhookSignature
 	}
-	return &PaymentEvent{ID: "event-1", Provider: p.Name(), ProviderPaymentID: "payment-1", OrderID: "order-1", Status: "paid", PaidAt: time.Now().UTC(), Raw: body}, nil
+	return &PaymentEvent{ID: "event-1", Provider: p.Name(), ProviderPaymentID: "payment-1", OrderID: "order-1", Status: "paid", Amount: 10000, Currency: "IDR", PaidAt: time.Now().UTC(), Raw: body}, nil
 }
 
 type webhookRepo struct {

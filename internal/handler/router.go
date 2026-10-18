@@ -1553,11 +1553,13 @@ func (r *Router) receiveWebhook(c *fiber.Ctx) error {
 
 	result, err := r.webhookSvc.Process(ctx, headers, payload)
 	if err != nil {
-		if errors.Is(err, service.ErrUnauthorized) {
+		if errors.Is(err, service.ErrUnauthorized) || errors.Is(err, service.ErrInvalidWebhookSignature) {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tanda tangan webhook tidak valid"})
 		}
-		if errors.Is(err, service.ErrInvalidInput) {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		if errors.Is(err, service.ErrInvalidPaymentEvent) || errors.Is(err, service.ErrInvalidInput) || errors.Is(err, service.ErrPaymentMismatch) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "Notifikasi pembayaran tidak valid", "code": "invalid_payment_event",
+			})
 		}
 		if errors.Is(err, service.ErrNotFound) {
 			// A notification for a payment session we hold no row for. Answering
