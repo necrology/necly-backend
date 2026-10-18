@@ -415,6 +415,18 @@ func (x *XenditProvider) CreatePayment(ctx context.Context, req PaymentRequest) 
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
+		// Xendit answers an inactive/unsupported channel with
+		// 400 INVALID_PAYMENT_CHANNEL. Preserve that distinction so the
+		// checkout handler can return the documented 400 error instead of a
+		// generic 500 that looks like an outage.
+		var providerErr struct {
+			ErrorCode string `json:"error_code"`
+		}
+		if json.Unmarshal(respBody, &providerErr) == nil &&
+			(strings.EqualFold(providerErr.ErrorCode, "INVALID_PAYMENT_CHANNEL") ||
+				strings.EqualFold(providerErr.ErrorCode, "INVALID_PRIMARY_PAYMENT_CHANNEL")) {
+			return nil, ErrUnsupportedPaymentChannel
+		}
 		return nil, fmt.Errorf("xendit request returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 

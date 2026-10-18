@@ -386,3 +386,20 @@ func TestXenditCreatePaymentOmitsRestrictionWhenChannelIsEmpty(t *testing.T) {
 		t.Fatalf("empty channel sent a restriction: %#v", received["allowed_payment_channels"])
 	}
 }
+
+func TestXenditCreatePaymentMapsInactiveChannelToUnsupported(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error_code":"INVALID_PAYMENT_CHANNEL","message":"One or more requested payment channels are not activated"}`))
+	}))
+	defer server.Close()
+	provider := NewXenditProvider("callback-token", "xendit-api-key", false,
+		WithPaymentBaseURL(server.URL), WithPaymentHTTPClient(server.Client()))
+	_, err := provider.CreatePayment(context.Background(), PaymentRequest{
+		OrderID: "order-1", OrderNumber: "NCL-001", Amount: 125000, Currency: "IDR", CustomerID: "user-1", Channel: "ovo",
+	})
+	if !errors.Is(err, ErrUnsupportedPaymentChannel) {
+		t.Fatalf("error = %v, want ErrUnsupportedPaymentChannel", err)
+	}
+}
