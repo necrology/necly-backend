@@ -293,3 +293,113 @@ func TestMidtransRejectsInvalidSignatureAndMissingFields(t *testing.T) {
 		t.Fatalf("missing fields error = %v, want ErrInvalidPaymentEvent", err)
 	}
 }
+
+func TestMidtransCreatePaymentRestrictsToExactChosenChannel(t *testing.T) {
+	var received map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"token":"snap-token","redirect_url":"https://pay.example/checkout"}`))
+	}))
+	defer server.Close()
+
+	provider := NewMidtransProvider("server-key", "client-key", false,
+		WithPaymentBaseURL(server.URL), WithPaymentHTTPClient(server.Client()))
+	_, err := provider.CreatePayment(context.Background(), PaymentRequest{
+		OrderID: "order-1", Amount: 125000, Currency: "IDR", CustomerID: "user-1", Channel: "qris",
+	})
+	if err != nil {
+		t.Fatalf("CreatePayment() error = %v", err)
+	}
+	enabled, ok := received["enabled_payments"].([]any)
+	if !ok || len(enabled) != 1 || enabled[0] != "other_qris" {
+		t.Fatalf("enabled_payments = %#v, want exactly [other_qris]", received["enabled_payments"])
+	}
+}
+
+func TestMidtransCreatePaymentRejectsChannelItCannotRestrict(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer server.Close()
+	provider := NewMidtransProvider("server-key", "client-key", false,
+		WithPaymentBaseURL(server.URL), WithPaymentHTTPClient(server.Client()))
+	_, err := provider.CreatePayment(context.Background(), PaymentRequest{
+		OrderID: "order-1", Amount: 125000, Currency: "IDR", CustomerID: "user-1", Channel: "ovo",
+	})
+	if !errors.Is(err, ErrUnsupportedPaymentChannel) {
+		t.Fatalf("error = %v, want ErrUnsupportedPaymentChannel", err)
+	}
+	if called {
+		t.Fatal("provider was called for an unsupported channel")
+	}
+}
+
+func TestXenditCreatePaymentRestrictsToExactChosenChannel(t *testing.T) {
+	var received map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"payment_session_id":"ps-123","payment_link_url":"https://dev.xen.to/session-123","status":"ACTIVE","reference_id":"order-1"}`))
+	}))
+	defer server.Close()
+
+	provider := NewXenditProvider("callback-token", "xendit-api-key", false,
+		WithPaymentBaseURL(server.URL), WithPaymentHTTPClient(server.Client()))
+	_, err := provider.CreatePayment(context.Background(), PaymentRequest{
+		OrderID: "order-1", OrderNumber: "NCL-001", Amount: 125000, Currency: "IDR", CustomerID: "user-1", Channel: "bni_va",
+	})
+	if err != nil {
+		t.Fatalf("CreatePayment() error = %v", err)
+	}
+	allowed, ok := received["allowed_payment_channels"].([]any)
+	if !ok || len(allowed) != 1 || allowed[0] != "BNI_VIRTUAL_ACCOUNT" {
+		t.Fatalf("allowed_payment_channels = %#v, want exactly [BNI_VIRTUAL_ACCOUNT]", received["allowed_payment_channels"])
+	}
+}
+
+func TestXenditCreatePaymentOmitsRestrictionWhenChannelIsEmpty(t *testing.T) {
+	var received map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"payment_session_id":"ps-123","payment_link_url":"https://dev.xen.to/session-123","status":"ACTIVE","reference_id":"order-1"}`))
+	}))
+	defer server.Close()
+	provider := NewXenditProvider("callback-token", "xendit-api-key", false,
+		WithPaymentBaseURL(server.URL), WithPaymentHTTPClient(server.Client()))
+	if _, err := provider.CreatePayment(context.Background(), PaymentRequest{
+		OrderID: "order-1", OrderNumber: "NCL-001", Amount: 125000, Currency: "IDR", CustomerID: "user-1",
+	}); err != nil {
+		t.Fatalf("CreatePayment() error = %v", err)
+	}
+	if _, exists := received["allowed_payment_channels"]; exists {
+		t.Fatalf("empty channel sent a restriction: %#v", received["allowed_payment_channels"])
+	}
+}
+
+func TestXenditCreatePaymentMapsInactiveChannelToUnsupported(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error_code":"INVALID_PAYMENT_CHANNEL","message":"One or more requested payment channels are not activated"}`))
+	}))
+	defer server.Close()
+	provider := NewXenditProvider("callback-token", "xendit-api-key", false,
+		WithPaymentBaseURL(server.URL), WithPaymentHTTPClient(server.Client()))
+	_, err := provider.CreatePayment(context.Background(), PaymentRequest{
+		OrderID: "order-1", OrderNumber: "NCL-001", Amount: 125000, Currency: "IDR", CustomerID: "user-1", Channel: "ovo",
+	})
+	if !errors.Is(err, ErrUnsupportedPaymentChannel) {
+		t.Fatalf("error = %v, want ErrUnsupportedPaymentChannel", err)
+	}
+}

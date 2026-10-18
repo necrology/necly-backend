@@ -112,6 +112,8 @@ type stubProvider struct {
 	calls atomic.Int32
 	err   error
 	name  string
+	mu    sync.Mutex
+	seen  []service.PaymentRequest
 }
 
 func (p *stubProvider) Name() string {
@@ -123,6 +125,9 @@ func (p *stubProvider) Name() string {
 
 func (p *stubProvider) CreatePayment(ctx context.Context, request service.PaymentRequest) (*service.PaymentInitiation, error) {
 	p.calls.Add(1)
+	p.mu.Lock()
+	p.seen = append(p.seen, request)
+	p.mu.Unlock()
 	if p.err != nil {
 		return nil, p.err
 	}
@@ -135,6 +140,15 @@ func (p *stubProvider) CreatePayment(ctx context.Context, request service.Paymen
 
 func (p *stubProvider) VerifyWebhook(headers map[string]string, body []byte) (*service.PaymentEvent, error) {
 	return nil, nil
+}
+
+func (p *stubProvider) lastRequest() (service.PaymentRequest, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.seen) == 0 {
+		return service.PaymentRequest{}, false
+	}
+	return p.seen[len(p.seen)-1], true
 }
 
 func (fixture *checkoutFixture) checkout(t *testing.T, userID, key, voucher string) (*service.CheckoutResult, error) {
@@ -679,4 +693,59 @@ func TestConcurrentProviderCreatedRecoveryReturnsReplay(t *testing.T) {
 	if provider.calls.Load() != 1 {
 		t.Fatalf("provider calls = %d, want 1 (no second charge during recovery)", provider.calls.Load())
 	}
+}
+
+func TestCheckoutSendsSelectedChannelToProviderAndFingerprint(t *testing.T) {
+	fixture := newCheckoutFixture(t)
+	provider := &stubProvider{}
+	svc := fixture.service(provider)
+
+	input := fixture.input(fixture.userA, "fixture-channel-qris", "")
+	input.PaymentChannel = " QRIS "
+	first, err := svc.Checkout(context.Background(), input)
+	if err != nil {
+		t.Fatalf("checkout with qris: %v", err)
+	}
+	request, ok := provider.lastRequest()
+	if !ok || request.Channel != "qris" {
+		t.Fatalf("provider request channel = %q, want qris", request.Channel)
+	}
+
+	replay := input
+	replay.PaymentChannel = "qris"
+	second, err := svc.Checkout(context.Background(), replay)
+	if err != nil {
+		t.Fatalf("idempotent replay: %v", err)
+	}
+	if !second.Replayed || second.Order.ID != first.Order.ID {
+		t.Fatalf("replay = %#v, want stored order", second)
+	}
+	if provider.calls.Load() != 1 {
+		t.Fatalf("provider calls after replay = %d, want 1", provider.calls.Load())
+	}
+
+	changed := input
+	changed.PaymentChannel = "ovo"
+	if _, err := svc.Checkout(context.Background(), changed); !errors.Is(err, service.ErrIdempotencyConflict) {
+		t.Fatalf("same key with different channel error = %v, want ErrIdempotencyConflict", err)
+	}
+	if provider.calls.Load() != 1 {
+		t.Fatalf("provider calls after conflict = %d, want 1", provider.calls.Load())
+	}
+}
+
+func TestCheckoutRejectsUnknownChannelWithoutMutation(t *testing.T) {
+	fixture := newCheckoutFixture(t)
+	provider := &stubProvider{}
+	svc := fixture.service(provider)
+	input := fixture.input(fixture.userA, "fixture-channel-unknown", "")
+	input.PaymentChannel = "bitcoin"
+
+	if _, err := svc.Checkout(context.Background(), input); !errors.Is(err, service.ErrUnsupportedPaymentChannel) {
+		t.Fatalf("error = %v, want ErrUnsupportedPaymentChannel", err)
+	}
+	if provider.calls.Load() != 0 {
+		t.Fatalf("provider calls = %d, want 0", provider.calls.Load())
+	}
+	assertCheckoutMutationCounts(t, fixture.db, 0, 0, 3)
 }

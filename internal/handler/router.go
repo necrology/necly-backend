@@ -1086,6 +1086,14 @@ func writeCheckoutError(c *fiber.Ctx, err error) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 			"error": "Produk atau voucher tidak ditemukan", "code": "not_found",
 		})
+	case errors.Is(err, service.ErrUnsupportedPaymentChannel):
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": err.Error(), "code": "unsupported_payment_channel",
+		})
+	case errors.Is(err, service.ErrPaymentChannelNotEligible):
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": err.Error(), "code": "payment_channel_not_eligible",
+		})
 	case errors.Is(err, service.ErrOutOfStock):
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
 			"error": "Slot akun langganan tidak mencukupi atau sedang habis", "code": "out_of_stock",

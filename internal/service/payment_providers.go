@@ -84,9 +84,29 @@ func NewMidtransProvider(serverKey, clientKey string, isProduction bool, options
 
 func (m *MidtransProvider) Name() string { return "midtrans" }
 
+// midtransChannels documents the subset of the canonical enum that this Snap
+// integration can restrict. A channel omitted here is rejected rather than
+// silently broadened to the provider default. Sources are listed in
+// docs/payment-provider-contract.md.
+var midtransChannels = map[string]string{
+	"qris":      "other_qris",
+	"shopeepay": "shopeepay",
+	"bni_va":    "bni_va",
+	"bri_va":    "bri_va",
+}
+
 func (m *MidtransProvider) CreatePayment(ctx context.Context, req PaymentRequest) (*PaymentInitiation, error) {
 	orderID := req.OrderID
 	grossAmount := req.Amount
+
+	enabledPayments := []string{"credit_card", "bca_va", "bni_va", "bri_va", "permata_va", "other_va", "gopay", "shopeepay", "other_qris"}
+	if channel := strings.ToLower(strings.TrimSpace(req.Channel)); channel != "" {
+		mapped, ok := midtransChannels[channel]
+		if !ok {
+			return nil, ErrUnsupportedPaymentChannel
+		}
+		enabledPayments = []string{mapped}
+	}
 
 	snapReq := map[string]any{
 		"transaction_details": map[string]any{
@@ -96,7 +116,7 @@ func (m *MidtransProvider) CreatePayment(ctx context.Context, req PaymentRequest
 		"customer_details": map[string]any{
 			"customer_id": req.CustomerID,
 		},
-		"enabled_payments": []string{"credit_card", "bca_va", "bni_va", "bri_va", "permata_va", "other_va", "gopay", "shopeepay", "other_qris"},
+		"enabled_payments": enabledPayments,
 	}
 
 	bodyBytes, err := json.Marshal(snapReq)
@@ -328,6 +348,23 @@ func NewXenditProvider(callbackToken, apiKey string, isProduction bool, options 
 
 func (x *XenditProvider) Name() string { return "xendit" }
 
+// xenditChannels maps the canonical enum to the documented
+// allowed_payment_channels values. Activation remains account-specific; Xendit
+// returns INVALID_PAYMENT_CHANNEL when a channel is not active, and the caller
+// surfaces that as unsupported_payment_channel.
+var xenditChannels = map[string]string{
+	"qris":       "QRIS",
+	"ovo":        "OVO",
+	"dana":       "DANA",
+	"shopeepay":  "SHOPEEPAY",
+	"linkaja":    "LINKAJA",
+	"alfamart":   "ALFAMART",
+	"bni_va":     "BNI_VIRTUAL_ACCOUNT",
+	"bsi_va":     "BSI_VIRTUAL_ACCOUNT",
+	"bri_va":     "BRI_VIRTUAL_ACCOUNT",
+	"mandiri_va": "MANDIRI_VIRTUAL_ACCOUNT",
+}
+
 func (x *XenditProvider) CreatePayment(ctx context.Context, req PaymentRequest) (*PaymentInitiation, error) {
 	reqBody := map[string]any{
 		"reference_id":   req.OrderID,
@@ -339,6 +376,13 @@ func (x *XenditProvider) CreatePayment(ctx context.Context, req PaymentRequest) 
 		"capture_method": "AUTOMATIC",
 		"locale":         "en",
 		"description":    "Pembayaran pesanan " + req.OrderNumber,
+	}
+	if channel := strings.ToLower(strings.TrimSpace(req.Channel)); channel != "" {
+		mapped, ok := xenditChannels[channel]
+		if !ok {
+			return nil, ErrUnsupportedPaymentChannel
+		}
+		reqBody["allowed_payment_channels"] = []string{mapped}
 	}
 	if !req.ExpiresAt.IsZero() {
 		reqBody["expires_at"] = req.ExpiresAt.UTC().Format(time.RFC3339)
@@ -371,6 +415,18 @@ func (x *XenditProvider) CreatePayment(ctx context.Context, req PaymentRequest) 
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
+		// Xendit answers an inactive/unsupported channel with
+		// 400 INVALID_PAYMENT_CHANNEL. Preserve that distinction so the
+		// checkout handler can return the documented 400 error instead of a
+		// generic 500 that looks like an outage.
+		var providerErr struct {
+			ErrorCode string `json:"error_code"`
+		}
+		if json.Unmarshal(respBody, &providerErr) == nil &&
+			(strings.EqualFold(providerErr.ErrorCode, "INVALID_PAYMENT_CHANNEL") ||
+				strings.EqualFold(providerErr.ErrorCode, "INVALID_PRIMARY_PAYMENT_CHANNEL")) {
+			return nil, ErrUnsupportedPaymentChannel
+		}
 		return nil, fmt.Errorf("xendit request returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 
