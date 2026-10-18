@@ -108,7 +108,7 @@ func TestAdoptedSchemaConvergesWithFreshSchema(t *testing.T) {
 		t.Fatal("existing baseline schema was not adopted")
 	}
 	if !reflect.DeepEqual(result.Applied, []string{"009"}) {
-		t.Fatalf("adoption should only apply 009, got %v", result.Applied)
+		t.Fatalf("adoption should apply 009, got %v", result.Applied)
 	}
 
 	type ledgerRow struct {
@@ -175,7 +175,7 @@ func TestChecksumMismatchAbortsBeforeDDL(t *testing.T) {
 func TestFailedMigrationRollsBackAndStops(t *testing.T) {
 	db := openTestDB(t)
 	dir := copyMigrations(t)
-	writeFile(t, filepath.Join(dir, "010_failing.sql"), "BEGIN;\nCREATE TABLE should_not_survive (id int);\nSELECT 1 / 0;\nCOMMIT;\n")
+	writeFile(t, filepath.Join(dir, "011_failing.sql"), "BEGIN;\nCREATE TABLE should_not_survive (id int);\nSELECT 1 / 0;\nCOMMIT;\n")
 
 	_, err := Run(context.Background(), db, Options{Dir: dir})
 	if err == nil {
@@ -187,7 +187,7 @@ func TestFailedMigrationRollsBackAndStops(t *testing.T) {
 		t.Fatal("failed migration left its table behind")
 	}
 	var ledger int64
-	db.Raw("SELECT count(*) FROM schema_migrations WHERE version='010'").Scan(&ledger)
+	db.Raw("SELECT count(*) FROM schema_migrations WHERE version='011'").Scan(&ledger)
 	if ledger != 0 {
 		t.Fatal("failed migration was recorded as applied")
 	}
@@ -342,4 +342,32 @@ func boolString(value bool) string {
 		return "nullable"
 	}
 	return "not-null"
+}
+
+func TestLedgerFailureRollsBackTheMigration(t *testing.T) {
+	db := openTestDB(t)
+	dir := copyMigrations(t)
+	if _, err := Run(context.Background(), db, Options{Dir: dir}); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	writeFile(t, filepath.Join(dir, "011_ledger_probe.sql"), "BEGIN;\nCREATE TABLE ledger_probe (id int);\nCOMMIT;\n")
+
+	if err := db.Exec(`CREATE FUNCTION fail_ledger_insert() RETURNS trigger AS $f$
+		BEGIN RAISE EXCEPTION 'ledger unavailable'; END;
+		$f$ LANGUAGE plpgsql`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("CREATE TRIGGER fail_ledger BEFORE INSERT ON schema_migrations FOR EACH ROW EXECUTE FUNCTION fail_ledger_insert()").Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Run(context.Background(), db, Options{Dir: dir}); err == nil {
+		t.Fatal("expected ledger failure to abort the migration")
+	}
+	var tableCount, ledgerCount int64
+	db.Raw("SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='ledger_probe'").Scan(&tableCount)
+	db.Raw("SELECT count(*) FROM schema_migrations WHERE version='011'").Scan(&ledgerCount)
+	if tableCount != 0 || ledgerCount != 0 {
+		t.Fatalf("ledger failure left DDL behind: table=%d ledger=%d", tableCount, ledgerCount)
+	}
 }
