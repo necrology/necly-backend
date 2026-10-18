@@ -34,6 +34,7 @@ func (s *AdminOrderService) UpdateOrderStatus(ctx context.Context, id string, st
 	validStatuses := map[domain.OrderStatus]bool{
 		domain.OrderPending:    true,
 		domain.OrderPaid:       true,
+		domain.OrderFulfilling: true,
 		domain.OrderProcessing: true,
 		domain.OrderShipped:    true,
 		domain.OrderDelivered:  true,
@@ -46,23 +47,10 @@ func (s *AdminOrderService) UpdateOrderStatus(ctx context.Context, id string, st
 		return nil, ErrInvalidInput
 	}
 
-	order, err := s.repo.GetOrderByID(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-
-	if !isValidTransition(order.Status, status) {
-		return nil, ErrInvalidTransition
-	}
-
-	now := time.Now().UTC()
-	order.Status = status
-	order.UpdatedAt = now
-
-	if err := s.repo.UpdateOrderStatus(ctx, id, status, now); err != nil {
-		return nil, fmt.Errorf("update order status: %w", err)
-	}
-	return order, nil
+	// The repository re-reads and locks the order inside the same transaction
+	// that updates it, releases stock and synchronises payments. Validating here
+	// too keeps the public error contract stable without a check-then-act gap.
+	return s.repo.TransitionOrderStatus(ctx, id, status, time.Now().UTC())
 }
 
 func (s *AdminOrderService) UpdateOrder(ctx context.Context, id, shippingAddress, notes string) (*domain.Order, error) {

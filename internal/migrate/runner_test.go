@@ -56,7 +56,7 @@ func TestFreshRunIsRepeatableAndSeedFree(t *testing.T) {
 	if first.Adopted {
 		t.Fatal("fresh database must not be reported as adopted")
 	}
-	if got, want := first.Applied, []string{"001", "003", "004", "005", "006", "007", "008", "009", "010"}; !reflect.DeepEqual(got, want) {
+	if got, want := first.Applied, []string{"001", "003", "004", "005", "006", "007", "008", "009", "010", "011"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("applied = %v, want %v", got, want)
 	}
 
@@ -107,7 +107,7 @@ func TestAdoptedSchemaConvergesWithFreshSchema(t *testing.T) {
 	if !result.Adopted {
 		t.Fatal("existing baseline schema was not adopted")
 	}
-	if !reflect.DeepEqual(result.Applied, []string{"009", "010"}) {
+	if !reflect.DeepEqual(result.Applied, []string{"009", "010", "011"}) {
 		t.Fatalf("adoption should apply 009 and 010, got %v", result.Applied)
 	}
 
@@ -119,8 +119,8 @@ func TestAdoptedSchemaConvergesWithFreshSchema(t *testing.T) {
 	if err := adopted.Raw("SELECT version, mode FROM schema_migrations ORDER BY version").Scan(&rows).Error; err != nil {
 		t.Fatalf("read ledger: %v", err)
 	}
-	if len(rows) != 9 {
-		t.Fatalf("expected 9 ledger rows, got %d: %#v", len(rows), rows)
+	if len(rows) != 10 {
+		t.Fatalf("expected 10 ledger rows, got %d: %#v", len(rows), rows)
 	}
 	for _, row := range rows {
 		want := "adopted"
@@ -175,7 +175,7 @@ func TestChecksumMismatchAbortsBeforeDDL(t *testing.T) {
 func TestFailedMigrationRollsBackAndStops(t *testing.T) {
 	db := openTestDB(t)
 	dir := copyMigrations(t)
-	writeFile(t, filepath.Join(dir, "011_failing.sql"), "BEGIN;\nCREATE TABLE should_not_survive (id int);\nSELECT 1 / 0;\nCOMMIT;\n")
+	writeFile(t, filepath.Join(dir, "012_failing.sql"), "BEGIN;\nCREATE TABLE should_not_survive (id int);\nSELECT 1 / 0;\nCOMMIT;\n")
 
 	_, err := Run(context.Background(), db, Options{Dir: dir})
 	if err == nil {
@@ -187,7 +187,7 @@ func TestFailedMigrationRollsBackAndStops(t *testing.T) {
 		t.Fatal("failed migration left its table behind")
 	}
 	var ledger int64
-	db.Raw("SELECT count(*) FROM schema_migrations WHERE version='011'").Scan(&ledger)
+	db.Raw("SELECT count(*) FROM schema_migrations WHERE version='012'").Scan(&ledger)
 	if ledger != 0 {
 		t.Fatal("failed migration was recorded as applied")
 	}
@@ -350,7 +350,7 @@ func TestLedgerFailureRollsBackTheMigration(t *testing.T) {
 	if _, err := Run(context.Background(), db, Options{Dir: dir}); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
-	writeFile(t, filepath.Join(dir, "011_ledger_probe.sql"), "BEGIN;\nCREATE TABLE ledger_probe (id int);\nCOMMIT;\n")
+	writeFile(t, filepath.Join(dir, "012_ledger_probe.sql"), "BEGIN;\nCREATE TABLE ledger_probe (id int);\nCOMMIT;\n")
 
 	if err := db.Exec(`CREATE FUNCTION fail_ledger_insert() RETURNS trigger AS $f$
 		BEGIN RAISE EXCEPTION 'ledger unavailable'; END;
@@ -366,7 +366,7 @@ func TestLedgerFailureRollsBackTheMigration(t *testing.T) {
 	}
 	var tableCount, ledgerCount int64
 	db.Raw("SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='ledger_probe'").Scan(&tableCount)
-	db.Raw("SELECT count(*) FROM schema_migrations WHERE version='011'").Scan(&ledgerCount)
+	db.Raw("SELECT count(*) FROM schema_migrations WHERE version='012'").Scan(&ledgerCount)
 	if tableCount != 0 || ledgerCount != 0 {
 		t.Fatalf("ledger failure left DDL behind: table=%d ledger=%d", tableCount, ledgerCount)
 	}

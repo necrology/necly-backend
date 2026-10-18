@@ -7,9 +7,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/necly/services/internal/domain"
 	"github.com/necly/services/internal/service"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type OrderRepository interface {
@@ -126,6 +128,96 @@ func (s *Store) UpdateOrderStatus(ctx context.Context, orderID string, status do
 		return service.ErrNotFound
 	}
 	return nil
+}
+
+// TransitionOrderStatus is the transactional admin path. It locks the order,
+// applies the shared state machine, releases inventory exactly once for a
+// cancelled/expired reservation, and keeps payment rows in step. A paid order
+// never releases its stock through a manual cancellation or refund.
+func (s *Store) TransitionOrderStatus(ctx context.Context, orderID string, status domain.OrderStatus, now time.Time) (*domain.Order, error) {
+	var updated *domain.Order
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var order domain.Order
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", orderID).First(&order).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return service.ErrNotFound
+			}
+			return fmt.Errorf("load order: %w", err)
+		}
+		previous := order.Status
+		if !service.IsValidOrderTransition(previous, status) {
+			return service.ErrInvalidTransition
+		}
+
+		order.Status = status
+		order.UpdatedAt = now
+		if err := tx.Save(&order).Error; err != nil {
+			return fmt.Errorf("update order status: %w", err)
+		}
+
+		if previous == domain.OrderPending && (status == domain.OrderCancelled || status == domain.OrderExpired) {
+			if err := tx.Model(&domain.InventorySlot{}).
+				Where("order_item_id IN (SELECT id FROM order_items WHERE order_id = ?) AND status = ?", order.ID, "reserved").
+				Updates(map[string]any{
+					"status":         "available",
+					"reserved_by":    nil,
+					"reserved_until": nil,
+					"order_item_id":  nil,
+					"updated_at":     now,
+				}).Error; err != nil {
+				return fmt.Errorf("release slots: %w", err)
+			}
+		}
+
+		switch status {
+		case domain.OrderPaid:
+			result := tx.Model(&domain.Payment{}).
+				Where("order_id = ? AND status <> ?", order.ID, "paid").
+				Updates(map[string]any{"status": "paid", "paid_at": now, "updated_at": now})
+			if result.Error != nil {
+				return fmt.Errorf("synchronise paid payment: %w", result.Error)
+			}
+			if result.RowsAffected == 0 {
+				var payments int64
+				if err := tx.Model(&domain.Payment{}).Where("order_id = ?", order.ID).Count(&payments).Error; err != nil {
+					return fmt.Errorf("count payments: %w", err)
+				}
+				if payments == 0 {
+					manual := domain.Payment{
+						ID: uuid.NewString(), OrderID: order.ID, Provider: "manual",
+						ProviderPaymentID: "manual-" + order.ID, Status: "paid",
+						Amount: order.Total, PaidAt: &now, CreatedAt: now, UpdatedAt: now,
+					}
+					if err := tx.Create(&manual).Error; err != nil {
+						return fmt.Errorf("create manual payment: %w", err)
+					}
+				}
+			}
+		case domain.OrderRefunded:
+			if err := tx.Model(&domain.Payment{}).
+				Where("order_id = ? AND status = ?", order.ID, "paid").
+				Updates(map[string]any{"status": "refunded", "updated_at": now}).Error; err != nil {
+				return fmt.Errorf("synchronise refunded payment: %w", err)
+			}
+		case domain.OrderCancelled, domain.OrderExpired:
+			if err := tx.Model(&domain.Payment{}).
+				Where("order_id = ? AND status IN ?", order.ID, []string{"pending", "failed"}).
+				Updates(map[string]any{"status": string(status), "updated_at": now}).Error; err != nil {
+				return fmt.Errorf("synchronise %s payment: %w", status, err)
+			}
+		}
+
+		var loaded domain.Order
+		if err := tx.Preload("Items").Preload("Payments").Where("id = ?", order.ID).First(&loaded).Error; err != nil {
+			return fmt.Errorf("reload order: %w", err)
+		}
+		updated = &loaded
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return updated, nil
 }
 
 func (s *Store) ListOrders(ctx context.Context, filter service.OrderFilter, page, perPage int) ([]domain.Order, int64, error) {

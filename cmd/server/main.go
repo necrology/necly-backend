@@ -163,6 +163,7 @@ func main() {
 	adminOrderSvc := service.NewAdminOrderService(store)
 	adminVoucherSvc := service.NewAdminVoucherService(store)
 	adminInventorySvc := service.NewAdminInventoryService(store, cipher)
+	orderExpirySvc := service.NewOrderExpiryService(store)
 
 	app := fiber.New(fiber.Config{
 		ErrorHandler: func(c *fiber.Ctx, err error) error {
@@ -233,10 +234,16 @@ func main() {
 		}
 	}()
 
+	// Bounded reservation expiry: one small batch per tick, stopped with the
+	// application. Every transition and stock release is transactional.
+	expiryCtx, expiryCancel := context.WithCancel(context.Background())
+	go orderExpirySvc.Run(expiryCtx)
+
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
+	expiryCancel()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	if err := app.ShutdownWithContext(shutdownCtx); err != nil {

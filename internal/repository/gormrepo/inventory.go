@@ -88,7 +88,43 @@ func (s *Store) UpdateAccount(ctx context.Context, a *domain.InventoryAccount) e
 }
 
 func (s *Store) DeleteAccount(ctx context.Context, id string) error {
-	return s.db.WithContext(ctx).Delete(&domain.InventoryAccount{}, "id = ?", id).Error
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var account domain.InventoryAccount
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).First(&account).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return service.ErrNotFound
+			}
+			return fmt.Errorf("load inventory account: %w", err)
+		}
+
+		// Lock every slot row before deciding whether the account is safe to
+		// delete. Without this, a concurrent checkout could reserve a slot
+		// between an unlocked count and the DELETE; the cascade would then
+		// remove the freshly reserved slot. Holding slot locks makes checkout's
+		// FOR UPDATE SKIP LOCKED skip them, and a checkout that already holds a
+		// slot forces this transaction to wait and observe its committed state.
+		var slots []domain.InventorySlot
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id", "inventory_account_id", "status", "reserved_by", "order_item_id").
+			Where("inventory_account_id = ?", id).
+			Order("id").
+			Find(&slots).Error; err != nil {
+			return fmt.Errorf("lock inventory slots: %w", err)
+		}
+		for _, slot := range slots {
+			if slot.Status != "available" || slot.OrderItemID != nil || slot.ReservedBy != nil {
+				// The schema still has ON DELETE CASCADE for historical rows, so
+				// the guard must run inside the same transaction as the delete. A
+				// 409 here leaves the account and every slot untouched.
+				return service.ErrInventoryAccountInUse
+			}
+		}
+
+		if err := tx.Delete(&domain.InventoryAccount{}, "id = ?", id).Error; err != nil {
+			return fmt.Errorf("delete inventory account: %w", err)
+		}
+		return nil
+	})
 }
 
 func (s *Store) ListSlots(ctx context.Context, accountID, productPriceID, status string, page, perPage int) ([]domain.InventorySlot, int64, error) {

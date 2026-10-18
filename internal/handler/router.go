@@ -1521,11 +1521,14 @@ func (r *Router) adminUpdateOrderStatus(c *fiber.Ctx) error {
 
 	order, err := r.adminOrderSvc.UpdateOrderStatus(ctx, id, domain.OrderStatus(input.Status))
 	if err != nil {
-		if err == service.ErrNotFound {
+		if errors.Is(err, service.ErrNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pesanan tidak ditemukan"})
 		}
-		if err == service.ErrInvalidInput {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		if errors.Is(err, service.ErrInvalidInput) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error(), "code": "invalid_input"})
+		}
+		if errors.Is(err, service.ErrInvalidTransition) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "invalid_transition"})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui status pesanan"})
 	}
@@ -1850,8 +1853,11 @@ func (r *Router) adminDeleteInventoryAccount(c *fiber.Ctx) error {
 
 	err := r.adminInventorySvc.DeleteInventoryAccount(ctx, id)
 	if err != nil {
-		if err == service.ErrNotFound {
+		if errors.Is(err, service.ErrNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Akun inventaris tidak ditemukan"})
+		}
+		if errors.Is(err, service.ErrInventoryAccountInUse) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "inventory_account_in_use"})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menghapus akun inventaris"})
 	}
