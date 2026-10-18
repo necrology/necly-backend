@@ -3,7 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/subtle"
 	"encoding/hex"
@@ -12,13 +12,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 // jsonKeys reports the field names of a JSON object, sorted. It exists so the
@@ -142,61 +142,164 @@ func (m *MidtransProvider) CreatePayment(ctx context.Context, req PaymentRequest
 	}, nil
 }
 
-func (m *MidtransProvider) VerifyWebhook(headers map[string]string, body []byte) (*PaymentEvent, error) {
-	signatureKey := headers["X-Signature-Key"]
-	if signatureKey == "" {
-		return nil, ErrUnauthorized
-	}
+// midtransNotification mirrors the documented HTTP notification body. The
+// signature lives in the JSON body, not in a header. gross_amount is a string
+// because Midtrans may include decimal places (for example "10000.00") even
+// for an IDR charge.
+type midtransNotification struct {
+	OrderID           string `json:"order_id"`
+	StatusCode        string `json:"status_code"`
+	GrossAmount       string `json:"gross_amount"`
+	SignatureKey      string `json:"signature_key"`
+	TransactionStatus string `json:"transaction_status"`
+	FraudStatus       string `json:"fraud_status"`
+	TransactionID     string `json:"transaction_id"`
+	SettlementTime    string `json:"settlement_time"`
+	Currency          string `json:"currency"`
+}
 
-	var notification map[string]any
+func (m *MidtransProvider) VerifyWebhook(_ map[string]string, body []byte) (*PaymentEvent, error) {
+	var notification midtransNotification
 	if err := json.Unmarshal(body, &notification); err != nil {
-		return nil, ErrInvalidInput
+		log.Printf("midtrans webhook: body is not the expected JSON object (top_keys=%v)", jsonKeys(body))
+		return nil, ErrInvalidPaymentEvent
+	}
+	notification.OrderID = strings.TrimSpace(notification.OrderID)
+	notification.StatusCode = strings.TrimSpace(notification.StatusCode)
+	notification.GrossAmount = strings.TrimSpace(notification.GrossAmount)
+	notification.TransactionStatus = strings.ToLower(strings.TrimSpace(notification.TransactionStatus))
+	notification.TransactionID = strings.TrimSpace(notification.TransactionID)
+	notification.SignatureKey = strings.ToLower(strings.TrimSpace(notification.SignatureKey))
+	if notification.OrderID == "" || notification.StatusCode == "" || notification.GrossAmount == "" ||
+		notification.TransactionStatus == "" || notification.TransactionID == "" || notification.SignatureKey == "" {
+		log.Printf("midtrans webhook: missing required fields order_id=%t status_code=%t gross_amount=%t transaction_status=%t transaction_id=%t signature_key=%t",
+			notification.OrderID == "", notification.StatusCode == "", notification.GrossAmount == "",
+			notification.TransactionStatus == "", notification.TransactionID == "", notification.SignatureKey == "")
+		return nil, ErrInvalidPaymentEvent
 	}
 
-	orderID := fmt.Sprintf("%v", notification["order_id"])
-	statusCode := fmt.Sprintf("%v", notification["status_code"])
-	grossAmount := fmt.Sprintf("%v", notification["gross_amount"])
-
-	expectedSig := generateMidtransSignature(orderID, statusCode, grossAmount, m.serverKey)
-	if !hmac.Equal([]byte(signatureKey), []byte(expectedSig)) {
+	expectedSignature := generateMidtransSignature(notification.OrderID, notification.StatusCode, notification.GrossAmount, m.serverKey)
+	if subtle.ConstantTimeCompare([]byte(notification.SignatureKey), []byte(expectedSignature)) != 1 {
 		return nil, ErrUnauthorized
 	}
 
-	transactionStatus := fmt.Sprintf("%v", notification["transaction_status"])
-	var status string
-	switch transactionStatus {
-	case "capture", "settlement":
-		status = "paid"
-	case "pending":
-		status = "pending"
-	case "deny", "cancel", "expire", "failure":
-		status = "failed"
-	default:
-		status = "pending"
+	amount, err := parseProviderAmount(notification.GrossAmount)
+	if err != nil {
+		return nil, ErrInvalidPaymentEvent
+	}
+	status, ok := mapMidtransStatus(notification.TransactionStatus, notification.FraudStatus)
+	if !ok {
+		log.Printf("midtrans webhook: unsupported transaction_status=%q fraud_status=%q", notification.TransactionStatus, notification.FraudStatus)
+		return nil, ErrInvalidPaymentEvent
+	}
+	currency := strings.ToUpper(strings.TrimSpace(notification.Currency))
+	if currency == "" {
+		// Snap supports IDR only in this integration; the notification omits
+		// currency. Treat the absence as IDR rather than rejecting a valid event.
+		currency = "IDR"
 	}
 
 	var paidAt time.Time
-	if settlementTime, ok := notification["settlement_time"].(string); ok && settlementTime != "" {
-		if t, err := time.Parse("2006-01-02 15:04:05", settlementTime); err == nil {
-			paidAt = t
-		}
+	if status == "paid" {
+		paidAt = parseMidtransSettlementTime(notification.SettlementTime)
 	}
 
 	return &PaymentEvent{
-		ID:                uuid.NewString(),
+		ID:                paymentEventKey("midtrans", notification.TransactionID, notification.TransactionStatus, notification.FraudStatus, notification.StatusCode, notification.GrossAmount),
 		Provider:          "midtrans",
-		ProviderPaymentID: fmt.Sprintf("%v", notification["transaction_id"]),
-		OrderID:           orderID,
+		ProviderPaymentID: notification.TransactionID,
+		OrderID:           notification.OrderID,
 		Status:            status,
+		Amount:            amount,
+		Currency:          currency,
 		PaidAt:            paidAt,
 		Raw:               body,
 	}, nil
+}
+
+func mapMidtransStatus(transactionStatus, fraudStatus string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(transactionStatus)) {
+	case "capture":
+		switch strings.ToLower(strings.TrimSpace(fraudStatus)) {
+		case "accept", "":
+			return "paid", true
+		case "challenge":
+			// The bank accepted the card but Midtrans is reviewing it. Do not
+			// mark the order paid until a later accepted notification arrives.
+			return "pending", true
+		case "deny":
+			return "failed", true
+		default:
+			return "", false
+		}
+	case "settlement":
+		return "paid", true
+	case "pending":
+		return "pending", true
+	case "deny", "failure":
+		return "failed", true
+	case "cancel":
+		return "cancelled", true
+	case "expire":
+		return "expired", true
+	case "refund", "partial_refund":
+		return "refunded", true
+	case "chargeback":
+		// A chargeback reverses the money; it is a refund-family event. Stock is
+		// deliberately not released by the webhook (see ApplyPaymentEvent).
+		return "refunded", true
+	default:
+		return "", false
+	}
+}
+
+func parseMidtransSettlementTime(value string) time.Time {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Now().UTC()
+	}
+	// Midtrans documents settlement_time in WIB (UTC+7). Some fixtures use an
+	// RFC3339 value, so accept both without silently treating WIB as UTC.
+	jakarta := time.FixedZone("WIB", 7*60*60)
+	for _, layout := range []string{"2006-01-02 15:04:05", time.RFC3339} {
+		location := jakarta
+		if layout == time.RFC3339 {
+			location = time.UTC
+		}
+		if parsed, err := time.ParseInLocation(layout, value, location); err == nil {
+			return parsed.UTC()
+		}
+	}
+	return time.Now().UTC()
 }
 
 func generateMidtransSignature(orderID, statusCode, grossAmount, serverKey string) string {
 	data := orderID + statusCode + grossAmount + serverKey
 	hash := sha512.Sum512([]byte(data))
 	return hex.EncodeToString(hash[:])
+}
+
+// paymentEventKey returns a stable, bounded key for deduplication. Replaying
+// the same provider event yields the same key; a later status for the same
+// payment yields a different key and is therefore processed instead of hidden.
+func paymentEventKey(provider string, parts ...string) string {
+	hash := sha256.Sum256([]byte(provider + "\x00" + strings.Join(parts, "\x00")))
+	return provider + ":" + hex.EncodeToString(hash[:])
+}
+
+func parseProviderAmount(raw string) (int64, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return 0, fmt.Errorf("amount is empty")
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed < 0 || parsed != math.Trunc(parsed) {
+		return 0, fmt.Errorf("invalid amount %q", value)
+	}
+	if parsed > math.MaxInt64 {
+		return 0, fmt.Errorf("amount %q overflows int64", value)
+	}
+	return int64(parsed), nil
 }
 
 type XenditProvider struct {
@@ -316,6 +419,8 @@ func (x *XenditProvider) VerifyWebhook(headers map[string]string, body []byte) (
 			ReferenceID string `json:"reference_id"`
 			Status      string `json:"status"`
 			Updated     string `json:"updated"`
+			Amount      int64  `json:"amount"`
+			Currency    string `json:"currency"`
 		} `json:"data"`
 		// Legacy Invoice fields remain accepted while old pending invoices can
 		// still deliver callbacks during the migration window.
@@ -323,10 +428,13 @@ func (x *XenditProvider) VerifyWebhook(headers map[string]string, body []byte) (
 		ExternalID string `json:"external_id"`
 		Status     string `json:"status"`
 		PaidAt     string `json:"paid_at"`
+		Amount     int64  `json:"amount"`
+		PaidAmount int64  `json:"paid_amount"`
+		Currency   string `json:"currency"`
 	}
 	if err := json.Unmarshal(body, &notification); err != nil {
 		log.Printf("xendit webhook: body is not the expected JSON object (top_keys=%v)", jsonKeys(body))
-		return nil, ErrInvalidInput
+		return nil, ErrInvalidPaymentEvent
 	}
 
 	paymentID := notification.Data.PaymentSessionID
@@ -336,6 +444,9 @@ func (x *XenditProvider) VerifyWebhook(headers map[string]string, body []byte) (
 	orderID := notification.Data.ReferenceID
 	status := notification.Data.Status
 	paidAtValue := notification.Data.Updated
+	amount := notification.Data.Amount
+	currency := notification.Data.Currency
+	eventIdentity := paymentEventKey("xendit", notification.Event, paymentID, orderID, status, paidAtValue)
 	// The legacy invoice shape puts its identifiers at the top level. Take that
 	// branch only when they are really there: gating it on paymentID alone wiped
 	// the reference_id and status that had parsed correctly, so every
@@ -346,16 +457,22 @@ func (x *XenditProvider) VerifyWebhook(headers map[string]string, body []byte) (
 		orderID = notification.ExternalID
 		status = notification.Status
 		paidAtValue = notification.PaidAt
+		amount = notification.Amount
+		if notification.PaidAmount > 0 {
+			amount = notification.PaidAmount
+		}
+		currency = notification.Currency
+		eventIdentity = paymentEventKey("xendit", "invoice", paymentID, orderID, status, paidAtValue)
 	}
-	if strings.TrimSpace(paymentID) == "" || strings.TrimSpace(orderID) == "" || strings.TrimSpace(status) == "" {
+	if strings.TrimSpace(paymentID) == "" || strings.TrimSpace(orderID) == "" || strings.TrimSpace(status) == "" || amount <= 0 || strings.TrimSpace(currency) == "" {
 		// A 400 here means a genuine notification we could not map, which would
 		// leave a paid order stuck on pending_payment. Log the event name and
 		// which fields were missing so the shape can be fixed without guessing.
 		var raw map[string]json.RawMessage
 		_ = json.Unmarshal(body, &raw)
-		log.Printf("xendit webhook: unmappable event=%q missing(payment_id=%t reference_id=%t status=%t) top_keys=%v data_keys=%v",
-			notification.Event, paymentID == "", orderID == "", status == "", jsonKeys(body), jsonKeys(raw["data"]))
-		return nil, ErrInvalidInput
+		log.Printf("xendit webhook: unmappable event=%q missing(payment_id=%t reference_id=%t status=%t amount=%t currency=%t) top_keys=%v data_keys=%v",
+			notification.Event, paymentID == "", orderID == "", status == "", amount <= 0, currency == "", jsonKeys(body), jsonKeys(raw["data"]))
+		return nil, ErrInvalidPaymentEvent
 	}
 
 	var paidAt time.Time
@@ -364,18 +481,20 @@ func (x *XenditProvider) VerifyWebhook(headers map[string]string, body []byte) (
 			paidAtValue = notification.Created
 		}
 		if t, err := time.Parse(time.RFC3339, paidAtValue); err == nil {
-			paidAt = t
+			paidAt = t.UTC()
 		} else {
 			paidAt = time.Now().UTC()
 		}
 	}
 
 	return &PaymentEvent{
-		ID:                uuid.NewString(),
+		ID:                eventIdentity,
 		Provider:          "xendit",
 		ProviderPaymentID: paymentID,
 		OrderID:           orderID,
 		Status:            mapXenditStatus(status),
+		Amount:            amount,
+		Currency:          strings.ToUpper(strings.TrimSpace(currency)),
 		PaidAt:            paidAt,
 		Raw:               body,
 	}, nil

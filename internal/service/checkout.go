@@ -63,12 +63,20 @@ type PaymentInitiation struct {
 	CheckoutURL       string
 }
 
+// PaymentEvent is the provider-independent result of verifying a callback.
+// ID is a stable event key: a replay of the same provider notification must
+// produce the same value, while a different status for the same payment must
+// produce a different one. ProviderPaymentID is the provider's payment/session
+// identity (Xendit session id, Midtrans transaction id). OrderID is the
+// provider reference back to our stored order.
 type PaymentEvent struct {
 	ID                string
 	Provider          string
 	ProviderPaymentID string
 	OrderID           string
 	Status            string
+	Amount            int64
+	Currency          string
 	PaidAt            time.Time
 	Raw               []byte
 }

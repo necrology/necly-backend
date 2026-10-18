@@ -111,9 +111,15 @@ func newCheckoutFixture(t *testing.T) *checkoutFixture {
 type stubProvider struct {
 	calls atomic.Int32
 	err   error
+	name  string
 }
 
-func (p *stubProvider) Name() string { return "mock" }
+func (p *stubProvider) Name() string {
+	if p.name != "" {
+		return p.name
+	}
+	return "mock"
+}
 
 func (p *stubProvider) CreatePayment(ctx context.Context, request service.PaymentRequest) (*service.PaymentInitiation, error) {
 	p.calls.Add(1)
