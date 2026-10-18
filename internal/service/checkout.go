@@ -32,9 +32,34 @@ type CheckoutInput struct {
 	IdempotencyKey string              `json:"idempotency_key"`
 	VoucherCode    string              `json:"voucher_code"`
 	Items          []CheckoutItemInput `json:"items"`
+	// PaymentChannel is the optional provider-supported channel selected by the
+	// storefront. Empty means the provider default. It is part of the
+	// idempotency fingerprint, so the same key cannot silently switch channel.
+	PaymentChannel string `json:"payment_channel"`
 	// ExpectedSubtotal lets the storefront pin the amount it displayed. It is
 	// deliberately excluded from the idempotency fingerprint.
 	ExpectedSubtotal *int64 `json:"expected_subtotal"`
+}
+
+// paymentChannels is the canonical lower-case enum agreed with the frontend in
+// the W0 C-05 contract. Provider adapters map it to their own codes.
+var paymentChannels = map[string]struct{}{
+	"qris": {}, "ovo": {}, "dana": {}, "shopeepay": {}, "linkaja": {},
+	"alfamart": {}, "bni_va": {}, "bsi_va": {}, "bri_va": {}, "mandiri_va": {},
+}
+
+// NormalisePaymentChannel trims and lower-cases the optional channel and
+// rejects values outside the agreed enum. An empty value is valid and keeps the
+// provider's default channel list.
+func NormalisePaymentChannel(value string) (string, error) {
+	channel := strings.ToLower(strings.TrimSpace(value))
+	if channel == "" {
+		return "", nil
+	}
+	if _, ok := paymentChannels[channel]; !ok {
+		return "", ErrUnsupportedPaymentChannel
+	}
+	return channel, nil
 }
 
 type CheckoutCommand struct {
@@ -55,6 +80,9 @@ type PaymentRequest struct {
 	Currency    string
 	CustomerID  string
 	ExpiresAt   time.Time
+	// Channel is the canonical optional channel selected by the buyer. Empty
+	// means the provider's default channel list.
+	Channel string
 }
 
 type PaymentInitiation struct {
@@ -244,12 +272,16 @@ func (s *CheckoutService) Checkout(ctx context.Context, input CheckoutInput) (*C
 	if input.ExpectedSubtotal != nil && *input.ExpectedSubtotal < 0 {
 		return nil, ErrInvalidInput
 	}
+	channel, err := NormalisePaymentChannel(input.PaymentChannel)
+	if err != nil {
+		return nil, err
+	}
 
 	// PostgreSQL stores timestamptz at microsecond precision. Truncating before
 	// the first response makes the in-memory 201 body byte-identical to the
 	// 200 body that is later read back from the database.
 	now := s.now().UTC().Truncate(time.Microsecond)
-	fingerprint := CanonicalCheckoutFingerprint(input.Items, input.VoucherCode, "")
+	fingerprint := CanonicalCheckoutFingerprint(input.Items, input.VoucherCode, channel)
 	reservation, err := s.repo.BeginCheckout(ctx, CheckoutCommand{
 		UserID: input.UserID, IdempotencyKey: input.IdempotencyKey,
 		VoucherCode: strings.ToUpper(strings.TrimSpace(input.VoucherCode)),
@@ -268,16 +300,16 @@ func (s *CheckoutService) Checkout(ctx context.Context, input CheckoutInput) (*C
 		// A previous process reserved the order but died before saving the
 		// payment. Fall through to recovery.
 	case CheckoutInProgress:
-		return s.waitForProgress(ctx, input.UserID, input.IdempotencyKey)
+		return s.waitForProgress(ctx, input.UserID, input.IdempotencyKey, channel)
 	}
-	return s.completeReservation(ctx, reservation, now, false)
+	return s.completeReservation(ctx, reservation, now, false, channel)
 }
 
-func (s *CheckoutService) completeReservation(ctx context.Context, reservation *CheckoutReservation, now time.Time, alreadyClaimed bool) (*CheckoutResult, error) {
+func (s *CheckoutService) completeReservation(ctx context.Context, reservation *CheckoutReservation, now time.Time, alreadyClaimed bool, channel string) (*CheckoutResult, error) {
 	order := reservation.Order
 	attempt := reservation.Attempt
 	if order == nil || attempt == nil {
-		return s.waitForProgress(ctx, attemptUserID(attempt), attemptKey(attempt))
+		return s.waitForProgress(ctx, attemptUserID(attempt), attemptKey(attempt), channel)
 	}
 
 	// A previous provider call may already have produced the reference. Saving
@@ -301,12 +333,12 @@ func (s *CheckoutService) completeReservation(ctx context.Context, reservation *
 		}
 	}
 	if !claimed {
-		return s.waitForProgress(ctx, order.UserID, attempt.IdempotencyKey)
+		return s.waitForProgress(ctx, order.UserID, attempt.IdempotencyKey, channel)
 	}
 
 	initiation, err := s.provider.CreatePayment(ctx, PaymentRequest{
 		OrderID: order.ID, OrderNumber: order.Number, Amount: order.Total, Currency: order.Currency,
-		CustomerID: order.UserID, ExpiresAt: order.PaymentDueAt,
+		CustomerID: order.UserID, ExpiresAt: order.PaymentDueAt, Channel: channel,
 	})
 	if err != nil {
 		_ = s.repo.FailCheckout(ctx, attempt.ID, "provider_error", now)
@@ -344,7 +376,7 @@ func (s *CheckoutService) completeReservation(ctx context.Context, reservation *
 // waitForProgress polls the persisted attempt without holding any database
 // transaction. It also takes over a stale reservation (for example after the
 // original process died) using the atomic ClaimProviderCall lease.
-func (s *CheckoutService) waitForProgress(ctx context.Context, userID, idempotencyKey string) (*CheckoutResult, error) {
+func (s *CheckoutService) waitForProgress(ctx context.Context, userID, idempotencyKey, channel string) (*CheckoutResult, error) {
 	delay := 20 * time.Millisecond
 	for {
 		progress, err := s.repo.GetCheckoutProgress(ctx, userID, idempotencyKey)
@@ -374,7 +406,7 @@ func (s *CheckoutService) waitForProgress(ctx context.Context, userID, idempoten
 						// not try to claim the same attempt a second time.
 						return s.completeReservation(ctx, &CheckoutReservation{
 							State: CheckoutInProgress, Order: progress.Order, Attempt: progress.Attempt,
-						}, now, true)
+						}, now, true, channel)
 					}
 				}
 			}

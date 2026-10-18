@@ -30,4 +30,10 @@ var (
 	// ErrInventoryAccountInUse protects slots that belong to a live order or
 	// are currently reserved by a customer.
 	ErrInventoryAccountInUse = errors.New("Akun inventaris masih terhubung ke pesanan atau slot yang dipesan")
+	// ErrUnsupportedPaymentChannel is returned when the optional selector value
+	// is not in the agreed enum. No order or provider call is created.
+	ErrUnsupportedPaymentChannel = errors.New("Metode pembayaran tidak didukung")
+	// ErrPaymentChannelNotEligible is reserved for a future server-side
+	// method/duration rule. It is not applied until Q1 is approved.
+	ErrPaymentChannelNotEligible = errors.New("Metode pembayaran tidak tersedia untuk durasi pesanan ini")
 )

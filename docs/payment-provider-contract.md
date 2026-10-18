@@ -84,3 +84,33 @@ transaction:
 
 A refund is a financial state change, not an automatic stock release. Any
 future fulfilment/refund inventory policy needs its own documented decision.
+
+## Optional payment channel (C13)
+
+The canonical request field is `payment_channel`, trimmed and lower-cased. An
+empty value keeps the provider's default channel list. The value is part of the
+owner+key fingerprint, so the same idempotency key cannot switch channels.
+
+| Canonical | Midtrans `enabled_payments` | Xendit `allowed_payment_channels` |
+|---|---|---|
+| `qris` | `other_qris` | `QRIS` |
+| `shopeepay` | `shopeepay` | `SHOPEEPAY` |
+| `bni_va` | `bni_va` | `BNI_VIRTUAL_ACCOUNT` |
+| `bri_va` | `bri_va` | `BRI_VIRTUAL_ACCOUNT` |
+| `ovo` | rejected | `OVO` |
+| `dana` | rejected | `DANA` |
+| `linkaja` | rejected | `LINKAJA` |
+| `alfamart` | rejected | `ALFAMART` |
+| `bsi_va` | rejected | `BSI_VIRTUAL_ACCOUNT` |
+| `mandiri_va` | rejected | `MANDIRI_VIRTUAL_ACCOUNT` |
+
+`rejected` means the adapter returns `ErrUnsupportedPaymentChannel` before any
+HTTP call; it never silently sends the provider default. Xendit channel
+activation is account-specific: an inactive but documented channel is rejected
+by Xendit with `INVALID_PAYMENT_CHANNEL`, which the checkout handler exposes as
+`400 unsupported_payment_channel`.
+
+The current bank/retail minimum-duration message remains warning-only. The
+backend does not reject a short duration while Q1 is unresolved. A server-side
+`payment_channel_not_eligible` rule must not be enabled without Project Owner
+approval of the exact behaviour and copy change.
