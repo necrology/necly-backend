@@ -63,7 +63,7 @@ func (s *Store) GetOrder(ctx context.Context, userID, orderID string) (*domain.O
 
 func (s *Store) GetOrderByID(ctx context.Context, orderID string) (*domain.Order, error) {
 	var order domain.Order
-	err := s.db.WithContext(ctx).Preload("Items").Preload("Payments").
+	err := s.db.WithContext(ctx).Preload("Customer").Preload("Items").Preload("Payments").
 		Where("id = ?", orderID).First(&order).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, service.ErrNotFound

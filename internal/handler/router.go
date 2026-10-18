@@ -245,6 +245,9 @@ func (r *Router) registerAdmin(api fiber.Router) {
 	admin.Patch("/categories/:id", r.adminUpdateCategory)
 	admin.Delete("/categories/:id", r.adminDeleteCategory)
 	admin.Get("/orders", r.adminListOrders)
+	// Detail baca-saja untuk operator. Service dan repository sudah menyediakan
+	// GetOrder; route ini hanya mengeksposnya dengan bentuk order C-02 yang sama.
+	admin.Get("/orders/:id", r.adminGetOrder)
 	admin.Patch("/orders/:id/status", r.adminUpdateOrderStatus)
 	admin.Get("/audit-logs", r.adminListAuditLogs)
 	// Voucher management
@@ -1573,6 +1576,28 @@ func (r *Router) adminListOrders(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{"orders": orders, "page": page, "per_page": perPage, "total": total})
+}
+
+func (r *Router) adminGetOrder(c *fiber.Ctx) error {
+	id := c.Params("id")
+	// id bertipe uuid di database. Menolak bentuk lain di sini mencegah
+	// SQLSTATE 22P02 berubah menjadi 500 padahal pesanannya tidak ditemukan.
+	if _, err := uuid.Parse(id); err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pesanan tidak ditemukan", "code": "not_found"})
+	}
+
+	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+	defer cancel()
+
+	order, err := r.adminOrderSvc.GetOrder(ctx, id)
+	if err != nil {
+		if errors.Is(err, service.ErrNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pesanan tidak ditemukan", "code": "not_found"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil detail pesanan"})
+	}
+
+	return c.JSON(order)
 }
 
 func (r *Router) adminUpdateOrderStatus(c *fiber.Ctx) error {
