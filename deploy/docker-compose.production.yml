@@ -8,7 +8,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - necly_postgres_data:/var/lib/postgresql/data
-      - ./necly-backend/migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
@@ -26,6 +25,23 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
+
+  migrate:
+    build:
+      context: ./necly-backend
+    restart: "no"
+    env_file: .env.production
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB}
+      DB_SSL_MODE: disable
+    entrypoint: ["./necly-migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   api:
     build:
@@ -46,6 +62,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     healthcheck:

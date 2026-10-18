@@ -18,6 +18,9 @@ COPY . .
 # memakai konfigurasi database dan kunci enkripsi kredensial yang sama.
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o necly-backend ./cmd/server
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o necly-seed-inventory ./cmd/seed-inventory
+# The migration runner is a separate one-shot binary so the API never runs DDL
+# at boot and a failed migration stops deployment before the new API starts.
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o necly-migrate ./cmd/migrate
 
 # Final stage - minimal image
 FROM alpine:3.20
@@ -30,6 +33,7 @@ WORKDIR /app
 
 COPY --from=builder /app/necly-backend .
 COPY --from=builder /app/necly-seed-inventory .
+COPY --from=builder /app/necly-migrate .
 COPY --from=builder /app/migrations ./migrations
 
 USER necly
