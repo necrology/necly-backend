@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/necly/services/internal/domain"
 	"github.com/necly/services/internal/service"
+	"gorm.io/gorm/clause"
 )
 
 func makeOverdue(t *testing.T, fixture *checkoutFixture, orderID string) {
@@ -228,5 +229,68 @@ func TestExpiryBatchIsBounded(t *testing.T) {
 	}
 	if expired != 0 {
 		t.Fatalf("third bounded run expired = %d, want 0", expired)
+	}
+}
+
+// A checkout that has already locked a slot must make the delete wait and then
+// observe the committed reservation. The earlier unlocked count could pass
+// while the checkout was in flight, after which the cascade removed the newly
+// reserved slot.
+func TestDeleteInventoryAccountWaitsForConcurrentReservation(t *testing.T) {
+	fixture := newCheckoutFixture(t)
+	var slot domain.InventorySlot
+	if err := fixture.db.Where("status = ?", "available").Order("id").First(&slot).Error; err != nil {
+		t.Fatalf("load available slot: %v", err)
+	}
+
+	checkout := fixture.db.Begin()
+	if checkout.Error != nil {
+		t.Fatal(checkout.Error)
+	}
+	defer checkout.Rollback()
+	if err := checkout.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ?", slot.ID).First(&slot).Error; err != nil {
+		t.Fatalf("lock slot as checkout: %v", err)
+	}
+	if err := checkout.Model(&domain.InventorySlot{}).Where("id = ?", slot.ID).
+		Updates(map[string]any{"status": "reserved", "reserved_by": fixture.userA}).Error; err != nil {
+		t.Fatalf("reserve slot as checkout: %v", err)
+	}
+
+	deleted := make(chan error, 1)
+	go func() {
+		deleted <- fixture.store.DeleteAccount(context.Background(), slot.InventoryAccountID)
+	}()
+
+	// The delete must still be waiting on the uncommitted slot lock.
+	select {
+	case err := <-deleted:
+		t.Fatalf("delete completed before checkout committed: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	if err := checkout.Commit().Error; err != nil {
+		t.Fatalf("commit checkout: %v", err)
+	}
+
+	select {
+	case err := <-deleted:
+		if !errors.Is(err, service.ErrInventoryAccountInUse) {
+			t.Fatalf("delete error = %v, want ErrInventoryAccountInUse", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("delete did not finish after checkout committed")
+	}
+
+	var account domain.InventoryAccount
+	if err := fixture.db.Where("id = ?", slot.InventoryAccountID).First(&account).Error; err != nil {
+		t.Fatalf("account was deleted after concurrent reservation: %v", err)
+	}
+	var stored domain.InventorySlot
+	if err := fixture.db.Where("id = ?", slot.ID).First(&stored).Error; err != nil {
+		t.Fatalf("slot was deleted after concurrent reservation: %v", err)
+	}
+	if stored.Status != "reserved" {
+		t.Fatalf("slot status = %s, want reserved", stored.Status)
 	}
 }

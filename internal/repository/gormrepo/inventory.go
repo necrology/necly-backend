@@ -97,17 +97,27 @@ func (s *Store) DeleteAccount(ctx context.Context, id string) error {
 			return fmt.Errorf("load inventory account: %w", err)
 		}
 
-		var linked int64
-		if err := tx.Model(&domain.InventorySlot{}).
-			Where("inventory_account_id = ? AND (status <> ? OR order_item_id IS NOT NULL OR reserved_by IS NOT NULL)", id, "available").
-			Count(&linked).Error; err != nil {
-			return fmt.Errorf("count linked inventory slots: %w", err)
+		// Lock every slot row before deciding whether the account is safe to
+		// delete. Without this, a concurrent checkout could reserve a slot
+		// between an unlocked count and the DELETE; the cascade would then
+		// remove the freshly reserved slot. Holding slot locks makes checkout's
+		// FOR UPDATE SKIP LOCKED skip them, and a checkout that already holds a
+		// slot forces this transaction to wait and observe its committed state.
+		var slots []domain.InventorySlot
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id", "inventory_account_id", "status", "reserved_by", "order_item_id").
+			Where("inventory_account_id = ?", id).
+			Order("id").
+			Find(&slots).Error; err != nil {
+			return fmt.Errorf("lock inventory slots: %w", err)
 		}
-		if linked > 0 {
-			// The schema still has ON DELETE CASCADE for historical rows, so the
-			// guard must run inside the same transaction as the delete. A 409 here
-			// leaves the account and every slot untouched.
-			return service.ErrInventoryAccountInUse
+		for _, slot := range slots {
+			if slot.Status != "available" || slot.OrderItemID != nil || slot.ReservedBy != nil {
+				// The schema still has ON DELETE CASCADE for historical rows, so
+				// the guard must run inside the same transaction as the delete. A
+				// 409 here leaves the account and every slot untouched.
+				return service.ErrInventoryAccountInUse
+			}
 		}
 
 		if err := tx.Delete(&domain.InventoryAccount{}, "id = ?", id).Error; err != nil {
