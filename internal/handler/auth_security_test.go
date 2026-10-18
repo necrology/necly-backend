@@ -119,19 +119,20 @@ func TestAuthCookieAttributesOnSetAndDelete(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 
-	refreshByPath := map[string]*http.Cookie{}
+	cookieKey := func(cookie *http.Cookie) string { return cookie.Path + "|" + cookie.Domain }
+	refreshByKey := map[string]*http.Cookie{}
 	var nonceSet *http.Cookie
 	for _, cookie := range resp.Cookies() {
 		switch cookie.Name {
 		case "refresh_token":
-			refreshByPath[cookie.Path] = cookie
+			refreshByKey[cookieKey(cookie)] = cookie
 		case "oauth_nonce":
 			nonceSet = cookie
 		}
 	}
-	refreshSet := refreshByPath["/api/v1/auth"]
+	refreshSet := refreshByKey["/api/v1/auth|necly.example"]
 	if refreshSet == nil {
-		t.Fatalf("login did not set refresh_token on the configured path; cookies = %#v", resp.Cookies())
+		t.Fatalf("login did not set refresh_token on the configured path/domain; cookies = %#v", resp.Cookies())
 	}
 	assert.True(t, refreshSet.Secure, "refresh cookie must be Secure")
 	assert.True(t, refreshSet.HttpOnly, "refresh cookie must be HttpOnly")
@@ -139,15 +140,26 @@ func TestAuthCookieAttributesOnSetAndDelete(t *testing.T) {
 	assert.Equal(t, "necly.example", refreshSet.Domain)
 	assert.NotEmpty(t, refreshSet.Value)
 	assert.Nil(t, nonceSet, "login must not set an OAuth nonce")
-	// Users upgrading from the release that wrote Path=/ must have that cookie
-	// retired as well, otherwise logout would leave it behind.
-	legacyClear := refreshByPath["/"]
-	if legacyClear == nil {
-		t.Fatalf("login did not clear the legacy Path=/ refresh cookie; cookies = %#v", resp.Cookies())
-	}
-	assert.Empty(t, legacyClear.Value)
 
-	// Logout must delete both the configured cookie and the legacy cookie.
+	// The pre-upgrade release wrote a host-only Path=/ cookie. It must be
+	// cleared by a header without Domain even though the new cookie is scoped
+	// to the configured parent domain.
+	legacyHostOnly := refreshByKey["/|"]
+	if legacyHostOnly == nil {
+		t.Fatalf("login did not clear the host-only legacy refresh cookie; cookies = %#v", resp.Cookies())
+	}
+	assert.Empty(t, legacyHostOnly.Value)
+	assert.Equal(t, http.SameSiteStrictMode, legacyHostOnly.SameSite)
+	assert.True(t, legacyHostOnly.Secure)
+	assert.True(t, legacyHostOnly.HttpOnly)
+	// And clear the domain-scoped Path=/ variant for completeness.
+	legacyDomain := refreshByKey["/|necly.example"]
+	if legacyDomain == nil {
+		t.Fatalf("login did not clear the domain-scoped legacy refresh cookie; cookies = %#v", resp.Cookies())
+	}
+	assert.Empty(t, legacyDomain.Value)
+
+	// Logout must delete the configured cookie and both legacy variants.
 	repo.On("RefreshTokenByHash", mock.Anything, mock.Anything).Return(&domain.RefreshToken{ID: "session-1", UserID: "user-1"}, nil)
 	repo.On("RevokeRefreshToken", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil)
@@ -156,26 +168,28 @@ func TestAuthCookieAttributesOnSetAndDelete(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 
-	clearedByPath := map[string]*http.Cookie{}
+	clearedByKey := map[string]*http.Cookie{}
 	for _, cookie := range resp.Cookies() {
 		if cookie.Name == "refresh_token" {
-			clearedByPath[cookie.Path] = cookie
+			clearedByKey[cookieKey(cookie)] = cookie
 		}
 	}
-	for _, path := range []string{"/api/v1/auth", "/"} {
-		cleared := clearedByPath[path]
+	for _, key := range []string{"/api/v1/auth|necly.example", "/|", "/|necly.example"} {
+		cleared := clearedByKey[key]
 		if cleared == nil {
-			t.Fatalf("logout did not clear refresh_token at path %q; cookies = %#v", path, resp.Cookies())
+			t.Fatalf("logout did not clear refresh_token for %q; cookies = %#v", key, resp.Cookies())
 		}
 		assert.True(t, cleared.Secure)
 		assert.True(t, cleared.HttpOnly)
 		assert.Equal(t, http.SameSiteStrictMode, cleared.SameSite)
-		assert.Equal(t, "necly.example", cleared.Domain)
 		assert.Empty(t, cleared.Value)
 		assert.True(t, cleared.MaxAge <= 0)
 		assert.False(t, cleared.Expires.IsZero())
 		assert.True(t, cleared.Expires.Before(time.Now()))
 	}
+	assert.Equal(t, "necly.example", clearedByKey["/api/v1/auth|necly.example"].Domain)
+	assert.Empty(t, clearedByKey["/|"].Domain)
+
 }
 
 type fakeOAuthStateStore struct {

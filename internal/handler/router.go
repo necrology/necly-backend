@@ -435,18 +435,28 @@ func (r *Router) appendLegacyRefreshCookieClear(c *fiber.Ctx) {
 	case "none":
 		sameSite = http.SameSiteNoneMode
 	}
-	cookie := http.Cookie{
+	base := http.Cookie{
 		Name:     "refresh_token",
 		Value:    "",
 		Path:     "/",
-		Domain:   r.authCookies.Domain,
 		MaxAge:   -1,
 		Expires:  time.Now().Add(-time.Hour),
 		Secure:   r.authCookies.Secure || c.Protocol() == "https",
 		HttpOnly: true,
 		SameSite: sameSite,
 	}
-	c.Response().Header.Add("Set-Cookie", cookie.String())
+	// The pre-upgrade release wrote a host-only cookie at Path=/. That identity
+	// has no Domain attribute, so it must be cleared by a header that also has
+	// no Domain; otherwise the browser keeps the legacy cookie even when
+	// COOKIE_DOMAIN is configured for the new cookie.
+	c.Response().Header.Add("Set-Cookie", base.String())
+	// Clear a domain-scoped Path=/ variant too, for deployments that may have
+	// written one in an intermediate release.
+	if r.authCookies.Domain != "" {
+		domainCookie := base
+		domainCookie.Domain = r.authCookies.Domain
+		c.Response().Header.Add("Set-Cookie", domainCookie.String())
+	}
 }
 
 // setRefreshCookie writes the session cookie. The lifetime comes from the
