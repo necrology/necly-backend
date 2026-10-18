@@ -11,11 +11,12 @@ internal/
   domain           → core types (User, Product, Order, etc.)
   handler          → Fiber routes, middleware, request/response
   middleware       → auth, rate-limit, CORS, logging, recover
-  platform/database → GORM connection + AutoMigrate
+  internal/migrate  → checksum-verified versioned SQL migration runner
+  platform/database → GORM connection (no AutoMigrate)
   repository/gormrepo → repository implementations
   service          → business logic (auth, catalog, checkout, payments, vouchers, inventory)
 pkg/               → shared utilities
-migrations/        → SQL schema + seed data
+migrations/        → versioned SQL schema (002 is development-only seed data)
 ```
 
 ## Stack
@@ -56,10 +57,17 @@ cp .env.example .env
 ### Run Migrations
 
 ```bash
-go run ./cmd/migrate
+go run ./cmd/migrate -dir migrations
 # Or with flags:
 go run ./cmd/migrate -host localhost -port 5432 -user postgres -password postgres -name necly
 ```
+
+The runner applies each file in one transaction, records checksum and mode in
+`schema_migrations`, acquires a PostgreSQL advisory lock, and refuses to run if
+an applied file changed. It never executes `002_seed_data.sql`; that file is a
+development seed and must be applied explicitly. If the database already has
+the baseline schema but no ledger, the runner adopts 001 and 003–010 only after
+a full column/index/constraint preflight. `cmd/server` never runs DDL.
 
 ### Run Server
 

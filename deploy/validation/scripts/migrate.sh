@@ -13,7 +13,7 @@ echo "verifying baseline migration checksums"
 sha256sum -c /checksums.sha256
 
 # 002 is a development seed and is never part of the production chain.
-BASELINE_FILES="001_initial_schema.sql 003_localize_catalog_copy.sql 004_issue_reports.sql 005_password_reset_tokens.sql 006_product_labels.sql 007_device_count.sql 008_add_users_active.sql 009_order_compatibility.sql"
+BASELINE_FILES="001_initial_schema.sql 003_localize_catalog_copy.sql 004_issue_reports.sql 005_password_reset_tokens.sql 006_product_labels.sql 007_device_count.sql 008_add_users_active.sql 009_order_compatibility.sql 010_checkout_idempotency.sql"
 
 for file in $BASELINE_FILES; do
   echo "applying $file"

@@ -168,6 +168,24 @@ type CartItem struct {
 	UpdatedAt      time.Time     `json:"updated_at"`
 }
 
+// CheckoutAttempt is the persisted ledger entry for one owner-scoped
+// idempotency key. It is written before any provider call so an interrupted
+// request can be reconciled instead of charging twice.
+type CheckoutAttempt struct {
+	ID                 string    `json:"-" gorm:"type:uuid;primaryKey"`
+	UserID             string    `json:"-" gorm:"type:uuid;not null;uniqueIndex:uni_checkout_attempts_user_key"`
+	IdempotencyKey     string    `json:"-" gorm:"size:128;not null;uniqueIndex:uni_checkout_attempts_user_key"`
+	RequestFingerprint string    `json:"-" gorm:"size:64;not null"`
+	State              string    `json:"-" gorm:"size:24;not null;default:started"`
+	OrderID            *string   `json:"-" gorm:"type:uuid"`
+	Provider           *string   `json:"-" gorm:"size:32"`
+	ProviderPaymentID  *string   `json:"-" gorm:"size:255"`
+	CheckoutURL        *string   `json:"-"`
+	ErrorCode          *string   `json:"-" gorm:"size:64"`
+	CreatedAt          time.Time `json:"-"`
+	UpdatedAt          time.Time `json:"-"`
+}
+
 type OrderStatus string
 
 const (
@@ -196,9 +214,13 @@ type Order struct {
 	PaymentDueAt    time.Time   `json:"payment_due_at"`
 	ShippingAddress string      `json:"shipping_address"`
 	Notes           string      `json:"notes"`
-	IdempotencyKey  string      `json:"-" gorm:"uniqueIndex;not null"`
-	Items           []OrderItem `json:"items,omitempty" gorm:"foreignKey:OrderID"`
-	Payments        []Payment   `json:"payments,omitempty" gorm:"foreignKey:OrderID"`
+	IdempotencyKey  string      `json:"-" gorm:"size:128;not null"`
+	// RequestFingerprint is the canonical hash that makes a replay safe. Older
+	// rows created before migration 010 keep NULL and are rejected as
+	// idempotency conflicts rather than guessed.
+	RequestFingerprint *string     `json:"-" gorm:"size:64"`
+	Items              []OrderItem `json:"items,omitempty" gorm:"foreignKey:OrderID"`
+	Payments           []Payment   `json:"payments,omitempty" gorm:"foreignKey:OrderID"`
 	// Customer backs the admin order list and dashboard, both of which preload
 	// it. Reads that do not preload simply omit the field.
 	Customer  *User     `json:"customer,omitempty" gorm:"foreignKey:UserID"`
