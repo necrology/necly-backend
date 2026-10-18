@@ -76,7 +76,8 @@ func main() {
 
 	// Ketersediaan tiap paket sudah ikut pada hasil ini (available_slots), jadi
 	// tidak perlu query terpisah untuk menghitungnya.
-	products, total, err := store.ListProductsWithStock(ctx, service.ProductFilter{ActiveOnly: true}, 1, 200)
+	active := true
+	products, total, err := store.ListProductsWithStock(ctx, service.ProductFilter{Active: &active}, 1, 200)
 	if err != nil {
 		log.Fatalf("list products: %v", err)
 	}

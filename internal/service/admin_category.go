@@ -30,6 +30,9 @@ func (s *AdminCategoryService) ListCategories(ctx context.Context, filter Catego
 }
 
 func (s *AdminCategoryService) GetCategory(ctx context.Context, id string) (*domain.Category, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return nil, ErrNotFound
+	}
 	return s.repo.GetCategoryByID(ctx, id)
 }
 
@@ -70,6 +73,9 @@ func (s *AdminCategoryService) CreateCategory(ctx context.Context, name, slug, d
 }
 
 func (s *AdminCategoryService) UpdateCategory(ctx context.Context, id, name, slug, description, imageURL string, active *bool) (*domain.Category, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return nil, ErrNotFound
+	}
 	category, err := s.repo.GetCategoryByID(ctx, id)
 	if err != nil {
 		return nil, err
@@ -107,6 +113,9 @@ func (s *AdminCategoryService) UpdateCategory(ctx context.Context, id, name, slu
 }
 
 func (s *AdminCategoryService) DeleteCategory(ctx context.Context, id string) error {
+	if _, err := uuid.Parse(id); err != nil {
+		return ErrNotFound
+	}
 	now := time.Now().UTC()
 	return s.repo.DeleteCategory(ctx, id, now)
 }

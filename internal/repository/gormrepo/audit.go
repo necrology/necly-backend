@@ -53,7 +53,12 @@ func (s *Store) ListAuditLogs(ctx context.Context, filter service.AuditLogFilter
 	}
 	var logs []domain.AuditLog
 	offset := (page - 1) * perPage
-	if err := query.Order("created_at DESC").Offset(offset).Limit(perPage).Find(&logs).Error; err != nil {
+	// resource_id and ip_address are nullable in the schema, but the audit DTO
+	// keeps them as strings. COALESCE avoids a Scan error on historical rows and
+	// gives the frontend the documented "always present, empty allowed" shape.
+	if err := query.
+		Select("audit_logs.id, audit_logs.actor_user_id, audit_logs.action, audit_logs.resource_type, COALESCE(audit_logs.resource_id, '') AS resource_id, COALESCE(audit_logs.ip_address, '') AS ip_address, audit_logs.metadata, audit_logs.created_at").
+		Order("created_at DESC").Offset(offset).Limit(perPage).Find(&logs).Error; err != nil {
 		return nil, 0, fmt.Errorf("list audit logs: %w", err)
 	}
 	return logs, total, nil

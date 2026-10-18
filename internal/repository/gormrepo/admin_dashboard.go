@@ -56,6 +56,25 @@ func (s *Store) GetStats(ctx context.Context) (*service.AdminDashboardStats, err
 		return nil, fmt.Errorf("sum revenue today: %w", err)
 	}
 
+	// Active activations: a slot is handed to a customer only after a paid
+	// order exists. Pending reservations and released slots are excluded, so
+	// cancelling or expiring an unpaid order reduces this back to zero.
+	if err := s.db.WithContext(ctx).Model(&domain.InventorySlot{}).
+		Where("order_item_id IS NOT NULL").
+		Where("order_item_id IN (SELECT order_items.id FROM order_items JOIN orders ON orders.id = order_items.order_id WHERE orders.status IN ?)", []string{"paid", "fulfilling", "processing", "shipped", "delivered", "completed"}).
+		Count(&stats.ActiveActivations).Error; err != nil {
+		return nil, fmt.Errorf("count active activations: %w", err)
+	}
+
+	// Available slots are the sellable capacity. Counted from inventory_slots
+	// rather than derived from product totals so a query failure cannot be
+	// mistaken for "sold out".
+	if err := s.db.WithContext(ctx).Model(&domain.InventorySlot{}).
+		Where("status = ?", "available").
+		Count(&stats.AvailableSlots).Error; err != nil {
+		return nil, fmt.Errorf("count available slots: %w", err)
+	}
+
 	return &stats, nil
 }
 

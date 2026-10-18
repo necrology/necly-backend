@@ -183,7 +183,8 @@ func TestCatalogService_ListProducts(t *testing.T) {
 
 	repo.On("ListProducts", ctx, mock.AnythingOfType("service.ProductFilter"), 1, 20).Return(expected, int64(2), nil)
 
-	products, total, err := svc.ListProducts(ctx, "", "", true, 1, 20)
+	active := true
+	products, total, err := svc.ListProducts(ctx, ProductFilter{Active: &active}, 1, 20)
 	assert.NoError(t, err)
 	assert.Equal(t, int64(2), total)
 	assert.Len(t, products, 2)

@@ -29,12 +29,19 @@ func (s *AdminProductService) ListProducts(ctx context.Context, filter AdminProd
 	repoFilter := ProductFilter{
 		CategoryID: filter.CategoryID,
 		Search:     filter.Search,
-		ActiveOnly: filter.Active != nil && *filter.Active,
+		// Keep the tri-state: nil means "all products", not "inactive only".
+		Active: filter.Active,
+	}
+	if err := ValidateProductFilter(repoFilter); err != nil {
+		return nil, 0, err
 	}
 	return s.repo.ListProducts(ctx, repoFilter, page, perPage)
 }
 
 func (s *AdminProductService) GetProduct(ctx context.Context, id string) (*domain.Product, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return nil, ErrNotFound
+	}
 	return s.repo.GetProductByID(ctx, id)
 }
 
@@ -45,6 +52,9 @@ func (s *AdminProductService) GetProductBySlug(ctx context.Context, slug string)
 func (s *AdminProductService) CreateProduct(ctx context.Context, categoryID, name, slug, description, imageURL string) (*domain.Product, error) {
 	if categoryID == "" || name == "" || slug == "" {
 		return nil, ErrInvalidInput
+	}
+	if err := ValidateCategoryID(categoryID); err != nil {
+		return nil, err
 	}
 
 	// Check if slug already exists
@@ -76,12 +86,18 @@ func (s *AdminProductService) CreateProduct(ctx context.Context, categoryID, nam
 }
 
 func (s *AdminProductService) UpdateProduct(ctx context.Context, id, categoryID, name, slug, description, imageURL string, active *bool) (*domain.Product, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return nil, ErrNotFound
+	}
 	product, err := s.repo.GetProductByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 
 	if categoryID != "" {
+		if err := ValidateCategoryID(categoryID); err != nil {
+			return nil, err
+		}
 		product.CategoryID = categoryID
 	}
 	if name != "" {
@@ -116,12 +132,21 @@ func (s *AdminProductService) UpdateProduct(ctx context.Context, id, categoryID,
 }
 
 func (s *AdminProductService) DeleteProduct(ctx context.Context, id string) error {
+	if _, err := uuid.Parse(id); err != nil {
+		return ErrNotFound
+	}
 	now := time.Now().UTC()
 	return s.repo.DeleteProduct(ctx, id, now)
 }
 
 func (s *AdminProductService) CreateProductPrice(ctx context.Context, productID, durationID string, amount int64, currency string) (*domain.ProductPrice, error) {
 	if productID == "" || durationID == "" || amount < 0 {
+		return nil, ErrInvalidInput
+	}
+	if _, err := uuid.Parse(productID); err != nil {
+		return nil, ErrInvalidInput
+	}
+	if _, err := uuid.Parse(durationID); err != nil {
 		return nil, ErrInvalidInput
 	}
 
@@ -144,6 +169,9 @@ func (s *AdminProductService) CreateProductPrice(ctx context.Context, productID,
 }
 
 func (s *AdminProductService) UpdateProductPrice(ctx context.Context, id string, amount *int64, active *bool) (*domain.ProductPrice, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return nil, ErrNotFound
+	}
 	price, err := s.repo.GetProductPriceByID(ctx, id)
 	if err != nil {
 		return nil, err
@@ -167,5 +195,8 @@ func (s *AdminProductService) UpdateProductPrice(ctx context.Context, id string,
 }
 
 func (s *AdminProductService) DeleteProductPrice(ctx context.Context, id string) error {
+	if _, err := uuid.Parse(id); err != nil {
+		return ErrNotFound
+	}
 	return s.repo.DeleteProductPrice(ctx, id)
 }

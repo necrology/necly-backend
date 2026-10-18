@@ -17,7 +17,7 @@ type User struct {
 	PasswordHash    string     `json:"-" gorm:"not null"`
 	Role            UserRole   `json:"role" gorm:"type:varchar(24);not null;default:customer"`
 	Active          bool       `json:"active" gorm:"not null;default:true;index"`
-	EmailVerifiedAt *time.Time `json:"email_verified_at,omitempty"`
+	EmailVerifiedAt *time.Time `json:"email_verified_at"`
 	GoogleSubject   *string    `json:"-" gorm:"uniqueIndex:uni_users_google_subject"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
@@ -83,18 +83,23 @@ type Category struct {
 }
 
 type Product struct {
-	ID          string         `json:"id" gorm:"type:uuid;primaryKey"`
-	CategoryID  string         `json:"category_id" gorm:"type:uuid;not null;index"`
-	Category    *Category      `json:"category,omitempty" gorm:"foreignKey:CategoryID"`
-	Name        string         `json:"name" gorm:"not null"`
-	Slug        string         `json:"slug" gorm:"uniqueIndex;not null"`
-	Description string         `json:"description"`
-	ImageURL    string         `json:"image_url"`
-	Active      bool           `json:"active" gorm:"not null;default:true;index"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
-	DeletedAt   *time.Time     `json:"-" gorm:"index"`
-	Prices      []ProductPrice `json:"prices,omitempty" gorm:"foreignKey:ProductID"`
+	ID          string    `json:"id" gorm:"type:uuid;primaryKey"`
+	CategoryID  string    `json:"category_id" gorm:"type:uuid;not null;index"`
+	Category    *Category `json:"category,omitempty" gorm:"foreignKey:CategoryID"`
+	Name        string    `json:"name" gorm:"not null"`
+	Slug        string    `json:"slug" gorm:"uniqueIndex;not null"`
+	Description string    `json:"description"`
+	ImageURL    string    `json:"image_url"`
+	Active      bool      `json:"active" gorm:"not null;default:true;index"`
+	// Labels and DeviceOptions are authored by administrators (migrations
+	// 006/007). They are part of the product DTO so the admin catalog reflects
+	// the stored configuration instead of silently dropping the columns.
+	Labels        StringArray    `json:"labels" gorm:"type:text[];not null;default:'{}'"`
+	DeviceOptions IntArray       `json:"device_options" gorm:"type:integer[];not null;default:'{}'"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+	DeletedAt     *time.Time     `json:"-" gorm:"index"`
+	Prices        []ProductPrice `json:"prices,omitempty" gorm:"foreignKey:ProductID"`
 }
 
 type ProductWithStock struct {
@@ -129,8 +134,12 @@ type ProductPrice struct {
 }
 
 type InventoryAccount struct {
-	ID                   string     `json:"id" gorm:"type:uuid;primaryKey"`
-	ProductID            string     `json:"product_id" gorm:"type:uuid;not null;index"`
+	ID        string `json:"id" gorm:"type:uuid;primaryKey"`
+	ProductID string `json:"product_id" gorm:"type:uuid;not null;index"`
+	// Product is the association the admin inventory list preloads. Without a
+	// declared relation GORM rejects Preload("Product") and the list endpoint
+	// answers 500.
+	Product              *Product   `json:"product,omitempty" gorm:"foreignKey:ProductID"`
 	EncryptedCredentials []byte     `json:"-" gorm:"not null"`
 	Status               string     `json:"status" gorm:"size:24;not null;default:active;index"`
 	ExpiresAt            *time.Time `json:"expires_at,omitempty"`
@@ -297,7 +306,7 @@ type Notification struct {
 
 type AuditLog struct {
 	ID           string  `json:"id" gorm:"type:uuid;primaryKey"`
-	ActorUserID  *string `json:"actor_user_id,omitempty" gorm:"type:uuid;index"`
+	ActorUserID  *string `json:"actor_user_id" gorm:"type:uuid;index"`
 	Action       string  `json:"action" gorm:"size:96;not null;index"`
 	ResourceType string  `json:"resource_type" gorm:"size:64;not null"`
 	ResourceID   string  `json:"resource_id" gorm:"index"`
@@ -305,7 +314,7 @@ type AuditLog struct {
 	Metadata     []byte  `json:"metadata" gorm:"type:jsonb"`
 	// ActorUser is what ListAuditLogs preloads; without the association declared
 	// GORM answers ErrUnsupportedRelation and the audit-log query fails.
-	ActorUser *User     `json:"actor_user,omitempty" gorm:"foreignKey:ActorUserID"`
+	ActorUser *User     `json:"actor_user" gorm:"foreignKey:ActorUserID"`
 	CreatedAt time.Time `json:"created_at" gorm:"index"`
 }
 
