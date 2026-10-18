@@ -328,7 +328,9 @@ func (s *CheckoutService) completeReservation(ctx context.Context, reservation *
 		// and the order must not be cancelled.
 		return nil, err
 	}
-	return resultFrom(order, *saved, false), nil
+	// A waiter that recovered a stale reservation is still replaying an order
+	// that already existed, so the handler must answer 200 rather than 201.
+	return resultFrom(order, *saved, reservation.State == CheckoutReplay || alreadyClaimed), nil
 }
 
 // waitForProgress polls the persisted attempt without holding any database
@@ -381,11 +383,32 @@ func (s *CheckoutService) waitForProgress(ctx context.Context, userID, idempoten
 }
 
 func resultFrom(order *domain.Order, payment domain.Payment, replayed bool) *CheckoutResult {
-	result := &CheckoutResult{Payment: payment, CheckoutURL: payment.CheckoutURL, Replayed: replayed}
+	// Normalise every timestamp to UTC before serialization. PostgreSQL/pgx
+	// may hand back time.Time in the host's local location; without this the
+	// 201 body (in-memory UTC) and the 200 replay body (+07:00 on a Jakarta
+	// host) differ even though the instant is the same.
+	result := &CheckoutResult{Payment: paymentInUTC(payment), CheckoutURL: payment.CheckoutURL, Replayed: replayed}
 	if order != nil {
-		result.Order = *order
+		result.Order = orderInUTC(*order)
 	}
 	return result
+}
+
+func orderInUTC(order domain.Order) domain.Order {
+	order.PaymentDueAt = order.PaymentDueAt.UTC()
+	order.CreatedAt = order.CreatedAt.UTC()
+	order.UpdatedAt = order.UpdatedAt.UTC()
+	return order
+}
+
+func paymentInUTC(payment domain.Payment) domain.Payment {
+	payment.CreatedAt = payment.CreatedAt.UTC()
+	payment.UpdatedAt = payment.UpdatedAt.UTC()
+	if payment.PaidAt != nil {
+		paidAt := payment.PaidAt.UTC()
+		payment.PaidAt = &paidAt
+	}
+	return payment
 }
 
 func paymentFromAttempt(order *domain.Order, attempt *domain.CheckoutAttempt, now time.Time) *domain.Payment {

@@ -618,3 +618,59 @@ func TestCancelAndReleaseWaitsForConcurrentPaidUpdate(t *testing.T) {
 		t.Fatalf("reserved slots = %d, want 1 (paid stock must stay allocated)", reserved)
 	}
 }
+
+func TestConcurrentProviderCreatedRecoveryReturnsReplay(t *testing.T) {
+	fixture := newCheckoutFixture(t)
+	provider := &stubProvider{}
+	svc := fixture.service(provider)
+	first, err := svc.Checkout(context.Background(), fixture.input(fixture.userA, "fixture-recovery-race", "WELCOME10"))
+	if err != nil {
+		t.Fatalf("first checkout: %v", err)
+	}
+
+	// Simulate the provider reference being recorded but the payment row never
+	// committed, then hit recovery with several concurrent retries.
+	if err := fixture.db.Where("order_id = ?", first.Order.ID).Delete(&domain.Payment{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&domain.CheckoutAttempt{}).
+		Where("user_id = ? AND idempotency_key = ?", fixture.userA, "fixture-recovery-race").
+		Updates(map[string]any{
+			"state": "provider_created", "provider": "mock",
+			"provider_payment_id": "pay_" + first.Order.ID,
+			"checkout_url":        "https://pay.mock/" + first.Order.ID,
+		}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	const workers = 8
+	var waitGroup sync.WaitGroup
+	results := make([]*service.CheckoutResult, workers)
+	errs := make([]error, workers)
+	for index := 0; index < workers; index++ {
+		waitGroup.Add(1)
+		go func(slot int) {
+			defer waitGroup.Done()
+			results[slot], errs[slot] = svc.Checkout(context.Background(), fixture.input(fixture.userA, "fixture-recovery-race", "WELCOME10"))
+		}(index)
+	}
+	waitGroup.Wait()
+
+	for index := range errs {
+		if errs[index] != nil {
+			t.Fatalf("worker %d failed: %v", index, errs[index])
+		}
+		if !results[index].Replayed {
+			t.Fatalf("worker %d returned status 201 instead of replay", index)
+		}
+		if results[index].Order.ID != first.Order.ID {
+			t.Fatalf("worker %d returned a different order", index)
+		}
+	}
+	if payments := countRows(t, fixture.db, &domain.Payment{}); payments != 1 {
+		t.Fatalf("payments = %d, want 1", payments)
+	}
+	if provider.calls.Load() != 1 {
+		t.Fatalf("provider calls = %d, want 1 (no second charge during recovery)", provider.calls.Load())
+	}
+}

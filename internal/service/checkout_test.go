@@ -228,6 +228,9 @@ func TestWaiterRecoversStaleReservationWithoutDoubleClaim(t *testing.T) {
 	if result == nil || result.Payment.ID == "" {
 		t.Fatalf("recovery returned no payment: %#v", result)
 	}
+	if !result.Replayed {
+		t.Fatal("recovery of an existing order must be reported as a replay (200, not 201)")
+	}
 	if repo.claims != 1 {
 		t.Fatalf("claims = %d, want 1 (the waiter's claim must be reused)", repo.claims)
 	}

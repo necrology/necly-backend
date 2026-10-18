@@ -352,8 +352,10 @@ func (s *Store) SaveProviderResult(ctx context.Context, attemptID, provider, pro
 func (s *Store) CompleteCheckout(ctx context.Context, attemptID string, payment *domain.Payment) (*domain.Payment, error) {
 	var saved *domain.Payment
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Lock the ledger row so two recovery requests for the same attempt
+		// serialize instead of racing the payment check-then-insert.
 		var attempt domain.CheckoutAttempt
-		if err := tx.Where("id = ?", attemptID).First(&attempt).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", attemptID).First(&attempt).Error; err != nil {
 			return fmt.Errorf("load attempt: %w", err)
 		}
 		if attempt.OrderID == nil {
@@ -364,19 +366,25 @@ func (s *Store) CompleteCheckout(ctx context.Context, attemptID string, payment 
 			return fmt.Errorf("load order: %w", err)
 		}
 
-		var existing domain.Payment
-		err := tx.Where("provider_payment_id = ?", payment.ProviderPaymentID).First(&existing).Error
-		switch {
-		case err == nil:
-			saved = &existing
-		case errors.Is(err, gorm.ErrRecordNotFound):
-			payment.OrderID = order.ID
-			if err := tx.Create(payment).Error; err != nil {
-				return fmt.Errorf("create payment: %w", err)
-			}
+		// The unique provider_payment_id is the final guard. ON CONFLICT DO
+		// NOTHING makes a concurrent recovery a no-op, and the follow-up read
+		// returns the winner's row so every caller can answer with a replay.
+		payment.OrderID = order.ID
+		insert := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "provider_payment_id"}},
+			DoNothing: true,
+		}).Create(payment)
+		if insert.Error != nil {
+			return fmt.Errorf("create payment: %w", insert.Error)
+		}
+		if insert.RowsAffected == 1 {
 			saved = payment
-		default:
-			return fmt.Errorf("check existing payment: %w", err)
+		} else {
+			var existing domain.Payment
+			if err := tx.Where("provider_payment_id = ?", payment.ProviderPaymentID).First(&existing).Error; err != nil {
+				return fmt.Errorf("load existing payment: %w", err)
+			}
+			saved = &existing
 		}
 
 		attempt.State = "completed"

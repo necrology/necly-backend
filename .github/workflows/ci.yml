@@ -16,6 +16,9 @@ permissions:
 
 env:
   SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  # Run the suite outside UTC so timezone-dependent response bugs (for example
+  # a replay body serialized with a +07:00 offset) fail CI instead of passing.
+  TZ: Asia/Jakarta
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
