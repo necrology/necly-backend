@@ -1063,19 +1063,51 @@ func (r *Router) checkout(c *fiber.Ctx) error {
 
 	result, err := r.checkoutSvc.Checkout(ctx, input)
 	if err != nil {
-		if err == service.ErrInvalidInput {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
-		}
-		if err == service.ErrNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Produk atau voucher tidak ditemukan"})
-		}
-		if err == service.ErrOutOfStock {
-			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Slot akun langganan tidak mencukupi atau sedang habis"})
-		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Proses pemesanan gagal"})
+		return writeCheckoutError(c, err)
 	}
 
-	return c.Status(fiber.StatusCreated).JSON(result)
+	// 201 on the first logical checkout, 200 with the identical stored body on
+	// an idempotent replay. The body itself is the same contract either way.
+	status := fiber.StatusCreated
+	if result.Replayed {
+		status = fiber.StatusOK
+	}
+	return c.Status(status).JSON(result)
+}
+
+func writeCheckoutError(c *fiber.Ctx, err error) error {
+	var priceChanged *service.PriceChangedError
+	switch {
+	case errors.Is(err, service.ErrInvalidInput):
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": err.Error(), "code": "invalid_input",
+		})
+	case errors.Is(err, service.ErrNotFound):
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": "Produk atau voucher tidak ditemukan", "code": "not_found",
+		})
+	case errors.Is(err, service.ErrOutOfStock):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+			"error": "Slot akun langganan tidak mencukupi atau sedang habis", "code": "out_of_stock",
+		})
+	case errors.Is(err, service.ErrIdempotencyConflict):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+			"error": err.Error(), "code": "idempotency_conflict",
+		})
+	case errors.Is(err, service.ErrCheckoutInProgress):
+		// No mutation: the caller can retry the same owner/key and will receive
+		// the stored result once the in-flight attempt finishes.
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+			"error": err.Error(), "code": "idempotency_conflict",
+		})
+	case errors.As(err, &priceChanged):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+			"error": priceChanged.Error(), "code": "price_changed",
+			"current_subtotal": priceChanged.CurrentSubtotal, "currency": priceChanged.Currency,
+		})
+	default:
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Proses pemesanan gagal"})
+	}
 }
 
 func (r *Router) listOrders(c *fiber.Ctx) error {

@@ -12,14 +12,31 @@ import (
 )
 
 type atomicStockRepository struct {
-	mu    sync.Mutex
-	stock int
-	next  int
+	mu       sync.Mutex
+	stock    int
+	next     int
+	attempts map[string]*domain.CheckoutAttempt
+	orders   map[string]*domain.Order
+	payments map[string]*domain.Payment
 }
 
-func (r *atomicStockRepository) ReserveCheckout(_ context.Context, command CheckoutCommand) (*domain.Order, error) {
+func (r *atomicStockRepository) key(userID, key string) string { return userID + "|" + key }
+
+func (r *atomicStockRepository) BeginCheckout(_ context.Context, command CheckoutCommand) (*CheckoutReservation, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.attempts == nil {
+		r.attempts = make(map[string]*domain.CheckoutAttempt)
+		r.orders = make(map[string]*domain.Order)
+		r.payments = make(map[string]*domain.Payment)
+	}
+	key := r.key(command.UserID, command.IdempotencyKey)
+	if order, ok := r.orders[key]; ok {
+		return &CheckoutReservation{State: CheckoutReplay, Order: order, Payment: r.payments[key], Attempt: r.attempts[key]}, nil
+	}
+	if attempt, ok := r.attempts[key]; ok {
+		return &CheckoutReservation{State: CheckoutInProgress, Attempt: attempt}, nil
+	}
 	wanted := 0
 	for _, item := range command.Items {
 		wanted += item.Quantity
@@ -29,11 +46,59 @@ func (r *atomicStockRepository) ReserveCheckout(_ context.Context, command Check
 	}
 	r.stock -= wanted
 	r.next++
-	return &domain.Order{ID: fmt.Sprintf("order-%d", r.next), UserID: command.UserID, Status: domain.OrderPending, Total: int64(wanted) * 10_000, Currency: "IDR", PaymentDueAt: command.Now.Add(15 * time.Minute)}, nil
+	order := &domain.Order{ID: fmt.Sprintf("order-%d", r.next), Number: fmt.Sprintf("ORD-%d", r.next), UserID: command.UserID, Status: domain.OrderPending, Total: int64(wanted) * 10_000, Currency: "IDR", PaymentDueAt: command.Now.Add(15 * time.Minute)}
+	attempt := &domain.CheckoutAttempt{ID: fmt.Sprintf("attempt-%d", r.next), UserID: command.UserID, IdempotencyKey: command.IdempotencyKey, RequestFingerprint: command.Fingerprint, State: "reserved", OrderID: &order.ID}
+	r.orders[key] = order
+	r.attempts[key] = attempt
+	return &CheckoutReservation{State: CheckoutReserved, Order: order, Attempt: attempt}, nil
 }
-func (r *atomicStockRepository) SavePayment(_ context.Context, _ string, payment *domain.Payment) error {
+
+func (r *atomicStockRepository) ClaimProviderCall(_ context.Context, _ string, _ time.Time) (bool, error) {
+	return true, nil
+}
+
+func (r *atomicStockRepository) SaveProviderResult(_ context.Context, attemptID, provider, providerPaymentID, checkoutURL string, _ time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, attempt := range r.attempts {
+		if attempt.ID == attemptID {
+			attempt.Provider = &provider
+			attempt.ProviderPaymentID = &providerPaymentID
+			attempt.CheckoutURL = &checkoutURL
+			attempt.State = "provider_created"
+		}
+	}
 	return nil
 }
+
+func (r *atomicStockRepository) CompleteCheckout(_ context.Context, attemptID string, payment *domain.Payment) (*domain.Payment, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key, attempt := range r.attempts {
+		if attempt.ID != attemptID {
+			continue
+		}
+		attempt.State = "completed"
+		if order, ok := r.orders[key]; ok {
+			payment.OrderID = order.ID
+		}
+		r.payments[key] = payment
+	}
+	return payment, nil
+}
+
+func (r *atomicStockRepository) FailCheckout(_ context.Context, _ string, _ string, _ time.Time) error {
+	return nil
+}
+
+func (r *atomicStockRepository) GetCheckoutProgress(_ context.Context, userID, idempotencyKey string) (*CheckoutProgress, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := r.key(userID, idempotencyKey)
+	progress := &CheckoutProgress{Order: r.orders[key], Payment: r.payments[key], Attempt: r.attempts[key]}
+	return progress, nil
+}
+
 func (r *atomicStockRepository) CancelAndRelease(_ context.Context, _ string, _ time.Time) error {
 	return nil
 }

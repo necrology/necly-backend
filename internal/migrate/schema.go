@@ -30,6 +30,9 @@ type expectedIndex struct {
 	columns []string
 	unique  bool
 	since   string
+	// until marks an object that a later migration removes. It is required
+	// during baseline adoption but must be absent after a full run.
+	until string
 }
 
 type expectedConstraint struct {
@@ -40,6 +43,7 @@ type expectedConstraint struct {
 	onDelete   string
 	expression string
 	since      string
+	until      string
 }
 
 type extraSummary struct {
@@ -107,6 +111,12 @@ func inspectAndCompare(db *gorm.DB, baselineOnly bool) (extraSummary, error) {
 			continue
 		}
 		key := indexKey(expected.table, expected.columns, expected.unique)
+		if expected.until != "" && !baselineOnly {
+			if actual.indexes[key] {
+				differences = append(differences, fmt.Sprintf("obsolete index still present on %s(%s) unique=%t", expected.table, strings.Join(expected.columns, ","), expected.unique))
+			}
+			continue
+		}
 		expectedIndexKeys[key] = true
 		if !actual.indexes[key] {
 			differences = append(differences, fmt.Sprintf("missing index on %s(%s) unique=%t", expected.table, strings.Join(expected.columns, ","), expected.unique))
@@ -119,6 +129,12 @@ func inspectAndCompare(db *gorm.DB, baselineOnly bool) (extraSummary, error) {
 			continue
 		}
 		key := constraintKey(expected)
+		if expected.until != "" && !baselineOnly {
+			if actual.constraints[key] {
+				differences = append(differences, fmt.Sprintf("obsolete %s constraint still present on %s", expected.kind, expected.table))
+			}
+			continue
+		}
 		expectedConstraintKeys[key] = true
 		if !actual.constraints[key] {
 			description := fmt.Sprintf("%s %s", expected.kind, expected.table)
