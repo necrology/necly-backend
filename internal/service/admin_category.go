@@ -45,12 +45,17 @@ func (s *AdminCategoryService) CreateCategory(ctx context.Context, name, slug, d
 		return nil, ErrInvalidInput
 	}
 
-	// Check if slug already exists
+	// Check if slug already exists. See AdminProductService.CreateProduct for
+	// why a nil error without a row is handled separately.
 	existing, err := s.repo.GetCategoryBySlug(ctx, slug)
-	if err == nil && existing != nil {
-		return nil, ErrConflict
-	}
-	if !errors.Is(err, ErrNotFound) {
+	switch {
+	case err == nil:
+		if existing != nil {
+			return nil, ErrConflict
+		}
+	case errors.Is(err, ErrNotFound):
+		// Free slug.
+	default:
 		return nil, fmt.Errorf("check existing slug: %w", err)
 	}
 
@@ -85,12 +90,17 @@ func (s *AdminCategoryService) UpdateCategory(ctx context.Context, id, name, slu
 		category.Name = name
 	}
 	if slug != "" {
-		// Check if new slug is already taken
+		// Check if new slug is already taken. Re-submitting the category's own
+		// slug is a normal edit and must not be treated as an error.
 		existing, err := s.repo.GetCategoryBySlug(ctx, slug)
-		if err == nil && existing != nil && existing.ID != id {
-			return nil, ErrConflict
-		}
-		if !errors.Is(err, ErrNotFound) {
+		switch {
+		case err == nil:
+			if existing != nil && existing.ID != id {
+				return nil, ErrConflict
+			}
+		case errors.Is(err, ErrNotFound):
+			// Free slug.
+		default:
 			return nil, fmt.Errorf("check existing slug: %w", err)
 		}
 		category.Slug = strings.ToLower(slug)

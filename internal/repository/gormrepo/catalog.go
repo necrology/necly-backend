@@ -506,7 +506,7 @@ func (s *Store) GetProductWithStock(ctx context.Context, id string) (*domain.Pro
 		Preload("Category").
 		Preload("Prices", activePricePreload).
 		Preload("Prices.Duration").
-		Where("id = ? AND deleted_at IS NULL", id).
+		Where("id = ? AND deleted_at IS NULL AND active = TRUE", id).
 		First(&p).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, service.ErrNotFound
@@ -523,7 +523,7 @@ func (s *Store) GetProductBySlugWithStock(ctx context.Context, slug string) (*do
 		Preload("Category").
 		Preload("Prices", activePricePreload).
 		Preload("Prices.Duration").
-		Where("slug = ? AND deleted_at IS NULL", slug).
+		Where("slug = ? AND deleted_at IS NULL AND active = TRUE", slug).
 		First(&p).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, service.ErrNotFound

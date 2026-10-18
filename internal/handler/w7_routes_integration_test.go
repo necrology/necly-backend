@@ -138,6 +138,13 @@ func TestW7AdminCatalogRoutesExerciseTheRealStore(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("update with free slug = %d %s, want 200", status, payload)
 	}
+	status, payload = do(http.MethodPatch, "/api/v1/admin/products/"+created.ID, map[string]any{
+		"name": "Nama Setelah Edit",
+		"slug": "slug-baru",
+	})
+	if status != fiber.StatusOK {
+		t.Fatalf("update with unchanged slug = %d %s, want 200", status, payload)
+	}
 
 	status, payload = do(http.MethodPost, "/api/v1/admin/products", map[string]any{
 		"category_id": "Streaming",
@@ -177,5 +184,10 @@ func TestW7AdminCatalogRoutesExerciseTheRealStore(t *testing.T) {
 	_ = json.Unmarshal(payload, &invalid)
 	if invalid.Code != "invalid_input" {
 		t.Fatalf("malformed active filter code = %q, want invalid_input (%s)", invalid.Code, payload)
+	}
+
+	status, payload = do(http.MethodGet, "/api/v1/admin/categories?active=foo", nil)
+	if status != fiber.StatusBadRequest {
+		t.Fatalf("malformed category active filter = %d %s, want 400", status, payload)
 	}
 }

@@ -309,6 +309,14 @@ func TestW7PublicCatalogFilterContract(t *testing.T) {
 	if len(detail.Prices) != 2 || detail.Prices[0].ID != fixture.prices["netflix-monthly"] {
 		t.Fatalf("detail prices = %#v", detail.Prices)
 	}
+
+	// The public detail route must apply the same active-only rule as the list.
+	if _, err := fixture.store.GetProductWithStock(ctx, fixture.products["canva"]); !errors.Is(err, service.ErrNotFound) {
+		t.Fatalf("inactive product detail error = %v, want ErrNotFound", err)
+	}
+	if _, err := fixture.store.GetProductBySlugWithStock(ctx, "canva-teams"); !errors.Is(err, service.ErrNotFound) {
+		t.Fatalf("inactive product slug error = %v, want ErrNotFound", err)
+	}
 }
 
 func TestW7AdminProductCRUDUsesSharedErrors(t *testing.T) {
@@ -327,8 +335,14 @@ func TestW7AdminProductCRUDUsesSharedErrors(t *testing.T) {
 	if _, err := svc.CreateProduct(ctx, category, "Produk Lain", "produk-baru", "", ""); !errors.Is(err, service.ErrConflict) {
 		t.Fatalf("duplicate slug error = %v, want ErrConflict", err)
 	}
-	if _, err := svc.UpdateProduct(ctx, created.ID, "", "Produk Baru", "slug-baru", "", "", nil); err != nil {
+	updated, err := svc.UpdateProduct(ctx, created.ID, "", "Produk Baru", "slug-baru", "", "", nil)
+	if err != nil {
 		t.Fatalf("update with free slug: %v", err)
+	}
+	// Re-submitting the product's own slug is a normal edit (name/status), not
+	// a duplicate conflict and never a nil-wrapped error.
+	if _, err := svc.UpdateProduct(ctx, updated.ID, "", "Nama Baru", updated.Slug, "", "", nil); err != nil {
+		t.Fatalf("update with unchanged slug: %v", err)
 	}
 	if _, err := svc.UpdateProduct(ctx, uuid.NewString(), "", "", "slug-lain", "", "", nil); !errors.Is(err, service.ErrNotFound) {
 		t.Fatalf("update missing product error = %v, want ErrNotFound", err)
@@ -354,8 +368,12 @@ func TestW7AdminProductCRUDUsesSharedErrors(t *testing.T) {
 	if _, err := categorySvc.CreateCategory(ctx, "Kategori Lain", "kategori-baru", "", ""); !errors.Is(err, service.ErrConflict) {
 		t.Fatalf("duplicate category slug error = %v, want ErrConflict", err)
 	}
-	if _, err := categorySvc.UpdateCategory(ctx, createdCategory.ID, "", "kategori-baru-lagi", "", "", nil); err != nil {
+	updatedCategory, err := categorySvc.UpdateCategory(ctx, createdCategory.ID, "", "kategori-baru-lagi", "", "", nil)
+	if err != nil {
 		t.Fatalf("update category with free slug: %v", err)
+	}
+	if _, err := categorySvc.UpdateCategory(ctx, updatedCategory.ID, "Nama Kategori Baru", updatedCategory.Slug, "", "", nil); err != nil {
+		t.Fatalf("update category with unchanged slug: %v", err)
 	}
 	if err := categorySvc.DeleteCategory(ctx, uuid.NewString()); !errors.Is(err, service.ErrNotFound) {
 		t.Fatalf("delete missing category error = %v, want ErrNotFound", err)

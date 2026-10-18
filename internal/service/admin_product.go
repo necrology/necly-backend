@@ -57,12 +57,18 @@ func (s *AdminProductService) CreateProduct(ctx context.Context, categoryID, nam
 		return nil, err
 	}
 
-	// Check if slug already exists
+	// Check if slug already exists. A nil error with a nil row is not a real
+	// database result, but treating it as a conflict check failure would wrap
+	// nil and turn a successful create into a 500.
 	existing, err := s.repo.GetProductBySlug(ctx, slug)
-	if err == nil && existing != nil {
-		return nil, ErrConflict
-	}
-	if !errors.Is(err, ErrNotFound) {
+	switch {
+	case err == nil:
+		if existing != nil {
+			return nil, ErrConflict
+		}
+	case errors.Is(err, ErrNotFound):
+		// Free slug.
+	default:
 		return nil, fmt.Errorf("check existing slug: %w", err)
 	}
 
@@ -104,12 +110,17 @@ func (s *AdminProductService) UpdateProduct(ctx context.Context, id, categoryID,
 		product.Name = name
 	}
 	if slug != "" {
-		// Check if new slug is already taken
+		// Check if new slug is already taken. Re-submitting the product's own
+		// slug is a normal edit and must not be treated as an error.
 		existing, err := s.repo.GetProductBySlug(ctx, slug)
-		if err == nil && existing != nil && existing.ID != id {
-			return nil, ErrConflict
-		}
-		if !errors.Is(err, ErrNotFound) {
+		switch {
+		case err == nil:
+			if existing != nil && existing.ID != id {
+				return nil, ErrConflict
+			}
+		case errors.Is(err, ErrNotFound):
+			// Free slug.
+		default:
 			return nil, fmt.Errorf("check existing slug: %w", err)
 		}
 		product.Slug = strings.ToLower(slug)

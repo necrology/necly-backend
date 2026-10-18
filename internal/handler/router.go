@@ -19,15 +19,15 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-func parseBoolPtr(s string) *bool {
-	if s == "" {
-		return nil
+func parseBoolPtr(raw string) (*bool, error) {
+	if raw == "" {
+		return nil, nil
 	}
-	b, err := strconv.ParseBool(s)
+	value, err := strconv.ParseBool(raw)
 	if err != nil {
-		return nil
+		return nil, service.ErrInvalidInput
 	}
-	return &b
+	return &value, nil
 }
 
 // parseNonNegativeInt64 turns an optional query value into an inclusive bound.
@@ -39,17 +39,6 @@ func parseNonNegativeInt64(raw string) (*int64, error) {
 	}
 	value, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || value < 0 {
-		return nil, service.ErrInvalidInput
-	}
-	return &value, nil
-}
-
-func parseOptionalBoolPtr(raw string) (*bool, error) {
-	if raw == "" {
-		return nil, nil
-	}
-	value, err := strconv.ParseBool(raw)
-	if err != nil {
 		return nil, service.ErrInvalidInput
 	}
 	return &value, nil
@@ -1229,9 +1218,13 @@ func (r *Router) dashboard(c *fiber.Ctx) error {
 }
 
 func (r *Router) listUsers(c *fiber.Ctx) error {
+	active, err := parseBoolPtr(c.Query("active"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Filter status pengguna tidak valid", "code": "invalid_input"})
+	}
 	filter := service.UserFilter{
 		Role:   c.Query("role"),
-		Active: parseBoolPtr(c.Query("active")),
+		Active: active,
 		Search: c.Query("search"),
 	}
 	page := c.QueryInt("page", 1)
@@ -1342,7 +1335,7 @@ func (r *Router) deleteUser(c *fiber.Ctx) error {
 }
 
 func (r *Router) adminListProducts(c *fiber.Ctx) error {
-	active, err := parseOptionalBoolPtr(c.Query("active"))
+	active, err := parseBoolPtr(c.Query("active"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Filter status produk tidak valid", "code": "invalid_input"})
 	}
@@ -1453,8 +1446,12 @@ func (r *Router) adminDeleteProduct(c *fiber.Ctx) error {
 }
 
 func (r *Router) adminListCategories(c *fiber.Ctx) error {
+	active, err := parseBoolPtr(c.Query("active"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Filter status kategori tidak valid", "code": "invalid_input"})
+	}
 	filter := service.CategoryFilter{
-		Active: parseBoolPtr(c.Query("active")),
+		Active: active,
 		Search: c.Query("search"),
 	}
 	page := c.QueryInt("page", 1)
@@ -1685,8 +1682,12 @@ func (r *Router) adminListAuditLogs(c *fiber.Ctx) error {
 }
 
 func (r *Router) adminListVouchers(c *fiber.Ctx) error {
+	active, err := parseBoolPtr(c.Query("active"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Filter status voucher tidak valid", "code": "invalid_input"})
+	}
 	filter := service.VoucherFilter{
-		Active:   parseBoolPtr(c.Query("active")),
+		Active:   active,
 		Code:     c.Query("code"),
 		DateFrom: nil,
 		DateTo:   nil,
@@ -1804,9 +1805,13 @@ func (r *Router) adminDeleteVoucher(c *fiber.Ctx) error {
 }
 
 func (r *Router) adminListInventoryAccounts(c *fiber.Ctx) error {
+	active, err := parseBoolPtr(c.Query("active"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Filter status inventaris tidak valid", "code": "invalid_input"})
+	}
 	filter := service.InventoryAccountFilter{
 		ProductID: c.Query("product_id"),
-		Active:    parseBoolPtr(c.Query("active")),
+		Active:    active,
 	}
 	page := c.QueryInt("page", 1)
 	perPage := c.QueryInt("per_page", 20)
