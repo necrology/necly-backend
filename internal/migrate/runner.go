@@ -76,13 +76,25 @@ func Run(ctx context.Context, db *gorm.DB, options Options) (*Result, error) {
 		return nil, err
 	}
 
-	if err := db.WithContext(ctx).Exec("SELECT pg_advisory_lock(?)", advisoryLockID).Error; err != nil {
+	// The advisory lock is session-scoped. Pin it to one physical connection
+	// for the whole run: taking it from the pool and releasing it from another
+	// pooled session would leave the lock behind or lose it mid-run.
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("database handle: %w", err)
+	}
+	lockConn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire migration lock connection: %w", err)
+	}
+	defer lockConn.Close()
+	if _, err := lockConn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", advisoryLockID); err != nil {
 		return nil, fmt.Errorf("acquire migration lock: %w", err)
 	}
 	defer func() {
-		// The unlock runs on a best-effort basis; the connection returning to
-		// the pool also releases a session-level advisory lock.
-		_ = db.Exec("SELECT pg_advisory_unlock(?)", advisoryLockID).Error
+		// Unlock on the same connection, then close it so PostgreSQL also
+		// releases the lock if this process exits unexpectedly.
+		_, _ = lockConn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", advisoryLockID)
 	}()
 
 	if err := ensureLedger(db); err != nil {
@@ -119,13 +131,17 @@ func Run(ctx context.Context, db *gorm.DB, options Options) (*Result, error) {
 			}
 			// Only 001 and 003–008 are adopted. Migration 009 and later are
 			// applied normally below so their DDL actually runs.
+			var adoptions []Definition
 			for _, definition := range definitions {
 				if definition.Version > "008" {
 					continue
 				}
-				if err := recordMigration(db, definition, "adopted"); err != nil {
-					return nil, err
-				}
+				adoptions = append(adoptions, definition)
+			}
+			if err := recordAdoptions(db, adoptions); err != nil {
+				return nil, err
+			}
+			for _, definition := range adoptions {
 				applied[definition.Version] = definition.Checksum
 			}
 			result.Adopted = true
@@ -258,8 +274,19 @@ func baselineSchemaExists(db *gorm.DB) (bool, error) {
 	return exists, nil
 }
 
-func recordMigration(db *gorm.DB, definition Definition, mode string) error {
-	return db.Exec(
+func recordAdoptions(db *gorm.DB, definitions []Definition) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		for _, definition := range definitions {
+			if err := recordMigration(tx, definition, "adopted"); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func recordMigration(tx *gorm.DB, definition Definition, mode string) error {
+	return tx.Exec(
 		"INSERT INTO schema_migrations (version, checksum, mode) VALUES (?, ?, ?)",
 		definition.Version, definition.Checksum, mode,
 	).Error
@@ -284,11 +311,14 @@ func applyDefinition(ctx context.Context, db *gorm.DB, definition Definition) er
 			return fmt.Errorf("apply %s statement %d: %w", definition.Filename, index+1, err)
 		}
 	}
+	// The ledger row belongs to the same transaction as the DDL. A failure to
+	// record it rolls the migration back instead of leaving unrecorded changes.
+	if err := recordMigration(tx, definition, "applied"); err != nil {
+		_ = tx.Rollback().Error
+		return fmt.Errorf("record %s: %w", definition.Filename, err)
+	}
 	if err := tx.Commit().Error; err != nil {
 		return fmt.Errorf("commit %s: %w", definition.Filename, err)
-	}
-	if err := recordMigration(db, definition, "applied"); err != nil {
-		return fmt.Errorf("record %s: %w", definition.Filename, err)
 	}
 	return nil
 }
