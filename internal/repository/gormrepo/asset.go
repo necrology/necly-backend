@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/necly/services/internal/domain"
+	"github.com/necly/services/internal/service"
 	"gorm.io/gorm"
 )
 
@@ -44,7 +45,7 @@ func (s *Store) GetAsset(ctx context.Context, id string) (*domain.Asset, error) 
 	var a domain.Asset
 	err := s.db.WithContext(ctx).Where("id = ?", id).First(&a).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, ErrNotFound
+		return nil, service.ErrNotFound
 	}
 	return &a, err
 }
@@ -74,7 +75,7 @@ func (s *Store) MarkAssetUploaded(ctx context.Context, id string, now time.Time)
 		return fmt.Errorf("mark asset uploaded: %w", result.Error)
 	}
 	if result.RowsAffected == 0 {
-		return ErrNotFound
+		return service.ErrNotFound
 	}
 	return nil
 }

@@ -36,6 +36,12 @@ type AdminDashboardStats struct {
 	NewUsersToday int64 `json:"new_users_today"`
 	OrdersToday   int64 `json:"orders_today"`
 	RevenueToday  int64 `json:"revenue_today"`
+	// ActiveActivations counts allocated inventory slots on orders that are
+	// paid or further along the fulfilment chain. AvailableSlots counts the
+	// slots still offered for sale. Both are real queries; a failure returns an
+	// error instead of a zero that looks like real data.
+	ActiveActivations int64 `json:"active_activations"`
+	AvailableSlots    int64 `json:"available_slots"`
 }
 
 type RevenuePoint struct {

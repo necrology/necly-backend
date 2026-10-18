@@ -87,10 +87,12 @@ func TestAdminProductService_ListProducts(t *testing.T) {
 		{ID: uuid.NewString(), Name: "Product 2", Slug: "product-2", Active: false},
 	}
 
-	filter := ProductFilter{CategoryID: "cat-1", ActiveOnly: true}
+	active := true
+	categoryID := uuid.NewString()
+	filter := ProductFilter{CategoryID: categoryID, Active: &active}
 	repo.On("ListProducts", ctx, filter, 1, 20).Return(expected, int64(2), nil)
 
-	products, total, err := svc.ListProducts(ctx, AdminProductFilter{CategoryID: "cat-1", Active: func() *bool { b := true; return &b }()}, 1, 20)
+	products, total, err := svc.ListProducts(ctx, AdminProductFilter{CategoryID: categoryID, Active: &active}, 1, 20)
 	assert.NoError(t, err)
 	assert.Equal(t, int64(2), total)
 	assert.Len(t, products, 2)

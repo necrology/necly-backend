@@ -19,15 +19,40 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-func parseBoolPtr(s string) *bool {
-	if s == "" {
-		return nil
+func parseBoolPtr(raw string) (*bool, error) {
+	if raw == "" {
+		return nil, nil
 	}
-	b, err := strconv.ParseBool(s)
+	value, err := strconv.ParseBool(raw)
 	if err != nil {
-		return nil
+		return nil, service.ErrInvalidInput
 	}
-	return &b
+	return &value, nil
+}
+
+// parseNonNegativeInt64 turns an optional query value into an inclusive bound.
+// An empty value means "no bound"; a malformed or negative value is a client
+// error rather than a silently ignored filter.
+func parseNonNegativeInt64(raw string) (*int64, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 {
+		return nil, service.ErrInvalidInput
+	}
+	return &value, nil
+}
+
+func parseOptionalBool(raw string) (bool, error) {
+	if raw == "" {
+		return false, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, service.ErrInvalidInput
+	}
+	return value, nil
 }
 
 type Router struct {
@@ -858,15 +883,39 @@ func (r *Router) getCategory(c *fiber.Ctx) error {
 func (r *Router) listProducts(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(c.Context(), 3*time.Second)
 	defer cancel()
-	categoryID := c.Query("category")
-	search := c.Query("search")
+
+	minPrice, err := parseNonNegativeInt64(c.Query("min_price"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Harga minimum tidak valid", "code": "invalid_input"})
+	}
+	maxPrice, err := parseNonNegativeInt64(c.Query("max_price"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Harga maksimum tidak valid", "code": "invalid_input"})
+	}
+	inStock, err := parseOptionalBool(c.Query("in_stock"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Filter ketersediaan tidak valid", "code": "invalid_input"})
+	}
+
+	active := true
+	filter := service.ProductFilter{
+		CategoryID: c.Query("category"),
+		Search:     c.Query("search"),
+		Active:     &active,
+		MinPrice:   minPrice,
+		MaxPrice:   maxPrice,
+		InStock:    inStock,
+	}
 	page := c.QueryInt("page", 1)
 	perPage := c.QueryInt("per_page", 20)
 	if perPage > 100 {
 		perPage = 100
 	}
-	products, total, err := r.catalogSvc.ListProductsWithStock(ctx, categoryID, search, true, page, perPage)
+	products, total, err := r.catalogSvc.ListProductsWithStock(ctx, filter, page, perPage)
 	if err != nil {
+		if errors.Is(err, service.ErrInvalidInput) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error(), "code": "invalid_input"})
+		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil daftar produk"})
 	}
 	return c.JSON(fiber.Map{"products": products, "page": page, "per_page": perPage, "total": total})
@@ -958,10 +1007,10 @@ func (r *Router) addToCart(c *fiber.Ctx) error {
 
 	item, err := r.cartSvc.AddItem(ctx, userID, input.ProductPriceID, input.Quantity)
 	if err != nil {
-		if err == service.ErrNotFound {
+		if errors.Is(err, service.ErrNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Paket langganan tidak ditemukan"})
 		}
-		if err == service.ErrInvalidInput {
+		if errors.Is(err, service.ErrInvalidInput) {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menambahkan ke keranjang"})
@@ -1010,10 +1059,10 @@ func (r *Router) updateCartItem(c *fiber.Ctx) error {
 
 	err := r.cartSvc.UpdateItem(ctx, userID, itemID, input.Quantity)
 	if err != nil {
-		if err == service.ErrNotFound {
+		if errors.Is(err, service.ErrNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Item keranjang tidak ditemukan"})
 		}
-		if err == service.ErrInvalidInput {
+		if errors.Is(err, service.ErrInvalidInput) {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui item keranjang"})
@@ -1031,7 +1080,7 @@ func (r *Router) removeCartItem(c *fiber.Ctx) error {
 
 	err := r.cartSvc.RemoveItem(ctx, userID, itemID)
 	if err != nil {
-		if err == service.ErrNotFound {
+		if errors.Is(err, service.ErrNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Item keranjang tidak ditemukan"})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menghapus item dari keranjang"})
@@ -1147,7 +1196,7 @@ func (r *Router) getOrder(c *fiber.Ctx) error {
 
 	order, err := r.orderSvc.GetOrder(ctx, userID, id)
 	if err != nil {
-		if err == service.ErrNotFound {
+		if errors.Is(err, service.ErrNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pesanan tidak ditemukan"})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil detail pesanan"})
@@ -1169,9 +1218,13 @@ func (r *Router) dashboard(c *fiber.Ctx) error {
 }
 
 func (r *Router) listUsers(c *fiber.Ctx) error {
+	active, err := parseBoolPtr(c.Query("active"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Filter status pengguna tidak valid", "code": "invalid_input"})
+	}
 	filter := service.UserFilter{
 		Role:   c.Query("role"),
-		Active: parseBoolPtr(c.Query("active")),
+		Active: active,
 		Search: c.Query("search"),
 	}
 	page := c.QueryInt("page", 1)
@@ -1204,7 +1257,7 @@ func (r *Router) getUser(c *fiber.Ctx) error {
 
 	user, err := r.adminUserSvc.GetUser(ctx, id)
 	if err != nil {
-		if err == service.ErrNotFound {
+		if errors.Is(err, service.ErrNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pengguna tidak ditemukan"})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil data pengguna"})
@@ -1238,13 +1291,13 @@ func (r *Router) updateUser(c *fiber.Ctx) error {
 
 	user, err := r.adminUserSvc.UpdateUser(ctx, id, input.Name, input.Email, input.Active)
 	if err != nil {
-		if err == service.ErrNotFound {
+		if errors.Is(err, service.ErrNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pengguna tidak ditemukan"})
 		}
-		if err == service.ErrConflict {
+		if errors.Is(err, service.ErrConflict) {
 			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Email sudah digunakan oleh akun lain"})
 		}
-		if err == service.ErrInvalidInput {
+		if errors.Is(err, service.ErrInvalidInput) {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui data pengguna"})
@@ -1253,7 +1306,7 @@ func (r *Router) updateUser(c *fiber.Ctx) error {
 	if role != nil {
 		user, err = r.adminUserSvc.UpdateUserRole(ctx, id, *role)
 		if err != nil {
-			if err == service.ErrInvalidInput {
+			if errors.Is(err, service.ErrInvalidInput) {
 				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Peran pengguna tidak valid"})
 			}
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui peran pengguna"})
@@ -1272,7 +1325,7 @@ func (r *Router) deleteUser(c *fiber.Ctx) error {
 
 	err := r.adminUserSvc.DeleteUser(ctx, id)
 	if err != nil {
-		if err == service.ErrNotFound {
+		if errors.Is(err, service.ErrNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pengguna tidak ditemukan"})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menghapus pengguna"})
@@ -1282,9 +1335,13 @@ func (r *Router) deleteUser(c *fiber.Ctx) error {
 }
 
 func (r *Router) adminListProducts(c *fiber.Ctx) error {
+	active, err := parseBoolPtr(c.Query("active"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Filter status produk tidak valid", "code": "invalid_input"})
+	}
 	filter := service.AdminProductFilter{
 		CategoryID: c.Query("category_id"),
-		Active:     parseBoolPtr(c.Query("active")),
+		Active:     active,
 		Search:     c.Query("search"),
 	}
 	page := c.QueryInt("page", 1)
@@ -1298,6 +1355,9 @@ func (r *Router) adminListProducts(c *fiber.Ctx) error {
 
 	products, total, err := r.adminProductSvc.ListProducts(ctx, filter, page, perPage)
 	if err != nil {
+		if errors.Is(err, service.ErrInvalidInput) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error(), "code": "invalid_input"})
+		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil daftar produk"})
 	}
 
@@ -1321,11 +1381,11 @@ func (r *Router) adminCreateProduct(c *fiber.Ctx) error {
 
 	product, err := r.adminProductSvc.CreateProduct(ctx, input.CategoryID, input.Name, input.Slug, input.Description, input.ImageURL)
 	if err != nil {
-		if err == service.ErrInvalidInput {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		if errors.Is(err, service.ErrInvalidInput) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error(), "code": "invalid_input"})
 		}
-		if err == service.ErrConflict {
-			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "SKU/Slug produk sudah digunakan"})
+		if errors.Is(err, service.ErrConflict) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "SKU/Slug produk sudah digunakan", "code": "conflict"})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menambahkan produk"})
 	}
@@ -1353,14 +1413,14 @@ func (r *Router) adminUpdateProduct(c *fiber.Ctx) error {
 
 	product, err := r.adminProductSvc.UpdateProduct(ctx, id, input.CategoryID, input.Name, input.Slug, input.Description, input.ImageURL, input.Active)
 	if err != nil {
-		if err == service.ErrNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Produk langganan tidak ditemukan"})
+		if errors.Is(err, service.ErrNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Produk langganan tidak ditemukan", "code": "not_found"})
 		}
-		if err == service.ErrInvalidInput {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		if errors.Is(err, service.ErrInvalidInput) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error(), "code": "invalid_input"})
 		}
-		if err == service.ErrConflict {
-			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "SKU/Slug produk sudah digunakan"})
+		if errors.Is(err, service.ErrConflict) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "SKU/Slug produk sudah digunakan", "code": "conflict"})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui data produk"})
 	}
@@ -1376,8 +1436,8 @@ func (r *Router) adminDeleteProduct(c *fiber.Ctx) error {
 
 	err := r.adminProductSvc.DeleteProduct(ctx, id)
 	if err != nil {
-		if err == service.ErrNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Produk langganan tidak ditemukan"})
+		if errors.Is(err, service.ErrNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Produk langganan tidak ditemukan", "code": "not_found"})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menghapus produk"})
 	}
@@ -1386,8 +1446,12 @@ func (r *Router) adminDeleteProduct(c *fiber.Ctx) error {
 }
 
 func (r *Router) adminListCategories(c *fiber.Ctx) error {
+	active, err := parseBoolPtr(c.Query("active"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Filter status kategori tidak valid", "code": "invalid_input"})
+	}
 	filter := service.CategoryFilter{
-		Active: parseBoolPtr(c.Query("active")),
+		Active: active,
 		Search: c.Query("search"),
 	}
 	page := c.QueryInt("page", 1)
@@ -1423,11 +1487,11 @@ func (r *Router) adminCreateCategory(c *fiber.Ctx) error {
 
 	category, err := r.adminCategorySvc.CreateCategory(ctx, input.Name, input.Slug, input.Description, input.ImageURL)
 	if err != nil {
-		if err == service.ErrInvalidInput {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		if errors.Is(err, service.ErrInvalidInput) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error(), "code": "invalid_input"})
 		}
-		if err == service.ErrConflict {
-			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Slug kategori sudah digunakan"})
+		if errors.Is(err, service.ErrConflict) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Slug kategori sudah digunakan", "code": "conflict"})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal membuat kategori"})
 	}
@@ -1454,14 +1518,14 @@ func (r *Router) adminUpdateCategory(c *fiber.Ctx) error {
 
 	category, err := r.adminCategorySvc.UpdateCategory(ctx, id, input.Name, input.Slug, input.Description, input.ImageURL, input.Active)
 	if err != nil {
-		if err == service.ErrNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Kategori tidak ditemukan"})
+		if errors.Is(err, service.ErrNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Kategori tidak ditemukan", "code": "not_found"})
 		}
-		if err == service.ErrInvalidInput {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		if errors.Is(err, service.ErrInvalidInput) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error(), "code": "invalid_input"})
 		}
-		if err == service.ErrConflict {
-			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Slug kategori sudah digunakan"})
+		if errors.Is(err, service.ErrConflict) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Slug kategori sudah digunakan", "code": "conflict"})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui kategori"})
 	}
@@ -1477,8 +1541,8 @@ func (r *Router) adminDeleteCategory(c *fiber.Ctx) error {
 
 	err := r.adminCategorySvc.DeleteCategory(ctx, id)
 	if err != nil {
-		if err == service.ErrNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Kategori tidak ditemukan"})
+		if errors.Is(err, service.ErrNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Kategori tidak ditemukan", "code": "not_found"})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menghapus kategori"})
 	}
@@ -1618,8 +1682,12 @@ func (r *Router) adminListAuditLogs(c *fiber.Ctx) error {
 }
 
 func (r *Router) adminListVouchers(c *fiber.Ctx) error {
+	active, err := parseBoolPtr(c.Query("active"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Filter status voucher tidak valid", "code": "invalid_input"})
+	}
 	filter := service.VoucherFilter{
-		Active:   parseBoolPtr(c.Query("active")),
+		Active:   active,
 		Code:     c.Query("code"),
 		DateFrom: nil,
 		DateTo:   nil,
@@ -1662,10 +1730,10 @@ func (r *Router) adminCreateVoucher(c *fiber.Ctx) error {
 
 	voucher, err := r.adminVoucherSvc.CreateVoucher(ctx, input)
 	if err != nil {
-		if err == service.ErrInvalidInput {
+		if errors.Is(err, service.ErrInvalidInput) {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
-		if err == service.ErrConflict {
+		if errors.Is(err, service.ErrConflict) {
 			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Kode voucher sudah ada"})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal membuat voucher"})
@@ -1682,7 +1750,7 @@ func (r *Router) adminGetVoucher(c *fiber.Ctx) error {
 
 	voucher, err := r.adminVoucherSvc.GetVoucher(ctx, id)
 	if err != nil {
-		if err == service.ErrNotFound {
+		if errors.Is(err, service.ErrNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Voucher tidak ditemukan"})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil data voucher"})
@@ -1704,13 +1772,13 @@ func (r *Router) adminUpdateVoucher(c *fiber.Ctx) error {
 
 	voucher, err := r.adminVoucherSvc.UpdateVoucher(ctx, id, input)
 	if err != nil {
-		if err == service.ErrNotFound {
+		if errors.Is(err, service.ErrNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Voucher tidak ditemukan"})
 		}
-		if err == service.ErrInvalidInput {
+		if errors.Is(err, service.ErrInvalidInput) {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
-		if err == service.ErrConflict {
+		if errors.Is(err, service.ErrConflict) {
 			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Kode voucher sudah ada"})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui voucher"})
@@ -1727,7 +1795,7 @@ func (r *Router) adminDeleteVoucher(c *fiber.Ctx) error {
 
 	err := r.adminVoucherSvc.DeleteVoucher(ctx, id)
 	if err != nil {
-		if err == service.ErrNotFound {
+		if errors.Is(err, service.ErrNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Voucher tidak ditemukan"})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menghapus voucher"})
@@ -1737,9 +1805,13 @@ func (r *Router) adminDeleteVoucher(c *fiber.Ctx) error {
 }
 
 func (r *Router) adminListInventoryAccounts(c *fiber.Ctx) error {
+	active, err := parseBoolPtr(c.Query("active"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Filter status inventaris tidak valid", "code": "invalid_input"})
+	}
 	filter := service.InventoryAccountFilter{
 		ProductID: c.Query("product_id"),
-		Active:    parseBoolPtr(c.Query("active")),
+		Active:    active,
 	}
 	page := c.QueryInt("page", 1)
 	perPage := c.QueryInt("per_page", 20)
@@ -1774,7 +1846,7 @@ func (r *Router) adminCreateInventoryAccount(c *fiber.Ctx) error {
 
 	account, err := r.adminInventorySvc.CreateInventoryAccount(ctx, input)
 	if err != nil {
-		if err == service.ErrInvalidInput {
+		if errors.Is(err, service.ErrInvalidInput) {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menambahkan akun inventaris"})
@@ -1817,7 +1889,7 @@ func (r *Router) adminGetInventoryAccount(c *fiber.Ctx) error {
 
 	account, err := r.adminInventorySvc.GetInventoryAccount(ctx, id)
 	if err != nil {
-		if err == service.ErrNotFound {
+		if errors.Is(err, service.ErrNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Akun inventaris tidak ditemukan"})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil data akun inventaris"})
@@ -1840,10 +1912,10 @@ func (r *Router) adminUpdateInventoryAccount(c *fiber.Ctx) error {
 
 	account, err := r.adminInventorySvc.UpdateInventoryAccount(ctx, id, input)
 	if err != nil {
-		if err == service.ErrNotFound {
+		if errors.Is(err, service.ErrNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Akun inventaris tidak ditemukan"})
 		}
-		if err == service.ErrInvalidInput {
+		if errors.Is(err, service.ErrInvalidInput) {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui akun inventaris"})

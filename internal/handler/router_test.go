@@ -336,9 +336,13 @@ func TestCheckoutReadsTheIdempotencyKeyFromTheHeader(t *testing.T) {
 // dibiarkan nil lewat embed, karena CatalogRepository punya banyak method.
 type stubCatalogRepo struct {
 	service.CatalogRepository
-	slugProduct *domain.ProductWithStock
-	slugErr     error
-	prices      []domain.ProductPrice
+	slugProduct  *domain.ProductWithStock
+	slugErr      error
+	prices       []domain.ProductPrice
+	listFilter   func(service.ProductFilter)
+	listProducts []domain.ProductWithStock
+	listTotal    int64
+	listErr      error
 }
 
 func (s stubCatalogRepo) GetProductWithStock(context.Context, string) (*domain.ProductWithStock, error) {
@@ -353,6 +357,13 @@ func (s stubCatalogRepo) GetProductBySlugWithStock(context.Context, string) (*do
 
 func (s stubCatalogRepo) ListProductPrices(context.Context, string, bool) ([]domain.ProductPrice, error) {
 	return s.prices, nil
+}
+
+func (s stubCatalogRepo) ListProductsWithStock(_ context.Context, filter service.ProductFilter, _, _ int) ([]domain.ProductWithStock, int64, error) {
+	if s.listFilter != nil {
+		s.listFilter(filter)
+	}
+	return s.listProducts, s.listTotal, s.listErr
 }
 
 func setupCatalogApp(t *testing.T, repo service.CatalogRepository) *fiber.App {
@@ -394,4 +405,56 @@ func TestGetProduct_UnknownSlugStaysNotFound(t *testing.T) {
 	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/api/v1/public/products/bukan-produk", nil))
 	assert.NoError(t, err)
 	assert.Equal(t, fiber.StatusNotFound, resp.StatusCode)
+}
+
+func TestListProductsRejectsMalformedFilters(t *testing.T) {
+	app := setupCatalogApp(t, stubCatalogRepo{})
+
+	cases := []string{
+		"/api/v1/public/products?category=Streaming",
+		"/api/v1/public/products?min_price=abc",
+		"/api/v1/public/products?min_price=-1",
+		"/api/v1/public/products?max_price=abc",
+		"/api/v1/public/products?in_stock=maybe",
+		"/api/v1/public/products?min_price=200000&max_price=100000",
+	}
+	for _, target := range cases {
+		resp, err := app.Test(httptest.NewRequest(http.MethodGet, target, nil))
+		assert.NoError(t, err)
+		if resp.StatusCode != fiber.StatusBadRequest {
+			t.Fatalf("%s status = %d, want 400", target, resp.StatusCode)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		var payload map[string]string
+		_ = json.Unmarshal(body, &payload)
+		assert.Equal(t, "invalid_input", payload["code"], target)
+	}
+}
+
+func TestListProductsPassesDocumentedFiltersToTheRepository(t *testing.T) {
+	var captured service.ProductFilter
+	app := setupCatalogApp(t, stubCatalogRepo{
+		listFilter: func(filter service.ProductFilter) { captured = filter },
+		listTotal:  1,
+	})
+
+	resp, err := app.Test(httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/public/products?category=0192f0a2-0000-0000-0000-000000000001&min_price=150000&max_price=200000&in_stock=true&search=netflix",
+		nil,
+	))
+	assert.NoError(t, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+	if captured.Active == nil || !*captured.Active {
+		t.Fatal("public list must force active=true")
+	}
+	if captured.CategoryID != "0192f0a2-0000-0000-0000-000000000001" || captured.Search != "netflix" {
+		t.Fatalf("captured filter = %#v", captured)
+	}
+	if captured.MinPrice == nil || *captured.MinPrice != 150000 || captured.MaxPrice == nil || *captured.MaxPrice != 200000 {
+		t.Fatalf("price bounds = %#v", captured)
+	}
+	if !captured.InStock {
+		t.Fatal("in_stock=true was not passed to the repository")
+	}
 }
