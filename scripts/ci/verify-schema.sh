@@ -14,7 +14,7 @@ cd "$ROOT"
 echo "verifying W0 migration checksums"
 (cd migrations && sha256sum -c ../deploy/validation/migration-checksums.sha256)
 
-FILES="001_initial_schema.sql 003_localize_catalog_copy.sql 004_issue_reports.sql 005_password_reset_tokens.sql 006_product_labels.sql 007_device_count.sql 008_add_users_active.sql 009_order_compatibility.sql 010_checkout_idempotency.sql 011_order_expiry_index.sql 012_inventory_account_sharing.sql 013_inventory_account_label_backfill.sql"
+FILES="001_initial_schema.sql 003_localize_catalog_copy.sql 004_issue_reports.sql 005_password_reset_tokens.sql 006_product_labels.sql 007_device_count.sql 008_add_users_active.sql 009_order_compatibility.sql 010_checkout_idempotency.sql 011_order_expiry_index.sql 012_inventory_account_sharing.sql 013_inventory_account_label_backfill.sql 014_order_deliveries.sql"
 
 for pass in 1 2; do
   echo "schema pass $pass"
@@ -58,4 +58,11 @@ SHARING_CHECK=$(psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM pg_constraint
 EMPTY_LABELS=$(psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM inventory_accounts WHERE label = '' OR label IS NULL")
 [ "$EMPTY_LABELS" = "0" ] || { echo "FAIL: migration 013 left empty inventory labels"; exit 1; }
 
-echo "PASS: schema applied twice; tables=$TABLES; no development seed rows; compatibility columns=$COLUMNS; checkout_attempts=$ATTEMPT_TABLE; inventory sharing columns=$SHARING"
+# Migration 014 records per-order-item delivery status; the unique item key is
+# the idempotency guarantee for W17.
+DELIVERY_TABLE=$(psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='order_deliveries'")
+DELIVERY_UNIQUE=$(psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM pg_constraint WHERE conname='order_deliveries_order_item_unique'")
+[ "$DELIVERY_TABLE" = "1" ] || { echo "FAIL: order_deliveries table missing"; exit 1; }
+[ "$DELIVERY_UNIQUE" = "1" ] || { echo "FAIL: order_deliveries order_item uniqueness missing"; exit 1; }
+
+echo "PASS: schema applied twice; tables=$TABLES; no development seed rows; compatibility columns=$COLUMNS; checkout_attempts=$ATTEMPT_TABLE; inventory sharing columns=$SHARING; order_deliveries=$DELIVERY_TABLE"

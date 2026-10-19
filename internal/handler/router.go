@@ -69,6 +69,7 @@ type Router struct {
 	adminOrderSvc     *service.AdminOrderService
 	adminVoucherSvc   *service.AdminVoucherService
 	adminInventorySvc *service.AdminInventoryService
+	orderDeliverySvc  *service.OrderDeliveryService
 	reportSvc         *service.ReportService
 	testimonialSvc    *service.TestimonialService
 	tokens            *service.TokenManager
@@ -111,6 +112,11 @@ func (r *Router) SetAuthCookiePolicy(policy AuthCookiePolicy) {
 // SetOAuthStateStore replaces the Redis-backed state store. Tests use this to
 // exercise replay, expiry and outage behaviour without a live Redis.
 func (r *Router) SetOAuthStateStore(store OAuthStateStore) { r.oauthStates = store }
+
+// SetDeliveryService wires the W17 account-delivery flow. It is a setter rather
+// than a NewRouter parameter so existing router tests keep their compact
+// constructor; a nil service simply leaves the delivery routes disabled.
+func (r *Router) SetDeliveryService(svc *service.OrderDeliveryService) { r.orderDeliverySvc = svc }
 
 func NewRouter(authSvc *service.AuthService, catalogSvc *service.CatalogService, cartSvc *service.CartService, checkoutSvc *service.CheckoutService, webhookSvc *service.WebhookService, orderSvc *service.OrderService, adminSvc *service.AdminDashboardService, adminUserSvc *service.AdminUserService, adminProductSvc *service.AdminProductService, adminCategorySvc *service.AdminCategoryService, adminOrderSvc *service.AdminOrderService, adminVoucherSvc *service.AdminVoucherService, adminInventorySvc *service.AdminInventoryService, tokens *service.TokenManager, cipher *service.CredentialCipher, redis *redis.Client, reportSvc *service.ReportService, testimonialSvc *service.TestimonialService) *Router {
 	r := &Router{authSvc: authSvc, catalogSvc: catalogSvc, cartSvc: cartSvc, checkoutSvc: checkoutSvc, webhookSvc: webhookSvc, orderSvc: orderSvc, adminSvc: adminSvc, adminUserSvc: adminUserSvc, adminProductSvc: adminProductSvc, adminCategorySvc: adminCategorySvc, adminOrderSvc: adminOrderSvc, adminVoucherSvc: adminVoucherSvc, adminInventorySvc: adminInventorySvc, reportSvc: reportSvc, testimonialSvc: testimonialSvc, tokens: tokens, cipher: cipher, redis: redis, authCookies: defaultAuthCookiePolicy()}
@@ -249,6 +255,12 @@ func (r *Router) registerAdmin(api fiber.Router) {
 	// GetOrder; route ini hanya mengeksposnya dengan bentuk order C-02 yang sama.
 	admin.Get("/orders/:id", r.adminGetOrder)
 	admin.Patch("/orders/:id/status", r.adminUpdateOrderStatus)
+	// Aksi eksplisit "Setujui & kirim akun". Status processing dari PATCH juga
+	// memicu pengiriman, tetapi endpoint ini membuat niatnya jelas di UI dan
+	// aman dipanggil ulang (delivery sent tidak dikirim dua kali).
+	admin.Post("/orders/:id/approve-delivery", r.adminApproveOrderDelivery)
+	admin.Get("/orders/:id/deliveries", r.adminListOrderDeliveries)
+	admin.Post("/orders/:id/deliveries/:deliveryId/retry", r.adminRetryOrderDelivery)
 	admin.Get("/audit-logs", r.adminListAuditLogs)
 	// Voucher management
 	admin.Get("/vouchers", r.adminListVouchers)
@@ -1605,6 +1617,16 @@ func (r *Router) adminGetOrder(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil detail pesanan"})
 	}
 
+	// W18 needs delivery status next to the order detail. The ledger carries no
+	// credentials, so attaching it here is safe for the admin view.
+	if r.orderDeliverySvc != nil {
+		if deliveries, derr := r.orderDeliverySvc.ListDeliveries(ctx, order.ID); derr == nil {
+			order.Deliveries = deliveries
+		} else if !errors.Is(derr, service.ErrNotFound) {
+			log.Printf("admin order detail: list deliveries for %s failed: %v", order.ID, derr)
+		}
+	}
+
 	return c.JSON(order)
 }
 
@@ -1621,7 +1643,13 @@ func (r *Router) adminUpdateOrderStatus(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Status pesanan wajib diisi"})
 	}
 
-	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+	// Approval may wait for the SMTP transaction, so processing gets a longer
+	// budget than an ordinary status edit.
+	timeout := 5 * time.Second
+	if domain.OrderStatus(input.Status) == domain.OrderProcessing {
+		timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(c.Context(), timeout)
 	defer cancel()
 
 	order, err := r.adminOrderSvc.UpdateOrderStatus(ctx, id, domain.OrderStatus(input.Status))
@@ -1638,7 +1666,109 @@ func (r *Router) adminUpdateOrderStatus(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui status pesanan"})
 	}
 
+	// Moving an order to processing is the admin approval that releases the
+	// purchased accounts. A failure is recorded on the delivery rows and shown
+	// in the detail response; the status change itself stays committed.
+	if r.orderDeliverySvc != nil && order.Status == domain.OrderProcessing {
+		actor := service.AdminActor{UserID: localUserID(c), IPAddress: c.IP()}
+		if deliveries, derr := r.orderDeliverySvc.DeliverApprovedOrder(ctx, actor, order.ID); derr != nil {
+			log.Printf("order approval: delivery for %s failed: %v", order.ID, derr)
+		} else {
+			order.Deliveries = deliveries
+		}
+	}
+
 	return c.JSON(order)
+}
+
+// adminApproveOrderDelivery is the explicit "Setujui & kirim akun" action. It
+// applies the same paid→processing transition as the status endpoint, then
+// runs the idempotent delivery pass and returns the resulting ledger.
+func (r *Router) adminApproveOrderDelivery(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if _, err := uuid.Parse(id); err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pesanan tidak ditemukan", "code": "not_found"})
+	}
+	if r.orderDeliverySvc == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Fitur pengiriman akun belum dikonfigurasi", "code": "delivery_unavailable"})
+	}
+
+	ctx, cancel := context.WithTimeout(c.Context(), 30*time.Second)
+	defer cancel()
+
+	order, err := r.adminOrderSvc.GetOrder(ctx, id)
+	if err != nil {
+		return orderDeliveryError(c, err)
+	}
+	switch order.Status {
+	case domain.OrderPaid, domain.OrderFulfilling:
+		order, err = r.adminOrderSvc.UpdateOrderStatus(ctx, order.ID, domain.OrderProcessing)
+		if err != nil {
+			return orderDeliveryError(c, err)
+		}
+	default:
+		if !service.IsDeliveryApprovedStatus(order.Status) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": service.ErrOrderNotApproved.Error(), "code": "order_not_approved"})
+		}
+	}
+
+	actor := service.AdminActor{UserID: localUserID(c), IPAddress: c.IP()}
+	deliveries, err := r.orderDeliverySvc.DeliverApprovedOrder(ctx, actor, order.ID)
+	if err != nil {
+		return orderDeliveryError(c, err)
+	}
+	order.Deliveries = deliveries
+	return c.JSON(order)
+}
+
+func (r *Router) adminListOrderDeliveries(c *fiber.Ctx) error {
+	if r.orderDeliverySvc == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Fitur pengiriman akun belum dikonfigurasi", "code": "delivery_unavailable"})
+	}
+	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+	defer cancel()
+	deliveries, err := r.orderDeliverySvc.ListDeliveries(ctx, c.Params("id"))
+	if err != nil {
+		return orderDeliveryError(c, err)
+	}
+	return c.JSON(fiber.Map{"deliveries": deliveries})
+}
+
+func (r *Router) adminRetryOrderDelivery(c *fiber.Ctx) error {
+	if r.orderDeliverySvc == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Fitur pengiriman akun belum dikonfigurasi", "code": "delivery_unavailable"})
+	}
+	ctx, cancel := context.WithTimeout(c.Context(), 30*time.Second)
+	defer cancel()
+
+	actor := service.AdminActor{UserID: localUserID(c), IPAddress: c.IP()}
+	delivery, err := r.orderDeliverySvc.RetryDelivery(ctx, actor, c.Params("id"), c.Params("deliveryId"))
+	if err != nil {
+		return orderDeliveryError(c, err)
+	}
+	return c.JSON(fiber.Map{"delivery": delivery})
+}
+
+func orderDeliveryError(c *fiber.Ctx, err error) error {
+	switch {
+	case errors.Is(err, service.ErrNotFound):
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pesanan tidak ditemukan", "code": "not_found"})
+	case errors.Is(err, service.ErrDeliveryNotFound):
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error(), "code": "not_found"})
+	case errors.Is(err, service.ErrOrderNotApproved):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "order_not_approved"})
+	case errors.Is(err, service.ErrInvalidTransition):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "invalid_transition"})
+	case errors.Is(err, service.ErrInvalidInput):
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error(), "code": "invalid_input"})
+	default:
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memproses pengiriman akun"})
+	}
+}
+
+func localUserID(c *fiber.Ctx) string {
+	value, _ := c.Locals("user_id").(string)
+	return value
 }
 
 func (r *Router) receiveWebhook(c *fiber.Ctx) error {

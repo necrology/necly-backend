@@ -163,6 +163,7 @@ func main() {
 	adminOrderSvc := service.NewAdminOrderService(store)
 	adminVoucherSvc := service.NewAdminVoucherService(store)
 	adminInventorySvc := service.NewAdminInventoryService(store, cipher)
+	orderDeliverySvc := service.NewOrderDeliveryService(store, store, cipher, mail, store)
 	orderExpirySvc := service.NewOrderExpiryService(store)
 
 	app := fiber.New(fiber.Config{
@@ -222,6 +223,9 @@ func main() {
 	app.Use("/api/v1/auth/resend-verification", rateLimited(5, time.Hour, "Terlalu banyak permintaan tautan aktivasi. Coba lagi nanti."))
 
 	router := handler.NewRouter(authSvc, catalogSvc, cartSvc, checkoutSvc, webhookSvc, orderSvc, adminSvc, adminUserSvc, adminProductSvc, adminCategorySvc, adminOrderSvc, adminVoucherSvc, adminInventorySvc, tokenManager, cipher, redisClient, reportSvc, testimonialSvc)
+	// W17: approval releases the purchased account credentials. Wiring is
+	// explicit so router tests that do not construct the full app stay small.
+	router.SetDeliveryService(orderDeliverySvc)
 	router.SetAuthCookiePolicy(handler.AuthCookiePolicy{
 		Secure: cfg.Cookie.Secure, HTTPOnly: cfg.Cookie.HTTPOnly, SameSite: cfg.Cookie.SameSite,
 		Domain: cfg.Cookie.Domain, Path: cfg.Cookie.Path,
