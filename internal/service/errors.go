@@ -26,8 +26,18 @@ var (
 	// Slot tidak bisa berdiri sendiri: barisnya wajib menunjuk satu akun induk
 	// (inventory_slots.inventory_account_id NOT NULL), jadi akun produk harus
 	// dibuat lebih dulu.
-	ErrAccountRequired   = errors.New("Buat akun inventaris untuk produk ini terlebih dahulu sebelum menambah slot")
-	ErrInvalidTransition = errors.New("Perubahan status pesanan tidak valid")
+	ErrAccountRequired = errors.New("Buat akun inventaris untuk produk ini terlebih dahulu sebelum menambah slot")
+	// ErrInventoryAccountUnavailable covers an account that is inactive or past
+	// its expiry. It is separate from a full account so the dashboard can tell
+	// the operator to reactivate the account instead of raising its limit.
+	ErrInventoryAccountUnavailable = errors.New("Akun inventaris tidak aktif atau sudah kedaluwarsa")
+	// ErrInventoryAccountMismatch rejects a slot request that names an account
+	// belonging to another product.
+	ErrInventoryAccountMismatch = errors.New("Akun inventaris bukan milik produk paket ini")
+	// ErrSharingLimitExceeded is the capacity guard. It is enforced under a row
+	// lock so two concurrent requests cannot exceed sharing_limit together.
+	ErrSharingLimitExceeded = errors.New("Jumlah slot melebihi batas sharing akun inventaris")
+	ErrInvalidTransition    = errors.New("Perubahan status pesanan tidak valid")
 	// ErrInvalidPaymentEvent covers a callback whose fields are incomplete or
 	// whose state cannot be mapped. It is rejected before any row is mutated.
 	ErrInvalidPaymentEvent = errors.New("Notifikasi pembayaran tidak valid")

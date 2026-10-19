@@ -437,7 +437,7 @@ func TestW7AdminProductActiveFilterAndDurations(t *testing.T) {
 		t.Fatalf("labels/device options did not round-trip: %#v", netflix)
 	}
 
-	accounts, total, err := fixture.store.ListAccounts(ctx, 1, 20, "")
+	accounts, total, err := fixture.store.ListAccounts(ctx, 1, 20, "", "")
 	if err != nil {
 		t.Fatalf("list inventory accounts: %v", err)
 	}
@@ -513,7 +513,7 @@ func newW7DashboardFixture(t *testing.T) *w7DashboardFixture {
 	}
 
 	accountID := uuid.NewString()
-	if err := db.Create(&domain.InventoryAccount{ID: accountID, ProductID: productID, EncryptedCredentials: []byte("fixture"), Status: "active", CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+	if err := db.Create(&domain.InventoryAccount{ID: accountID, ProductID: productID, EncryptedCredentials: []byte("fixture"), Status: "active", SharingLimit: 5, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
 		t.Fatal(err)
 	}
 	slots := []domain.InventorySlot{

@@ -8,7 +8,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/necly/services/internal/platform/testdb"
 	"gorm.io/gorm"
 )
@@ -56,7 +58,7 @@ func TestFreshRunIsRepeatableAndSeedFree(t *testing.T) {
 	if first.Adopted {
 		t.Fatal("fresh database must not be reported as adopted")
 	}
-	if got, want := first.Applied, []string{"001", "003", "004", "005", "006", "007", "008", "009", "010", "011"}; !reflect.DeepEqual(got, want) {
+	if got, want := first.Applied, []string{"001", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("applied = %v, want %v", got, want)
 	}
 
@@ -107,8 +109,8 @@ func TestAdoptedSchemaConvergesWithFreshSchema(t *testing.T) {
 	if !result.Adopted {
 		t.Fatal("existing baseline schema was not adopted")
 	}
-	if !reflect.DeepEqual(result.Applied, []string{"009", "010", "011"}) {
-		t.Fatalf("adoption should apply 009 and 010, got %v", result.Applied)
+	if !reflect.DeepEqual(result.Applied, []string{"009", "010", "011", "012"}) {
+		t.Fatalf("adoption should apply 009 through 012, got %v", result.Applied)
 	}
 
 	type ledgerRow struct {
@@ -119,8 +121,8 @@ func TestAdoptedSchemaConvergesWithFreshSchema(t *testing.T) {
 	if err := adopted.Raw("SELECT version, mode FROM schema_migrations ORDER BY version").Scan(&rows).Error; err != nil {
 		t.Fatalf("read ledger: %v", err)
 	}
-	if len(rows) != 10 {
-		t.Fatalf("expected 10 ledger rows, got %d: %#v", len(rows), rows)
+	if len(rows) != 11 {
+		t.Fatalf("expected 11 ledger rows, got %d: %#v", len(rows), rows)
 	}
 	for _, row := range rows {
 		want := "adopted"
@@ -143,6 +145,71 @@ func TestAdoptedSchemaConvergesWithFreshSchema(t *testing.T) {
 		if adoptedSnapshot[key] != value {
 			t.Fatalf("schema diverged for %s: fresh=%q adopted=%q", key, value, adoptedSnapshot[key])
 		}
+	}
+}
+
+// Legacy installations already have inventory slots. Migration 012 must keep
+// that provisioned capacity usable instead of silently capping it at the new
+// default of one seat.
+func TestLegacyInventoryCapacityIsPreservedBySharingLimitBackfill(t *testing.T) {
+	db := openTestDB(t)
+	dir := repoMigrations(t)
+	applyBaselineWithoutLedger(t, db, dir)
+
+	now := time.Now().UTC()
+	categoryID, productID, accountID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	if err := db.Exec(`INSERT INTO categories (id, name, slug, active, created_at, updated_at)
+		VALUES (?, ?, ?, TRUE, ?, ?)`, categoryID, "Streaming", "streaming-"+categoryID[:8], now, now).Error; err != nil {
+		t.Fatalf("seed category: %v", err)
+	}
+	if err := db.Exec(`INSERT INTO products (id, category_id, name, slug, active, created_at, updated_at)
+		VALUES (?, ?, ?, ?, TRUE, ?, ?)`, productID, categoryID, "Netflix", "netflix-"+productID[:8], now, now).Error; err != nil {
+		t.Fatalf("seed product: %v", err)
+	}
+	if err := db.Exec(`INSERT INTO inventory_accounts (id, product_id, encrypted_credentials, status, created_at, updated_at)
+		VALUES (?, ?, ?, 'active', ?, ?)`, accountID, productID, []byte("cipher"), now, now).Error; err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+	durationID, priceID := uuid.NewString(), uuid.NewString()
+	if err := db.Exec(`INSERT INTO product_durations (id, name, days, created_at, updated_at)
+		VALUES (?, '1 Bulan', 30, ?, ?)`, durationID, now, now).Error; err != nil {
+		t.Fatalf("seed duration: %v", err)
+	}
+	if err := db.Exec(`INSERT INTO product_prices (id, product_id, duration_id, amount, currency, active, created_at, updated_at)
+		VALUES (?, ?, ?, 10000, 'IDR', TRUE, ?, ?)`, priceID, productID, durationID, now, now).Error; err != nil {
+		t.Fatalf("seed price: %v", err)
+	}
+	for index := 0; index < 3; index++ {
+		if err := db.Exec(`INSERT INTO inventory_slots (id, inventory_account_id, product_price_id, status, created_at, updated_at)
+			VALUES (?, ?, ?, 'available', ?, ?)`, uuid.NewString(), accountID, priceID, now, now).Error; err != nil {
+			t.Fatalf("seed slot: %v", err)
+		}
+	}
+
+	if _, err := Run(context.Background(), db, Options{Dir: dir}); err != nil {
+		t.Fatalf("migrate legacy schema: %v", err)
+	}
+
+	var account struct {
+		Label        string
+		SharingLimit int
+	}
+	if err := db.Raw("SELECT label, sharing_limit FROM inventory_accounts WHERE id = ?", accountID).Scan(&account).Error; err != nil {
+		t.Fatalf("read migrated account: %v", err)
+	}
+	if account.Label != "" {
+		t.Fatalf("legacy label = %q, want empty string", account.Label)
+	}
+	if account.SharingLimit != 3 {
+		t.Fatalf("legacy sharing_limit = %d, want 3 (one per existing slot)", account.SharingLimit)
+	}
+
+	second, err := Run(context.Background(), db, Options{Dir: dir})
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if len(second.Applied) != 0 {
+		t.Fatalf("second run applied DDL: %v", second.Applied)
 	}
 }
 
@@ -175,7 +242,7 @@ func TestChecksumMismatchAbortsBeforeDDL(t *testing.T) {
 func TestFailedMigrationRollsBackAndStops(t *testing.T) {
 	db := openTestDB(t)
 	dir := copyMigrations(t)
-	writeFile(t, filepath.Join(dir, "012_failing.sql"), "BEGIN;\nCREATE TABLE should_not_survive (id int);\nSELECT 1 / 0;\nCOMMIT;\n")
+	writeFile(t, filepath.Join(dir, "013_failing.sql"), "BEGIN;\nCREATE TABLE should_not_survive (id int);\nSELECT 1 / 0;\nCOMMIT;\n")
 
 	_, err := Run(context.Background(), db, Options{Dir: dir})
 	if err == nil {
@@ -187,7 +254,7 @@ func TestFailedMigrationRollsBackAndStops(t *testing.T) {
 		t.Fatal("failed migration left its table behind")
 	}
 	var ledger int64
-	db.Raw("SELECT count(*) FROM schema_migrations WHERE version='012'").Scan(&ledger)
+	db.Raw("SELECT count(*) FROM schema_migrations WHERE version='013'").Scan(&ledger)
 	if ledger != 0 {
 		t.Fatal("failed migration was recorded as applied")
 	}
@@ -350,7 +417,7 @@ func TestLedgerFailureRollsBackTheMigration(t *testing.T) {
 	if _, err := Run(context.Background(), db, Options{Dir: dir}); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
-	writeFile(t, filepath.Join(dir, "012_ledger_probe.sql"), "BEGIN;\nCREATE TABLE ledger_probe (id int);\nCOMMIT;\n")
+	writeFile(t, filepath.Join(dir, "013_ledger_probe.sql"), "BEGIN;\nCREATE TABLE ledger_probe (id int);\nCOMMIT;\n")
 
 	if err := db.Exec(`CREATE FUNCTION fail_ledger_insert() RETURNS trigger AS $f$
 		BEGIN RAISE EXCEPTION 'ledger unavailable'; END;
@@ -366,7 +433,7 @@ func TestLedgerFailureRollsBackTheMigration(t *testing.T) {
 	}
 	var tableCount, ledgerCount int64
 	db.Raw("SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='ledger_probe'").Scan(&tableCount)
-	db.Raw("SELECT count(*) FROM schema_migrations WHERE version='012'").Scan(&ledgerCount)
+	db.Raw("SELECT count(*) FROM schema_migrations WHERE version='013'").Scan(&ledgerCount)
 	if tableCount != 0 || ledgerCount != 0 {
 		t.Fatalf("ledger failure left DDL behind: table=%d ledger=%d", tableCount, ledgerCount)
 	}

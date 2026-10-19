@@ -4,10 +4,29 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/necly/services/internal/domain"
+)
+
+const (
+	InventoryStatusActive   = "active"
+	InventoryStatusInactive = "inactive"
+	InventoryStatusExpired  = "expired"
+
+	// DefaultSharingLimit is deliberately conservative. A new account is not a
+	// free-for-all seat pool; an administrator raises the limit explicitly.
+	DefaultSharingLimit = 1
+	// MaxSharingLimit bounds a single account so a typo cannot provision an
+	// unbounded number of seats. It is far above realistic sharing plans.
+	MaxSharingLimit = 1000
+	// MaxSlotsPerRequest matches the existing CreateSlots contract.
+	MaxSlotsPerRequest = 100
+	// MaxInventoryLabelLength matches inventory_accounts.label VARCHAR(120).
+	MaxInventoryLabelLength = 120
 )
 
 type AdminInventoryService struct {
@@ -21,56 +40,82 @@ func NewAdminInventoryService(repo InventoryRepository, cipher *CredentialCipher
 
 type InventoryAccountFilter struct {
 	ProductID string
-	Active    *bool
+	// Status filters an exact lifecycle state: active, inactive, or expired.
+	Status string
+	// Active is kept for the pre-W15 query parameter. It is translated to an
+	// exact status only when Status is empty.
+	Active *bool
 }
 
 type CreateInventoryAccountInput struct {
-	ProductID   string `json:"product_id"`
-	Credentials string `json:"credentials"`
+	ProductID    string     `json:"product_id"`
+	Credentials  string     `json:"credentials"`
+	Label        string     `json:"label"`
+	SharingLimit int        `json:"sharing_limit"`
+	ExpiresAt    *time.Time `json:"expires_at"`
 }
 
 type UpdateInventoryAccountInput struct {
-	Credentials *string    `json:"credentials"`
-	Status      *string    `json:"status"`
-	ExpiresAt   *time.Time `json:"expires_at"`
+	Credentials  *string    `json:"credentials"`
+	Status       *string    `json:"status"`
+	ExpiresAt    *time.Time `json:"expires_at"`
+	Label        *string    `json:"label"`
+	SharingLimit *int       `json:"sharing_limit"`
 }
 
 type CreateSlotsInput struct {
 	ProductPriceID string `json:"product_price_id"`
-	Quantity       int    `json:"quantity"`
+	// InventoryAccountID is optional. When omitted an eligible active account
+	// with spare capacity is selected automatically.
+	InventoryAccountID string `json:"inventory_account_id"`
+	Quantity           int    `json:"quantity"`
+}
+
+// CreateSlotsResult reports where new capacity landed. The account id lets the
+// dashboard refresh the right account when the caller did not choose one.
+type CreateSlotsResult struct {
+	Created            int    `json:"created"`
+	InventoryAccountID string `json:"inventory_account_id"`
 }
 
 // CreateSlots menambah kapasitas jual untuk satu harga paket. Inilah satu-satunya
 // jalan membuat baris inventory_slots: katalog menghitung ketersediaan dari baris
 // berstatus available untuk product_price terkait, dan checkout mengunci baris
-// yang sama. Tanpa slot, produk mustahil dibeli.
-func (s *AdminInventoryService) CreateSlots(ctx context.Context, input CreateSlotsInput) (int, error) {
-	if input.ProductPriceID == "" || input.Quantity < 1 || input.Quantity > 100 {
-		return 0, ErrInvalidInput
+// yang sama. Setiap slot harus menunjuk satu akun inventaris, dan jumlahnya tidak
+// boleh melebihi sharing_limit akun tersebut.
+func (s *AdminInventoryService) CreateSlots(ctx context.Context, input CreateSlotsInput) (CreateSlotsResult, error) {
+	if input.ProductPriceID == "" || input.Quantity < 1 || input.Quantity > MaxSlotsPerRequest {
+		return CreateSlotsResult{}, ErrInvalidInput
 	}
 
 	productID, err := s.repo.GetPriceProductID(ctx, input.ProductPriceID)
 	if err != nil {
-		return 0, err
-	}
-
-	account, err := s.repo.GetAccountByProductID(ctx, productID)
-	if err != nil {
-		return 0, ErrAccountRequired
+		return CreateSlotsResult{}, err
 	}
 
 	slots := make([]domain.InventorySlot, 0, input.Quantity)
 	for i := 0; i < input.Quantity; i++ {
 		slots = append(slots, domain.InventorySlot{
-			InventoryAccountID: account.ID,
-			ProductPriceID:     input.ProductPriceID,
-			Status:             "available",
+			ProductPriceID: input.ProductPriceID,
+			Status:         "available",
 		})
 	}
-	if err := s.repo.CreateSlots(ctx, slots); err != nil {
-		return 0, fmt.Errorf("create inventory slots: %w", err)
+
+	if input.InventoryAccountID != "" {
+		if _, err := uuid.Parse(input.InventoryAccountID); err != nil {
+			return CreateSlotsResult{}, ErrNotFound
+		}
+		if err := s.repo.CreateSlotsForAccount(ctx, input.InventoryAccountID, productID, slots); err != nil {
+			return CreateSlotsResult{}, err
+		}
+		return CreateSlotsResult{Created: len(slots), InventoryAccountID: input.InventoryAccountID}, nil
 	}
-	return len(slots), nil
+
+	accountID, err := s.repo.CreateSlotsAuto(ctx, productID, slots)
+	if err != nil {
+		return CreateSlotsResult{}, err
+	}
+	return CreateSlotsResult{Created: len(slots), InventoryAccountID: accountID}, nil
 }
 
 func (s *AdminInventoryService) ListInventoryAccounts(ctx context.Context, filter InventoryAccountFilter, page, perPage int) ([]domain.InventoryAccount, int64, error) {
@@ -80,19 +125,34 @@ func (s *AdminInventoryService) ListInventoryAccounts(ctx context.Context, filte
 	if perPage < 1 || perPage > 100 {
 		perPage = 20
 	}
-	accounts, total, err := s.repo.ListAccounts(ctx, page, perPage, filter.ProductID)
+
+	if filter.ProductID != "" {
+		if _, err := uuid.Parse(filter.ProductID); err != nil {
+			return nil, 0, ErrInvalidInput
+		}
+	}
+
+	status := ""
+	if filter.Status != "" {
+		normalized, ok := normalizeInventoryStatus(filter.Status)
+		if !ok {
+			return nil, 0, ErrInvalidInput
+		}
+		status = normalized
+	} else if filter.Active != nil {
+		if *filter.Active {
+			status = InventoryStatusActive
+		} else {
+			status = InventoryStatusInactive
+		}
+	}
+
+	accounts, total, err := s.repo.ListAccounts(ctx, page, perPage, filter.ProductID, status)
 	if err != nil {
 		return nil, 0, err
 	}
-	if filter.Active != nil {
-		filtered := accounts[:0]
-		for _, a := range accounts {
-			if (a.Status == "active") == *filter.Active {
-				filtered = append(filtered, a)
-			}
-		}
-		accounts = filtered
-		total = int64(len(accounts))
+	for i := range accounts {
+		accounts[i].EncryptedCredentials = nil
 	}
 	return accounts, total, nil
 }
@@ -100,6 +160,26 @@ func (s *AdminInventoryService) ListInventoryAccounts(ctx context.Context, filte
 func (s *AdminInventoryService) CreateInventoryAccount(ctx context.Context, input CreateInventoryAccountInput) (*domain.InventoryAccount, error) {
 	if input.ProductID == "" || input.Credentials == "" {
 		return nil, ErrInvalidInput
+	}
+	if _, err := uuid.Parse(input.ProductID); err != nil {
+		return nil, ErrNotFound
+	}
+
+	label, err := createInventoryLabel(input.Label)
+	if err != nil {
+		return nil, err
+	}
+	sharingLimit, err := normalizeSharingLimit(input.SharingLimit)
+	if err != nil {
+		return nil, err
+	}
+
+	exists, err := s.repo.ProductExists(ctx, input.ProductID)
+	if err != nil {
+		return nil, fmt.Errorf("check inventory product: %w", err)
+	}
+	if !exists {
+		return nil, ErrNotFound
 	}
 
 	if s.cipher == nil {
@@ -114,8 +194,11 @@ func (s *AdminInventoryService) CreateInventoryAccount(ctx context.Context, inpu
 	account := &domain.InventoryAccount{
 		ID:                   uuid.NewString(),
 		ProductID:            input.ProductID,
+		Label:                label,
 		EncryptedCredentials: encrypted,
-		Status:               "active",
+		Status:               InventoryStatusActive,
+		SharingLimit:         sharingLimit,
+		ExpiresAt:            input.ExpiresAt,
 		CreatedAt:            now,
 		UpdatedAt:            now,
 	}
@@ -123,16 +206,26 @@ func (s *AdminInventoryService) CreateInventoryAccount(ctx context.Context, inpu
 	if err := s.repo.CreateAccount(ctx, account); err != nil {
 		return nil, fmt.Errorf("create inventory account: %w", err)
 	}
+	account.EncryptedCredentials = nil
 	return account, nil
 }
 
 func (s *AdminInventoryService) UpdateInventoryAccount(ctx context.Context, id string, input UpdateInventoryAccountInput) (*domain.InventoryAccount, error) {
-	account, err := s.repo.GetAccount(ctx, id)
+	if _, err := uuid.Parse(id); err != nil {
+		return nil, ErrNotFound
+	}
+
+	// The update path is the only caller allowed to see the stored ciphertext;
+	// without it an update that omits credentials would overwrite them with NULL.
+	account, err := s.repo.GetAccountWithCredentials(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 
 	if input.Credentials != nil {
+		if *input.Credentials == "" {
+			return nil, ErrInvalidInput
+		}
 		if s.cipher == nil {
 			return nil, errors.New("credential cipher not configured")
 		}
@@ -143,7 +236,38 @@ func (s *AdminInventoryService) UpdateInventoryAccount(ctx context.Context, id s
 		account.EncryptedCredentials = encrypted
 	}
 	if input.Status != nil {
-		account.Status = *input.Status
+		status, ok := normalizeInventoryStatus(*input.Status)
+		if !ok {
+			return nil, ErrInvalidInput
+		}
+		account.Status = status
+	}
+	if input.Label != nil {
+		label := strings.TrimSpace(*input.Label)
+		if label == "" || utf8.RuneCountInString(label) > MaxInventoryLabelLength {
+			return nil, ErrInvalidInput
+		}
+		account.Label = label
+	}
+	if input.SharingLimit != nil {
+		// On update an explicit value is required to be a real cap. Zero is not
+		// "use the default" here; it is an invalid limit that would otherwise
+		// silently collapse the account to one seat.
+		if *input.SharingLimit < 1 || *input.SharingLimit > MaxSharingLimit {
+			return nil, ErrInvalidInput
+		}
+		sharingLimit := *input.SharingLimit
+		// A limit below the provisioned slots would leave the account in an
+		// inconsistent state: existing rows would exceed the new cap. Reject
+		// instead of silently ignoring or deleting capacity.
+		provisioned, err := s.repo.CountSlotsForAccount(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if int64(sharingLimit) < provisioned {
+			return nil, ErrSharingLimitExceeded
+		}
+		account.SharingLimit = sharingLimit
 	}
 	if input.ExpiresAt != nil {
 		account.ExpiresAt = input.ExpiresAt
@@ -151,15 +275,85 @@ func (s *AdminInventoryService) UpdateInventoryAccount(ctx context.Context, id s
 
 	account.UpdatedAt = time.Now().UTC()
 	if err := s.repo.UpdateAccount(ctx, account); err != nil {
-		return nil, fmt.Errorf("update inventory account: %w", err)
+		return nil, err
 	}
+	account.EncryptedCredentials = nil
 	return account, nil
 }
 
 func (s *AdminInventoryService) GetInventoryAccount(ctx context.Context, id string) (*domain.InventoryAccount, error) {
-	return s.repo.GetAccount(ctx, id)
+	if _, err := uuid.Parse(id); err != nil {
+		return nil, ErrNotFound
+	}
+	account, err := s.repo.GetAccount(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	account.EncryptedCredentials = nil
+	return account, nil
 }
 
 func (s *AdminInventoryService) DeleteInventoryAccount(ctx context.Context, id string) error {
+	if _, err := uuid.Parse(id); err != nil {
+		return ErrNotFound
+	}
 	return s.repo.DeleteAccount(ctx, id)
+}
+
+// ListSlots returns the read-only slot and assignment view for one account. The
+// account is loaded first so an unknown id is a clean 404 rather than an empty
+// page that looks like an account with no capacity.
+func (s *AdminInventoryService) ListSlots(ctx context.Context, accountID, productPriceID, status string, page, perPage int) ([]domain.InventorySlotAssignment, int64, error) {
+	if _, err := uuid.Parse(accountID); err != nil {
+		return nil, 0, ErrNotFound
+	}
+	if productPriceID != "" {
+		if _, err := uuid.Parse(productPriceID); err != nil {
+			return nil, 0, ErrInvalidInput
+		}
+	}
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 || perPage > 100 {
+		perPage = 50
+	}
+	if _, err := s.repo.GetAccount(ctx, accountID); err != nil {
+		return nil, 0, err
+	}
+	return s.repo.ListSlotAssignments(ctx, accountID, productPriceID, status, page, perPage)
+}
+
+func createInventoryLabel(value string) (string, error) {
+	label := strings.TrimSpace(value)
+	if label == "" {
+		label = "Akun inventaris"
+	}
+	if utf8.RuneCountInString(label) > MaxInventoryLabelLength {
+		return "", ErrInvalidInput
+	}
+	return label, nil
+}
+
+func normalizeSharingLimit(value int) (int, error) {
+	if value == 0 {
+		return DefaultSharingLimit, nil
+	}
+	if value < 1 || value > MaxSharingLimit {
+		return 0, ErrInvalidInput
+	}
+	return value, nil
+}
+
+func normalizeInventoryStatus(value string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case InventoryStatusActive:
+		return InventoryStatusActive, true
+	case InventoryStatusInactive:
+		return InventoryStatusInactive, true
+	case InventoryStatusExpired:
+		return InventoryStatusExpired, true
+	default:
+		return "", false
+	}
 }

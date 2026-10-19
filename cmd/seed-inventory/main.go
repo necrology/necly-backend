@@ -86,16 +86,26 @@ func main() {
 	accountsCreated, slotsCreated, slotsExisting := 0, 0, 0
 
 	for _, product := range products {
-		// Akun induk per produk: baris slot wajib menunjuk salah satunya.
-		if _, err := store.GetAccountByProductID(ctx, product.ID); err != nil {
-			if _, err := inventory.CreateInventoryAccount(ctx, service.CreateInventoryAccountInput{
-				ProductID:   product.ID,
-				Credentials: placeholderCredentials,
-			}); err != nil {
+		// Akun induk per produk: baris slot wajib menunjuk salah satunya. Bila
+		// belum ada, buat dengan batas sharing yang cukup untuk target slot;
+		// bila sudah ada, naikkan batasnya agar target tetap tercapai.
+		account, err := store.GetAccountByProductID(ctx, product.ID)
+		if err != nil {
+			account, err = inventory.CreateInventoryAccount(ctx, service.CreateInventoryAccountInput{
+				ProductID:    product.ID,
+				Credentials:  placeholderCredentials,
+				SharingLimit: *perPrice,
+			})
+			if err != nil {
 				log.Fatalf("buat akun untuk %s: %v", product.Name, err)
 			}
 			accountsCreated++
 			fmt.Printf("  akun induk dibuat untuk %s\n", product.Name)
+		} else if account.SharingLimit < *perPrice {
+			limit := *perPrice
+			if _, err := inventory.UpdateInventoryAccount(ctx, account.ID, service.UpdateInventoryAccountInput{SharingLimit: &limit}); err != nil {
+				log.Fatalf("naikkan batas sharing %s: %v", product.Name, err)
+			}
 		}
 
 		for _, price := range product.Prices {
@@ -105,15 +115,15 @@ func main() {
 			if missing <= 0 {
 				continue
 			}
-			created, err := inventory.CreateSlots(ctx, service.CreateSlotsInput{
+			result, err := inventory.CreateSlots(ctx, service.CreateSlotsInput{
 				ProductPriceID: price.ID,
 				Quantity:       missing,
 			})
 			if err != nil {
 				log.Fatalf("buat slot %s: %v", product.Name, err)
 			}
-			slotsCreated += created
-			fmt.Printf("  +%d slot untuk %s (%s)\n", created, product.Name, durationName(price))
+			slotsCreated += result.Created
+			fmt.Printf("  +%d slot untuk %s (%s)\n", result.Created, product.Name, durationName(price))
 		}
 	}
 

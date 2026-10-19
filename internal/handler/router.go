@@ -262,6 +262,7 @@ func (r *Router) registerAdmin(api fiber.Router) {
 	// Kapasitas jual sebuah paket: satu baris inventory_slots per kursi.
 	admin.Post("/inventory/slots", r.adminCreateInventorySlots)
 	admin.Get("/inventory/:id", r.adminGetInventoryAccount)
+	admin.Get("/inventory/:id/slots", r.adminListInventorySlots)
 	admin.Patch("/inventory/:id", r.adminUpdateInventoryAccount)
 	admin.Delete("/inventory/:id", r.adminDeleteInventoryAccount)
 	// Payment list for dashboard
@@ -1843,6 +1844,7 @@ func (r *Router) adminListInventoryAccounts(c *fiber.Ctx) error {
 	}
 	filter := service.InventoryAccountFilter{
 		ProductID: c.Query("product_id"),
+		Status:    c.Query("status"),
 		Active:    active,
 	}
 	page := c.QueryInt("page", 1)
@@ -1856,6 +1858,9 @@ func (r *Router) adminListInventoryAccounts(c *fiber.Ctx) error {
 
 	accounts, total, err := r.adminInventorySvc.ListInventoryAccounts(ctx, filter, page, perPage)
 	if err != nil {
+		if errors.Is(err, service.ErrInvalidInput) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Filter inventaris tidak valid", "code": "invalid_input"})
+		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil daftar akun inventaris"})
 	}
 
@@ -1881,6 +1886,9 @@ func (r *Router) adminCreateInventoryAccount(c *fiber.Ctx) error {
 		if errors.Is(err, service.ErrInvalidInput) {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
+		if errors.Is(err, service.ErrNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Produk tidak ditemukan"})
+		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menambahkan akun inventaris"})
 	}
 
@@ -1897,20 +1905,55 @@ func (r *Router) adminCreateInventorySlots(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
 	defer cancel()
 
-	created, err := r.adminInventorySvc.CreateSlots(ctx, input)
+	result, err := r.adminInventorySvc.CreateSlots(ctx, input)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrInvalidInput):
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Jumlah slot harus antara 1 dan 100, dan paket harus dipilih"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Jumlah slot harus antara 1 dan 100, dan paket harus dipilih", "code": "invalid_input"})
 		case errors.Is(err, service.ErrAccountRequired):
-			return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": err.Error()})
+			return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": err.Error(), "code": "account_required"})
+		case errors.Is(err, service.ErrSharingLimitExceeded):
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "sharing_limit_exceeded"})
+		case errors.Is(err, service.ErrInventoryAccountUnavailable):
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "inventory_account_unavailable"})
+		case errors.Is(err, service.ErrInventoryAccountMismatch):
+			return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": err.Error(), "code": "inventory_account_mismatch"})
 		case errors.Is(err, service.ErrNotFound):
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Paket tidak ditemukan"})
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Paket atau akun inventaris tidak ditemukan"})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menambahkan slot inventaris"})
 	}
 
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"created": created})
+	return c.Status(fiber.StatusCreated).JSON(result)
+}
+
+// adminListInventorySlots returns the read-only slot and assignment view for
+// one account. It never exposes credentials.
+func (r *Router) adminListInventorySlots(c *fiber.Ctx) error {
+	accountID := c.Params("id")
+	productPriceID := c.Query("product_price_id")
+	status := c.Query("status")
+	page := c.QueryInt("page", 1)
+	perPage := c.QueryInt("per_page", 50)
+	if perPage > 100 {
+		perPage = 100
+	}
+
+	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+	defer cancel()
+
+	slots, total, err := r.adminInventorySvc.ListSlots(ctx, accountID, productPriceID, status, page, perPage)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrNotFound):
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Akun inventaris tidak ditemukan"})
+		case errors.Is(err, service.ErrInvalidInput):
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Filter slot tidak valid", "code": "invalid_input"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil daftar slot inventaris"})
+	}
+
+	return c.JSON(fiber.Map{"slots": slots, "page": page, "per_page": perPage, "total": total})
 }
 
 func (r *Router) adminGetInventoryAccount(c *fiber.Ctx) error {
