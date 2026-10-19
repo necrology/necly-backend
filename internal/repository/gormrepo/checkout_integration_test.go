@@ -83,7 +83,7 @@ func newCheckoutFixture(t *testing.T) *checkoutFixture {
 	if err := db.Create(&domain.ProductPrice{ID: fixture.priceB, ProductID: fixture.product, DurationID: fixture.duration, Amount: 99000, Currency: "IDR", Active: true, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
 		t.Fatalf("seed second price: %v", err)
 	}
-	account := domain.InventoryAccount{ID: uuid.NewString(), ProductID: fixture.product, EncryptedCredentials: []byte("fixture"), Status: "active", CreatedAt: now, UpdatedAt: now}
+	account := domain.InventoryAccount{ID: uuid.NewString(), ProductID: fixture.product, EncryptedCredentials: []byte("fixture"), Status: "active", SharingLimit: 3, CreatedAt: now, UpdatedAt: now}
 	if err := db.Create(&account).Error; err != nil {
 		t.Fatalf("seed inventory account: %v", err)
 	}

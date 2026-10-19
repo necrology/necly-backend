@@ -139,12 +139,45 @@ type InventoryAccount struct {
 	// Product is the association the admin inventory list preloads. Without a
 	// declared relation GORM rejects Preload("Product") and the list endpoint
 	// answers 500.
-	Product              *Product   `json:"product,omitempty" gorm:"foreignKey:ProductID"`
+	Product *Product `json:"product,omitempty" gorm:"foreignKey:ProductID"`
+	// Label is the operator-facing name of this account (for example
+	// "Akun utama" or "Akun cadangan"). SharingLimit caps how many slot rows may
+	// be created against the account; one slot is one sellable seat.
+	Label                string     `json:"label" gorm:"size:120;not null;default:''"`
 	EncryptedCredentials []byte     `json:"-" gorm:"not null"`
 	Status               string     `json:"status" gorm:"size:24;not null;default:active;index"`
+	SharingLimit         int        `json:"sharing_limit" gorm:"not null;default:1"`
 	ExpiresAt            *time.Time `json:"expires_at,omitempty"`
 	CreatedAt            time.Time  `json:"created_at"`
 	UpdatedAt            time.Time  `json:"updated_at"`
+	// Slot counters are derived from inventory_slots and never stored on the
+	// account row. The list endpoint exposes them so the dashboard can show
+	// capacity without issuing one query per account.
+	TotalSlots     int  `json:"total_slots" gorm:"-"`
+	AvailableSlots int  `json:"available_slots" gorm:"-"`
+	UsedSlots      int  `json:"used_slots" gorm:"-"`
+	RemainingSlots int  `json:"remaining_slots" gorm:"-"`
+	Sellable       bool `json:"sellable" gorm:"-"`
+}
+
+// InventorySlotAssignment is the read-only admin view of a slot. It joins the
+// owning order and the customer that reserved it so an operator can answer
+// "who has this seat?" without a second query. The account credentials are not
+// part of this shape.
+type InventorySlotAssignment struct {
+	ID                 string     `json:"id"`
+	InventoryAccountID string     `json:"inventory_account_id"`
+	ProductPriceID     string     `json:"product_price_id"`
+	Status             string     `json:"status"`
+	ReservedBy         *string    `json:"reserved_by,omitempty"`
+	ReservedUntil      *time.Time `json:"reserved_until,omitempty"`
+	OrderItemID        *string    `json:"order_item_id,omitempty"`
+	OrderID            *string    `json:"order_id,omitempty"`
+	OrderNumber        *string    `json:"order_number,omitempty"`
+	ReservedEmail      *string    `json:"reserved_email,omitempty"`
+	ReservedName       *string    `json:"reserved_name,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
 }
 
 type InventorySlot struct {

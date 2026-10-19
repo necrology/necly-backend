@@ -14,7 +14,7 @@ cd "$ROOT"
 echo "verifying W0 migration checksums"
 (cd migrations && sha256sum -c ../deploy/validation/migration-checksums.sha256)
 
-FILES="001_initial_schema.sql 003_localize_catalog_copy.sql 004_issue_reports.sql 005_password_reset_tokens.sql 006_product_labels.sql 007_device_count.sql 008_add_users_active.sql 009_order_compatibility.sql 010_checkout_idempotency.sql 011_order_expiry_index.sql"
+FILES="001_initial_schema.sql 003_localize_catalog_copy.sql 004_issue_reports.sql 005_password_reset_tokens.sql 006_product_labels.sql 007_device_count.sql 008_add_users_active.sql 009_order_compatibility.sql 010_checkout_idempotency.sql 011_order_expiry_index.sql 012_inventory_account_sharing.sql 013_inventory_account_label_backfill.sql"
 
 for pass in 1 2; do
   echo "schema pass $pass"
@@ -47,4 +47,15 @@ EXPIRY_INDEX=$(psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM pg_indexes WHE
 [ "$OWNER_INDEX" = "1" ] || { echo "FAIL: owner-scoped idempotency index missing"; exit 1; }
 [ "$EXPIRY_INDEX" = "1" ] || { echo "FAIL: reservation-expiry index missing"; exit 1; }
 
-echo "PASS: schema applied twice; tables=$TABLES; no development seed rows; compatibility columns=$COLUMNS; checkout_attempts=$ATTEMPT_TABLE"
+# Migration 012 is additive and must survive the second pass.
+SHARING=$(psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='inventory_accounts' AND column_name IN ('label','sharing_limit')")
+[ "$SHARING" = "2" ] || { echo "FAIL: expected inventory account label/sharing_limit columns, got $SHARING"; exit 1; }
+SHARING_CHECK=$(psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM pg_constraint WHERE conname='inventory_accounts_sharing_limit_positive'")
+[ "$SHARING_CHECK" = "1" ] || { echo "FAIL: sharing_limit check constraint missing"; exit 1; }
+
+# Migration 013 backfills empty labels; it must survive the second pass and
+# leave no account with a blank operator-facing name.
+EMPTY_LABELS=$(psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM inventory_accounts WHERE label = '' OR label IS NULL")
+[ "$EMPTY_LABELS" = "0" ] || { echo "FAIL: migration 013 left empty inventory labels"; exit 1; }
+
+echo "PASS: schema applied twice; tables=$TABLES; no development seed rows; compatibility columns=$COLUMNS; checkout_attempts=$ATTEMPT_TABLE; inventory sharing columns=$SHARING"
