@@ -53,6 +53,7 @@ func (s *AdminUserService) GetUserByEmail(ctx context.Context, email string) (*d
 }
 
 func (s *AdminUserService) CreateUser(ctx context.Context, email, name, passwordHash string, role domain.UserRole) (*domain.User, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
 	if email == "" || passwordHash == "" {
 		return nil, ErrInvalidInput
 	}
@@ -71,7 +72,7 @@ func (s *AdminUserService) CreateUser(ctx context.Context, email, name, password
 	now := time.Now().UTC()
 	user := &domain.User{
 		ID:              uuid.NewString(),
-		Email:           strings.ToLower(strings.TrimSpace(email)),
+		Email:           email,
 		Name:            name,
 		PasswordHash:    passwordHash,
 		Role:            role,
