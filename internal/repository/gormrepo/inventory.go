@@ -85,18 +85,36 @@ func (s *Store) attachSlotCounts(ctx context.Context, accounts []domain.Inventor
 	}
 	now := s.nowUTC()
 	for i := range accounts {
-		account := &accounts[i]
-		count := counts[account.ID]
-		account.TotalSlots = int(count.Total)
-		account.AvailableSlots = int(count.Available)
-		account.UsedSlots = account.TotalSlots - account.AvailableSlots
-		if account.SharingLimit > account.TotalSlots {
-			account.RemainingSlots = account.SharingLimit - account.TotalSlots
-		} else {
-			account.RemainingSlots = 0
-		}
-		account.Sellable = account.Status == "active" && (account.ExpiresAt == nil || account.ExpiresAt.After(now))
+		count := counts[accounts[i].ID]
+		applyAccountDerived(&accounts[i], count.Total, count.Available, now)
 	}
+	return nil
+}
+
+// applyAccountDerived fills the read-only capacity fields the admin API
+// exposes. They are never stored (gorm:"-"), so every response path must
+// recompute them from the slot rows it just read.
+func applyAccountDerived(account *domain.InventoryAccount, total, available int64, now time.Time) {
+	account.TotalSlots = int(total)
+	account.AvailableSlots = int(available)
+	account.UsedSlots = account.TotalSlots - account.AvailableSlots
+	if account.SharingLimit > account.TotalSlots {
+		account.RemainingSlots = account.SharingLimit - account.TotalSlots
+	} else {
+		account.RemainingSlots = 0
+	}
+	account.Sellable = account.Status == "active" && (account.ExpiresAt == nil || account.ExpiresAt.After(now))
+}
+
+// hydrateAccount counts the slots owned by a single account and fills its
+// derived fields. It keeps the single-account read paths (GET/POST/PATCH) from
+// returning zero counters while the list endpoint reports the real ones.
+func (s *Store) hydrateAccount(ctx context.Context, account *domain.InventoryAccount) error {
+	items := []domain.InventoryAccount{*account}
+	if err := s.attachSlotCounts(ctx, items); err != nil {
+		return err
+	}
+	*account = items[0]
 	return nil
 }
 
@@ -110,6 +128,9 @@ func (s *Store) GetAccount(ctx context.Context, id string) (*domain.InventoryAcc
 		return nil, fmt.Errorf("get inventory account: %w", err)
 	}
 	a.EncryptedCredentials = nil
+	if err := s.hydrateAccount(ctx, &a); err != nil {
+		return nil, err
+	}
 	return &a, nil
 }
 
@@ -145,12 +166,50 @@ func (s *Store) CreateAccount(ctx context.Context, a *domain.InventoryAccount) e
 	a.ID = uuid.NewString()
 	a.CreatedAt = s.nowUTC()
 	a.UpdatedAt = a.CreatedAt
-	return s.db.WithContext(ctx).Create(a).Error
+	if err := s.db.WithContext(ctx).Create(a).Error; err != nil {
+		return err
+	}
+	// A brand-new account owns no slots yet, so the derived counters are known
+	// without another query while still matching the list endpoint shape.
+	applyAccountDerived(a, 0, 0, a.CreatedAt)
+	return nil
 }
 
+// UpdateAccount saves the account under a row lock and re-checks sharing_limit
+// against the provisioned slot rows in the same transaction. Without the lock a
+// concurrent CreateSlotsForAccount/CreateSlotsAuto (which lock the account row)
+// could add slots between the service-layer count and this write, leaving the
+// account over its new limit.
 func (s *Store) UpdateAccount(ctx context.Context, a *domain.InventoryAccount) error {
-	a.UpdatedAt = s.nowUTC()
-	return s.db.WithContext(ctx).Save(a).Error
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current domain.InventoryAccount
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", a.ID).First(&current).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return service.ErrNotFound
+			}
+			return fmt.Errorf("load inventory account: %w", err)
+		}
+
+		var total, available int64
+		if err := tx.Model(&domain.InventorySlot{}).
+			Where("inventory_account_id = ?", a.ID).Count(&total).Error; err != nil {
+			return fmt.Errorf("count inventory slots: %w", err)
+		}
+		if err := tx.Model(&domain.InventorySlot{}).
+			Where("inventory_account_id = ? AND status = ?", a.ID, "available").Count(&available).Error; err != nil {
+			return fmt.Errorf("count available inventory slots: %w", err)
+		}
+		if int64(a.SharingLimit) < total {
+			return service.ErrSharingLimitExceeded
+		}
+
+		a.UpdatedAt = s.nowUTC()
+		if err := tx.Save(a).Error; err != nil {
+			return err
+		}
+		applyAccountDerived(a, total, available, a.UpdatedAt)
+		return nil
+	})
 }
 
 // ProductExists keeps a stale or fabricated product id from surfacing as a

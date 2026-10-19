@@ -1993,6 +1993,11 @@ func (r *Router) adminUpdateInventoryAccount(c *fiber.Ctx) error {
 		if errors.Is(err, service.ErrInvalidInput) {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
+		// Menurunkan sharing_limit di bawah jumlah slot terprovisi bukan kesalahan
+		// server: kontrak W15 meminta 409 dengan kode yang bisa dibaca frontend.
+		if errors.Is(err, service.ErrSharingLimitExceeded) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "sharing_limit_exceeded"})
+		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui akun inventaris"})
 	}
 

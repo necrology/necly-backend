@@ -314,3 +314,114 @@ func TestServiceUpdateRejectsSharingLimitBelowProvisionedSlots(t *testing.T) {
 		t.Fatalf("sharing_limit = %d, want 4", updated.SharingLimit)
 	}
 }
+
+func TestGetAccountReportsSlotCounters(t *testing.T) {
+	fixture := newCheckoutFixture(t)
+	account := newInventoryAccount(t, fixture, fixture.product, 5, "active", nil)
+	seedInventorySlots(t, fixture, account.ID, fixture.price, 2, "available")
+	seedInventorySlots(t, fixture, account.ID, fixture.price, 1, "reserved")
+
+	found, err := fixture.store.GetAccount(context.Background(), account.ID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if found.TotalSlots != 3 || found.AvailableSlots != 2 || found.UsedSlots != 1 {
+		t.Fatalf("counters total=%d available=%d used=%d, want 3/2/1", found.TotalSlots, found.AvailableSlots, found.UsedSlots)
+	}
+	if found.RemainingSlots != 2 {
+		t.Fatalf("remaining = %d, want 2", found.RemainingSlots)
+	}
+	if !found.Sellable {
+		t.Fatal("active non-expired account should be sellable")
+	}
+	if found.EncryptedCredentials != nil {
+		t.Fatal("GetAccount returned ciphertext")
+	}
+}
+
+func TestCreateAccountReportsDerivedCounters(t *testing.T) {
+	fixture := newCheckoutFixture(t)
+	account := &domain.InventoryAccount{
+		ProductID:            fixture.product,
+		Label:                "Akun baru",
+		EncryptedCredentials: []byte("fixture"),
+		Status:               "active",
+		SharingLimit:         4,
+	}
+	if err := fixture.store.CreateAccount(context.Background(), account); err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+	if account.TotalSlots != 0 || account.AvailableSlots != 0 || account.UsedSlots != 0 {
+		t.Fatalf("new account counters = %d/%d/%d, want 0/0/0", account.TotalSlots, account.AvailableSlots, account.UsedSlots)
+	}
+	if account.RemainingSlots != 4 {
+		t.Fatalf("remaining = %d, want 4", account.RemainingSlots)
+	}
+	if !account.Sellable {
+		t.Fatal("new active account should be sellable")
+	}
+}
+
+// TestUpdateAccountGuardsSharingLimitUnderLock exercises the repository guard
+// directly, bypassing the service-level check, so a future caller cannot lower
+// the limit below the provisioned rows.
+func TestUpdateAccountGuardsSharingLimitUnderLock(t *testing.T) {
+	fixture := newCheckoutFixture(t)
+	ctx := context.Background()
+	account := newInventoryAccount(t, fixture, fixture.product, 5, "active", nil)
+	seedInventorySlots(t, fixture, account.ID, fixture.price, 3, "available")
+
+	account.SharingLimit = 2
+	if err := fixture.store.UpdateAccount(ctx, account); !errors.Is(err, service.ErrSharingLimitExceeded) {
+		t.Fatalf("lower limit error = %v, want ErrSharingLimitExceeded", err)
+	}
+	var stored domain.InventoryAccount
+	if err := fixture.db.First(&stored, "id = ?", account.ID).Error; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if stored.SharingLimit != 5 {
+		t.Fatalf("stored limit = %d, want 5 unchanged", stored.SharingLimit)
+	}
+
+	account.SharingLimit = 4
+	if err := fixture.store.UpdateAccount(ctx, account); err != nil {
+		t.Fatalf("raise limit: %v", err)
+	}
+	if account.TotalSlots != 3 || account.RemainingSlots != 1 {
+		t.Fatalf("derived after update = total %d remaining %d, want 3/1", account.TotalSlots, account.RemainingSlots)
+	}
+}
+
+// TestUpdateAccountAndCreateSlotsKeepSharingLimitInvariant runs the two writers
+// that touch sharing_limit and the slot count concurrently. Whichever commits
+// first, the stored limit must never fall below the number of slot rows.
+func TestUpdateAccountAndCreateSlotsKeepSharingLimitInvariant(t *testing.T) {
+	fixture := newCheckoutFixture(t)
+	ctx := context.Background()
+
+	for attempt := 0; attempt < 20; attempt++ {
+		account := newInventoryAccount(t, fixture, fixture.product, 4, "active", nil)
+		seedInventorySlots(t, fixture, account.ID, fixture.price, 4, "available")
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			account.SharingLimit = 4
+			_ = fixture.store.UpdateAccount(ctx, account)
+		}()
+		go func() {
+			defer wg.Done()
+			_ = fixture.store.CreateSlotsForAccount(ctx, account.ID, fixture.product, slotPayload(fixture.price, 1))
+		}()
+		wg.Wait()
+
+		var stored domain.InventoryAccount
+		if err := fixture.db.First(&stored, "id = ?", account.ID).Error; err != nil {
+			t.Fatalf("attempt %d reload: %v", attempt, err)
+		}
+		if count := countAccountSlots(t, fixture, account.ID); count > int64(stored.SharingLimit) {
+			t.Fatalf("attempt %d: slots=%d exceed sharing_limit=%d", attempt, count, stored.SharingLimit)
+		}
+	}
+}
