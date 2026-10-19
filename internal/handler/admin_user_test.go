@@ -157,6 +157,40 @@ func TestAdminUpdateUser_RejectsInvalidRole(t *testing.T) {
 	userRepo.AssertNotCalled(t, "ApplyUserUpdate", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
 
+func TestAdminUpdateUser_RejectsEmptyRole(t *testing.T) {
+	app, authRepo, userRepo, _, tokens := newAdminUserApp(t)
+	adminID := uuid.NewString()
+	expectActiveSession(authRepo, adminID, "session-admin", domain.RoleAdmin)
+	token, _ := tokens.IssueAccess(adminID, string(domain.RoleAdmin), "session-admin")
+
+	status, payload := adminRequest(t, app, token, http.MethodPatch, "/api/v1/admin/users/"+uuid.NewString(), `{"role":""}`)
+	assert.Equal(t, fiber.StatusBadRequest, status)
+	assert.Equal(t, "invalid_input", payload["code"])
+	userRepo.AssertNotCalled(t, "GetUserByID", mock.Anything, mock.Anything)
+	userRepo.AssertNotCalled(t, "ApplyUserUpdate", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestAdminUpdateUser_OmittedRoleLeavesRoleUnchanged(t *testing.T) {
+	app, authRepo, userRepo, _, tokens := newAdminUserApp(t)
+	adminID := uuid.NewString()
+	targetID := uuid.NewString()
+	expectActiveSession(authRepo, adminID, "session-admin", domain.RoleAdmin)
+	token, _ := tokens.IssueAccess(adminID, string(domain.RoleAdmin), "session-admin")
+	userRepo.On("GetUserByID", mock.Anything, targetID).Return(&domain.User{
+		ID: targetID, Email: "target@test.com", Name: "Target", Role: domain.RoleCustomer, Active: true,
+	}, nil)
+	userRepo.On("ApplyUserUpdate", mock.Anything, targetID, mock.MatchedBy(func(update service.AdminUserUpdate) bool {
+		return update.Role == nil && update.Name != nil && *update.Name == "Renamed"
+	}), mock.AnythingOfType("time.Time")).Return(&domain.User{
+		ID: targetID, Email: "target@test.com", Name: "Renamed", Role: domain.RoleCustomer, Active: true,
+	}, nil)
+
+	status, payload := adminRequest(t, app, token, http.MethodPatch, "/api/v1/admin/users/"+targetID, `{"name":"Renamed"}`)
+	assert.Equal(t, fiber.StatusOK, status)
+	assert.Equal(t, "customer", payload["role"])
+	userRepo.AssertExpectations(t)
+}
+
 func TestAdminUpdateUser_RejectsSelfDemotion(t *testing.T) {
 	app, authRepo, userRepo, _, tokens := newAdminUserApp(t)
 	adminID := uuid.NewString()

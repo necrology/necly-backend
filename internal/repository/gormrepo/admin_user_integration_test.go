@@ -284,6 +284,60 @@ func TestAdminUserIntegration_NonAdminCanBeDeactivatedAndDeleted(t *testing.T) {
 	}
 }
 
+func TestAdminUserIntegration_SoftDeletedUserIsHiddenFromAdminPaths(t *testing.T) {
+	ctx := context.Background()
+	db := openAdminUserDB(t)
+	store := NewStore(db)
+	svc := service.NewAdminUserService(store, store)
+
+	actor := createAdminUserFixture(t, db, domain.RoleAdmin, true)
+	target := createAdminUserFixture(t, db, domain.RoleCustomer, true)
+
+	if err := svc.DeleteUser(ctx, service.AdminActor{UserID: actor.ID}, target.ID); err != nil {
+		t.Fatalf("delete customer: %v", err)
+	}
+
+	t.Run("admin get returns not found", func(t *testing.T) {
+		if _, err := svc.GetUser(ctx, target.ID); !errors.Is(err, service.ErrNotFound) {
+			t.Fatalf("expected ErrNotFound from admin get, got %v", err)
+		}
+	})
+
+	t.Run("admin update does not resurrect the account", func(t *testing.T) {
+		name := "Resurrected"
+		if _, err := svc.UpdateUser(ctx, service.AdminActor{UserID: actor.ID}, target.ID, service.AdminUserUpdate{Name: &name}); !errors.Is(err, service.ErrNotFound) {
+			t.Fatalf("expected ErrNotFound from admin update, got %v", err)
+		}
+	})
+
+	t.Run("admin delete returns not found", func(t *testing.T) {
+		if err := svc.DeleteUser(ctx, service.AdminActor{UserID: actor.ID}, target.ID); !errors.Is(err, service.ErrNotFound) {
+			t.Fatalf("expected ErrNotFound from admin delete, got %v", err)
+		}
+	})
+
+	// AuthorizeSession still uses UserByID and must keep seeing the row so it
+	// can reject the deleted account's session instead of treating it as gone.
+	authUser, err := store.UserByID(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("auth read of deleted user: %v", err)
+	}
+	if authUser.DeletedAt == nil {
+		t.Fatal("auth read should still expose the soft-deleted row")
+	}
+
+	var stored domain.User
+	if err := db.Unscoped().Where("id = ?", target.ID).First(&stored).Error; err != nil {
+		t.Fatalf("read deleted customer: %v", err)
+	}
+	if stored.DeletedAt == nil {
+		t.Fatal("customer should remain soft-deleted")
+	}
+	if stored.Name == "Resurrected" {
+		t.Fatal("admin update must not mutate a soft-deleted account")
+	}
+}
+
 func assertUserRoleAndActive(t *testing.T, db *gorm.DB, id string, role domain.UserRole, active bool) {
 	t.Helper()
 	var user domain.User

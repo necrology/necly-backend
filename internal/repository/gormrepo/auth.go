@@ -448,8 +448,17 @@ func (s *Store) GetUserByEmail(ctx context.Context, email string) (*domain.User,
 	return s.UserByEmail(ctx, email)
 }
 
+// GetUserByID is the administration read path. Soft-deleted accounts are
+// invisible here so the admin endpoints cannot inspect or mutate them. UserByID
+// intentionally stays unfiltered: AuthorizeSession must still read a deleted
+// account in order to reject its session.
 func (s *Store) GetUserByID(ctx context.Context, id string) (*domain.User, error) {
-	return s.UserByID(ctx, id)
+	var user domain.User
+	err := s.db.WithContext(ctx).Where("id = ? AND deleted_at IS NULL", id).First(&user).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, service.ErrNotFound
+	}
+	return &user, err
 }
 
 // ListRefreshTokens returns the account's live sign-ins, newest first. Revoked
