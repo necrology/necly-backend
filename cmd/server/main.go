@@ -157,7 +157,7 @@ func main() {
 	webhookSvc := service.NewWebhookService(store, providerRegistry)
 
 	adminSvc := service.NewAdminDashboardService(store)
-	adminUserSvc := service.NewAdminUserService(store)
+	adminUserSvc := service.NewAdminUserService(store, store)
 	adminProductSvc := service.NewAdminProductService(store)
 	adminCategorySvc := service.NewAdminCategoryService(store)
 	adminOrderSvc := service.NewAdminOrderService(store)
