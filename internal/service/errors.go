@@ -3,11 +3,19 @@ package service
 import "errors"
 
 var (
-	ErrInvalidInput     = errors.New("Input tidak valid")
-	ErrUnauthorized     = errors.New("Tidak terotorisasi")
-	ErrForbidden        = errors.New("Akses ditolak")
-	ErrNotFound         = errors.New("Data tidak ditemukan")
-	ErrConflict         = errors.New("Terjadi konflik data")
+	ErrInvalidInput = errors.New("Input tidak valid")
+	ErrUnauthorized = errors.New("Tidak terotorisasi")
+	ErrForbidden    = errors.New("Akses ditolak")
+	ErrNotFound     = errors.New("Data tidak ditemukan")
+	ErrConflict     = errors.New("Terjadi konflik data")
+	// ErrSelfRoleChange and ErrSelfDeactivate protect the admin's own account:
+	// an operator must never lock themselves out of the dashboard by accident.
+	ErrSelfRoleChange = errors.New("Admin tidak dapat menurunkan peran akunnya sendiri")
+	ErrSelfDeactivate = errors.New("Admin tidak dapat menonaktifkan akunnya sendiri")
+	ErrSelfDelete     = errors.New("Admin tidak dapat menghapus akunnya sendiri")
+	// ErrLastAdmin is the final backstop: no request may leave the system with
+	// zero active administrators.
+	ErrLastAdmin        = errors.New("Tidak dapat menghapus admin aktif terakhir")
 	ErrEmailNotVerified = errors.New("Email belum diverifikasi. Silakan periksa kotak masuk atau spam Anda.")
 	ErrAlreadyVerified  = errors.New("Email sudah diverifikasi. Silakan masuk menggunakan kata sandi Anda.")
 	// ErrMailUnavailable is returned when production email delivery is not

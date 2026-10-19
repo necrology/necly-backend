@@ -318,23 +318,130 @@ func (s *Store) ListUsers(ctx context.Context, filter service.UserFilter, page, 
 	return users, total, nil
 }
 
-func (s *Store) UpdateUserRole(ctx context.Context, id, role string, now time.Time) error {
-	return s.db.WithContext(ctx).Model(&domain.User{}).Where("id = ? AND deleted_at IS NULL", id).Updates(map[string]any{"role": role, "updated_at": now}).Error
+// adminAccessLockKey serializes every admin access change. Checking "is this
+// the last active admin?" and then writing are two statements; without a lock,
+// two concurrent demotions could each see the other admin and both succeed.
+// A transaction-scoped advisory lock is used so no schema change is needed.
+const adminAccessLockKey int64 = 0x4E45434C5941444D // "NECLYADM"
+
+func (s *Store) CountActiveAdmins(ctx context.Context, excludeUserID string) (int64, error) {
+	query := s.db.WithContext(ctx).Model(&domain.User{}).
+		Where("role = ? AND active = true AND deleted_at IS NULL", domain.RoleAdmin)
+	if excludeUserID != "" {
+		query = query.Where("id <> ?", excludeUserID)
+	}
+	var count int64
+	if err := query.Count(&count).Error; err != nil {
+		return 0, fmt.Errorf("count active admins: %w", err)
+	}
+	return count, nil
 }
 
-func (s *Store) UpdateUserActive(ctx context.Context, id string, active bool, now time.Time) error {
-	return s.db.WithContext(ctx).Model(&domain.User{}).Where("id = ? AND deleted_at IS NULL", id).Updates(map[string]any{"active": active, "updated_at": now}).Error
+// ApplyUserUpdate writes one account patch atomically and enforces the
+// last-admin rule inside the same transaction as the write. The service checks
+// first for a readable error, but this check is the one that holds under
+// concurrency.
+func (s *Store) ApplyUserUpdate(ctx context.Context, id string, update service.AdminUserUpdate, now time.Time) (*domain.User, error) {
+	var user domain.User
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("SELECT pg_advisory_xact_lock(?)", adminAccessLockKey).Error; err != nil {
+			return fmt.Errorf("lock admin access: %w", err)
+		}
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND deleted_at IS NULL", id).
+			First(&user).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return service.ErrNotFound
+			}
+			return fmt.Errorf("find user: %w", err)
+		}
+
+		nextRole := user.Role
+		if update.Role != nil {
+			nextRole = *update.Role
+		}
+		nextActive := user.Active
+		if update.Active != nil {
+			nextActive = *update.Active
+		}
+		if user.Role == domain.RoleAdmin && user.Active && (nextRole != domain.RoleAdmin || !nextActive) {
+			var others int64
+			if err := tx.Model(&domain.User{}).
+				Where("role = ? AND active = true AND deleted_at IS NULL AND id <> ?", domain.RoleAdmin, id).
+				Count(&others).Error; err != nil {
+				return fmt.Errorf("count active admins: %w", err)
+			}
+			if others == 0 {
+				return service.ErrLastAdmin
+			}
+		}
+
+		fields := map[string]any{"updated_at": now}
+		if update.Name != nil {
+			fields["name"] = *update.Name
+			user.Name = *update.Name
+		}
+		if update.Email != nil {
+			fields["email"] = *update.Email
+			user.Email = *update.Email
+		}
+		if update.Role != nil {
+			fields["role"] = *update.Role
+			user.Role = *update.Role
+		}
+		if update.Active != nil {
+			fields["active"] = *update.Active
+			user.Active = *update.Active
+		}
+		if err := tx.Model(&domain.User{}).Where("id = ?", id).Updates(fields).Error; err != nil {
+			if errors.Is(err, gorm.ErrDuplicatedKey) {
+				return service.ErrConflict
+			}
+			return fmt.Errorf("update user: %w", err)
+		}
+		user.UpdatedAt = now
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &user, nil
 }
 
+// DeleteUser soft-deletes an account, refusing to remove the final active
+// administrator. The same advisory lock serializes it with role/status writes.
 func (s *Store) DeleteUser(ctx context.Context, id string, now time.Time) error {
-	return s.db.WithContext(ctx).Model(&domain.User{}).
-		Where("id = ? AND deleted_at IS NULL", id).
-		Updates(map[string]any{"deleted_at": now, "updated_at": now}).Error
-}
-
-func (s *Store) UpdateUser(ctx context.Context, u *domain.User) error {
-	u.UpdatedAt = s.nowUTC()
-	return s.db.WithContext(ctx).Where("id = ? AND deleted_at IS NULL", u.ID).Save(u).Error
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("SELECT pg_advisory_xact_lock(?)", adminAccessLockKey).Error; err != nil {
+			return fmt.Errorf("lock admin access: %w", err)
+		}
+		var user domain.User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND deleted_at IS NULL", id).
+			First(&user).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return service.ErrNotFound
+			}
+			return fmt.Errorf("find user: %w", err)
+		}
+		if user.Role == domain.RoleAdmin && user.Active {
+			var others int64
+			if err := tx.Model(&domain.User{}).
+				Where("role = ? AND active = true AND deleted_at IS NULL AND id <> ?", domain.RoleAdmin, id).
+				Count(&others).Error; err != nil {
+				return fmt.Errorf("count active admins: %w", err)
+			}
+			if others == 0 {
+				return service.ErrLastAdmin
+			}
+		}
+		if err := tx.Model(&domain.User{}).
+			Where("id = ? AND deleted_at IS NULL", id).
+			Updates(map[string]any{"deleted_at": now, "updated_at": now}).Error; err != nil {
+			return fmt.Errorf("delete user: %w", err)
+		}
+		return nil
+	})
 }
 
 func (s *Store) GetUserByEmail(ctx context.Context, email string) (*domain.User, error) {

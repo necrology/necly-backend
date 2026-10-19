@@ -33,6 +33,14 @@ const (
 	AuditPasswordReset      = "auth.password.reset"
 	AuditPasswordChanged    = "auth.password.changed"
 	AuditSessionsRevoked    = "auth.sessions.revoked"
+
+	// Action names emitted by admin user management. They carry the actor, the
+	// target account and the before/after value in the metadata column.
+	AuditAdminUserProfileUpdated = "admin.user.profile_updated"
+	AuditAdminUserRoleChanged    = "admin.user.role_changed"
+	AuditAdminUserActivated      = "admin.user.activated"
+	AuditAdminUserDeactivated    = "admin.user.deactivated"
+	AuditAdminUserDeleted        = "admin.user.deleted"
 )
 
 // record is deliberately fire-and-forget: an audit write must never turn a

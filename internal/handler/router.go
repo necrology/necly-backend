@@ -1241,6 +1241,9 @@ func (r *Router) listUsers(c *fiber.Ctx) error {
 
 	users, total, err := r.adminUserSvc.ListUsers(ctx, filter, page, perPage)
 	if err != nil {
+		if errors.Is(err, service.ErrInvalidInput) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Filter peran pengguna tidak valid", "code": "invalid_input"})
+		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil daftar pengguna"})
 	}
 
@@ -1274,46 +1277,32 @@ func (r *Router) updateUser(c *fiber.Ctx) error {
 	id := c.Params("id")
 
 	var input struct {
-		Name   string `json:"name"`
-		Email  string `json:"email"`
-		Active *bool  `json:"active"`
-		Role   string `json:"role"`
+		Name   *string `json:"name"`
+		Email  *string `json:"email"`
+		Active *bool   `json:"active"`
+		Role   *string `json:"role"`
 	}
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid", "code": "invalid_input"})
 	}
 
-	var role *domain.UserRole
-	if input.Role != "" {
-		r := domain.UserRole(input.Role)
-		role = &r
+	update := service.AdminUserUpdate{
+		Name:   input.Name,
+		Email:  input.Email,
+		Active: input.Active,
+	}
+	if input.Role != nil && *input.Role != "" {
+		role := domain.UserRole(*input.Role)
+		update.Role = &role
 	}
 
+	actorID, _ := c.Locals("user_id").(string)
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
 	defer cancel()
 
-	user, err := r.adminUserSvc.UpdateUser(ctx, id, input.Name, input.Email, input.Active)
+	user, err := r.adminUserSvc.UpdateUser(ctx, service.AdminActor{UserID: actorID, IPAddress: c.IP()}, id, update)
 	if err != nil {
-		if errors.Is(err, service.ErrNotFound) {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pengguna tidak ditemukan"})
-		}
-		if errors.Is(err, service.ErrConflict) {
-			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Email sudah digunakan oleh akun lain"})
-		}
-		if errors.Is(err, service.ErrInvalidInput) {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
-		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui data pengguna"})
-	}
-
-	if role != nil {
-		user, err = r.adminUserSvc.UpdateUserRole(ctx, id, *role)
-		if err != nil {
-			if errors.Is(err, service.ErrInvalidInput) {
-				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Peran pengguna tidak valid"})
-			}
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui peran pengguna"})
-		}
+		return adminUserError(c, err)
 	}
 
 	user.PasswordHash = ""
@@ -1322,19 +1311,37 @@ func (r *Router) updateUser(c *fiber.Ctx) error {
 
 func (r *Router) deleteUser(c *fiber.Ctx) error {
 	id := c.Params("id")
+	actorID, _ := c.Locals("user_id").(string)
 
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
 	defer cancel()
 
-	err := r.adminUserSvc.DeleteUser(ctx, id)
+	err := r.adminUserSvc.DeleteUser(ctx, service.AdminActor{UserID: actorID, IPAddress: c.IP()}, id)
 	if err != nil {
-		if errors.Is(err, service.ErrNotFound) {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pengguna tidak ditemukan"})
-		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menghapus pengguna"})
+		return adminUserError(c, err)
 	}
 
 	return c.JSON(fiber.Map{"message": "Pengguna berhasil dihapus"})
+}
+
+// adminUserError maps the service's typed access errors to an explicit status
+// and machine code. Previously every failure except 404 collapsed into 500,
+// which made a guard rejection look like a server outage to the dashboard.
+func adminUserError(c *fiber.Ctx, err error) error {
+	switch {
+	case errors.Is(err, service.ErrNotFound):
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pengguna tidak ditemukan", "code": "not_found"})
+	case errors.Is(err, service.ErrInvalidInput):
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Data pengguna tidak valid: peran harus customer, seller, atau admin", "code": "invalid_input"})
+	case errors.Is(err, service.ErrConflict):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Email sudah digunakan oleh akun lain", "code": "conflict"})
+	case errors.Is(err, service.ErrSelfRoleChange), errors.Is(err, service.ErrSelfDeactivate), errors.Is(err, service.ErrSelfDelete):
+		return authError(c, fiber.StatusForbidden, err.Error(), "forbidden")
+	case errors.Is(err, service.ErrLastAdmin):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "last_admin"})
+	default:
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memproses data pengguna"})
+	}
 }
 
 func (r *Router) adminListProducts(c *fiber.Ctx) error {
