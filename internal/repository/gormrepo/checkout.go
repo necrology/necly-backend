@@ -118,11 +118,16 @@ func (s *Store) BeginCheckout(ctx context.Context, cmd service.CheckoutCommand) 
 		// The slot table was aliased `is`, which is a reserved word in Postgres:
 		// the query never parsed, so every checkout failed with SQLSTATE 42601
 		// before any order could be reserved.
+		//
+		// Only slots whose account is currently sellable count as capacity. The
+		// LEFT JOIN keeps prices with zero stock in the result so the quantity
+		// check below can report out-of-stock instead of not-found.
 		if err := tx.Table("product_prices pp").
-			Select("pp.*, p.name as product_name, pd.name as duration_name, count(sl.id) as slot_count").
+			Select("pp.*, p.name as product_name, pd.name as duration_name, count(a.id) as slot_count").
 			Joins("JOIN products p ON p.id = pp.product_id AND p.active = true").
 			Joins("JOIN product_durations pd ON pd.id = pp.duration_id").
 			Joins("LEFT JOIN inventory_slots sl ON sl.product_price_id = pp.id AND sl.status = 'available'").
+			Joins("LEFT JOIN inventory_accounts a ON a.id = sl.inventory_account_id AND a.status = 'active' AND (a.expires_at IS NULL OR a.expires_at > ?)", cmd.Now).
 			Where("pp.id IN ?", priceIDs).
 			Where("pp.active = ?", true).
 			Group("pp.id, p.name, pd.name").
@@ -178,6 +183,15 @@ func (s *Store) BeginCheckout(ctx context.Context, cmd service.CheckoutCommand) 
 		}
 		fingerprint := cmd.Fingerprint
 
+		// Lock every sellable account that owns candidate stock before taking
+		// slot locks. Admin deactivation/expiry takes FOR UPDATE on the account;
+		// FOR SHARE here serializes with it, so a status change committed first
+		// is visible to the slot query below and a checkout that wins the lock
+		// finishes against an account that was active at reservation time.
+		if err := lockSellableAccounts(tx, priceIDs, cmd.Now); err != nil {
+			return err
+		}
+
 		now := cmd.Now
 		order := &domain.Order{
 			ID:             uuid.NewString(),
@@ -210,8 +224,15 @@ func (s *Store) BeginCheckout(ctx context.Context, cmd service.CheckoutCommand) 
 				}
 			}
 			slots := make([]domain.InventorySlot, 0, item.Quantity)
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
-				Where("product_price_id = ? AND status = ?", item.ProductPriceID, "available").
+			// The account join is part of the reservation itself, not only the
+			// read path: an inactive or expired account can never be locked for an
+			// order even if its slots are still marked available.
+			if err := tx.Table("inventory_slots AS sl").
+				Select("sl.*").
+				Joins("JOIN inventory_accounts a ON a.id = sl.inventory_account_id AND a.status = 'active' AND (a.expires_at IS NULL OR a.expires_at > ?)", cmd.Now).
+				Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED", Table: clause.Table{Name: "sl"}}).
+				Where("sl.product_price_id = ? AND sl.status = ?", item.ProductPriceID, "available").
+				Order("sl.created_at ASC, sl.id ASC").
 				Limit(item.Quantity).
 				Find(&slots).Error; err != nil {
 				return fmt.Errorf("lock slots: %w", err)
@@ -279,6 +300,27 @@ func (s *Store) BeginCheckout(ctx context.Context, cmd service.CheckoutCommand) 
 		return nil, err
 	}
 	return result, nil
+}
+
+// lockSellableAccounts takes a shared row lock on every active, non-expired
+// account that currently owns available stock for the requested prices. It is
+// the serialization point between checkout reservation and admin lifecycle
+// changes (UpdateAccount locks the same row FOR UPDATE).
+func lockSellableAccounts(tx *gorm.DB, priceIDs []string, now time.Time) error {
+	candidateSlots := tx.Model(&domain.InventorySlot{}).
+		Select("inventory_account_id").
+		Where("product_price_id IN ? AND status = ?", priceIDs, "available")
+	var accounts []domain.InventoryAccount
+	if err := tx.Model(&domain.InventoryAccount{}).
+		Clauses(clause.Locking{Strength: "SHARE"}).
+		Where("status = ?", "active").
+		Where("expires_at IS NULL OR expires_at > ?", now).
+		Where("id IN (?)", candidateSlots).
+		Order("id").
+		Find(&accounts).Error; err != nil {
+		return fmt.Errorf("lock sellable accounts: %w", err)
+	}
+	return nil
 }
 
 func findByKey(tx *gorm.DB, userID, idempotencyKey string) (*domain.CheckoutAttempt, error) {

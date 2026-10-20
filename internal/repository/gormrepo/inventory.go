@@ -471,6 +471,11 @@ func (s *Store) FindAvailableSlots(ctx context.Context, productPriceID string, q
 	var slots []domain.InventorySlot
 	err := s.db.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
 		Where("product_price_id = ? AND status = ?", productPriceID, "available").
+		Where("inventory_account_id IN (?)", s.db.WithContext(ctx).Model(&domain.InventoryAccount{}).
+			Select("id").
+			Where("status = ?", "active").
+			Where("expires_at IS NULL OR expires_at > ?", now)).
+		Order("created_at ASC, id ASC").
 		Limit(quantity).
 		Find(&slots).Error
 	if err != nil {
