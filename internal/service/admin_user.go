@@ -115,16 +115,7 @@ func (s *AdminUserService) UpdateUser(ctx context.Context, actor AdminActor, id 
 		nextActive = *update.Active
 	}
 
-	if actor.UserID == id {
-		if nextRole != user.Role {
-			return nil, ErrSelfRoleChange
-		}
-		if user.Active && !nextActive {
-			return nil, ErrSelfDeactivate
-		}
-	}
-
-	if err := s.ensureActiveAdminRemains(ctx, user, nextRole, nextActive); err != nil {
+	if err := s.guardAdminMutation(ctx, actor.UserID, user, nextRole, nextActive); err != nil {
 		return nil, err
 	}
 
@@ -179,14 +170,8 @@ func (s *AdminUserService) DeleteUser(ctx context.Context, actor AdminActor, id 
 	if err != nil {
 		return err
 	}
-	if user.Role == domain.RoleAdmin && user.Active {
-		remaining, err := s.repo.CountActiveAdmins(ctx, id)
-		if err != nil {
-			return fmt.Errorf("count active admins: %w", err)
-		}
-		if remaining == 0 {
-			return ErrLastAdmin
-		}
+	if err := s.ensureActiveAdminRemains(ctx, user, false); err != nil {
+		return err
 	}
 
 	if err := s.repo.DeleteUser(ctx, id, time.Now().UTC()); err != nil {
@@ -208,14 +193,30 @@ func (s *AdminUserService) DeleteUser(ctx context.Context, actor AdminActor, id 
 	return nil
 }
 
-func (s *AdminUserService) ensureActiveAdminRemains(ctx context.Context, user *domain.User, nextRole domain.UserRole, nextActive bool) error {
+// guardAdminMutation is the single decision point for an admin access change.
+// actorID is passed explicitly instead of being read from ambient state so the
+// self-demotion and self-deactivation rules are evaluated against the real
+// authenticated operator, not against a caller-supplied target id.
+func (s *AdminUserService) guardAdminMutation(ctx context.Context, actorID string, user *domain.User, nextRole domain.UserRole, nextActive bool) error {
+	if actorID != "" && actorID == user.ID {
+		if nextRole != user.Role {
+			return ErrSelfRoleChange
+		}
+		if user.Active && !nextActive {
+			return ErrSelfDeactivate
+		}
+	}
+	return s.ensureActiveAdminRemains(ctx, user, nextRole == domain.RoleAdmin && nextActive)
+}
+
+func (s *AdminUserService) ensureActiveAdminRemains(ctx context.Context, user *domain.User, remainsActiveAdmin bool) error {
 	// Only a currently active administrator can reduce the pool. A customer or
 	// seller can never trigger the last-admin rule, and an already inactive
 	// admin does not count toward it.
 	if user.Role != domain.RoleAdmin || !user.Active {
 		return nil
 	}
-	if nextRole == domain.RoleAdmin && nextActive {
+	if remainsActiveAdmin {
 		return nil
 	}
 	remaining, err := s.repo.CountActiveAdmins(ctx, user.ID)

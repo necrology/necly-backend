@@ -16,7 +16,7 @@ func TestServiceErrors_LocalizedMessages(t *testing.T) {
 	assert.Equal(t, "Email belum diverifikasi. Silakan periksa kotak masuk atau spam Anda.", service.ErrEmailNotVerified.Error())
 	assert.Equal(t, "Slot akun langganan tidak mencukupi atau sedang habis", service.ErrOutOfStock.Error())
 	assert.Equal(t, "Perubahan status pesanan tidak valid", service.ErrInvalidTransition.Error())
-	assert.Equal(t, "Tidak dapat menghapus atau menonaktifkan admin aktif terakhir", service.ErrLastAdmin.Error())
+	assert.Equal(t, "Tidak dapat menghapus, menonaktifkan, atau menurunkan admin aktif terakhir", service.ErrLastAdmin.Error())
 }
 
 func TestVoucherErrors_LocalizedMessages(t *testing.T) {
