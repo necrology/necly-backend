@@ -1304,7 +1304,10 @@ func (r *Router) updateUser(c *fiber.Ctx) error {
 		Email:  input.Email,
 		Active: input.Active,
 	}
-	if input.Role != nil && *input.Role != "" {
+	// An omitted role stays nil (no-op), but an explicitly empty string is a
+	// value, not an omission. Let the service reject it as invalid input
+	// instead of silently treating it as "unchanged".
+	if input.Role != nil {
 		role := domain.UserRole(*input.Role)
 		update.Role = &role
 	}

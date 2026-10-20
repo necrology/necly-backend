@@ -15,7 +15,7 @@ var (
 	ErrSelfDelete     = errors.New("Admin tidak dapat menghapus akunnya sendiri")
 	// ErrLastAdmin is the final backstop: no request may leave the system with
 	// zero active administrators.
-	ErrLastAdmin        = errors.New("Tidak dapat menghapus admin aktif terakhir")
+	ErrLastAdmin        = errors.New("Tidak dapat menghapus atau menonaktifkan admin aktif terakhir")
 	ErrEmailNotVerified = errors.New("Email belum diverifikasi. Silakan periksa kotak masuk atau spam Anda.")
 	ErrAlreadyVerified  = errors.New("Email sudah diverifikasi. Silakan masuk menggunakan kata sandi Anda.")
 	// ErrMailUnavailable is returned when production email delivery is not
