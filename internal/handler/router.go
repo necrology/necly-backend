@@ -1352,7 +1352,7 @@ func adminUserError(c *fiber.Ctx, err error) error {
 	case errors.Is(err, service.ErrConflict):
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Email sudah digunakan oleh akun lain", "code": "conflict"})
 	case errors.Is(err, service.ErrSelfRoleChange), errors.Is(err, service.ErrSelfDeactivate), errors.Is(err, service.ErrSelfDelete):
-		return authError(c, fiber.StatusForbidden, err.Error(), "forbidden")
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error(), "code": "invalid_input"})
 	case errors.Is(err, service.ErrLastAdmin):
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "last_admin"})
 	default:

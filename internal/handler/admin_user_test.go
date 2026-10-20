@@ -201,8 +201,8 @@ func TestAdminUpdateUser_RejectsSelfDemotion(t *testing.T) {
 	}, nil)
 
 	status, payload := adminRequest(t, app, token, http.MethodPatch, "/api/v1/admin/users/"+adminID, `{"role":"customer"}`)
-	assert.Equal(t, fiber.StatusForbidden, status)
-	assert.Equal(t, "forbidden", payload["code"])
+	assert.Equal(t, fiber.StatusBadRequest, status)
+	assert.Equal(t, "invalid_input", payload["code"])
 	userRepo.AssertNotCalled(t, "ApplyUserUpdate", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
 
@@ -216,8 +216,8 @@ func TestAdminUpdateUser_RejectsSelfDeactivation(t *testing.T) {
 	}, nil)
 
 	status, payload := adminRequest(t, app, token, http.MethodPatch, "/api/v1/admin/users/"+adminID, `{"active":false}`)
-	assert.Equal(t, fiber.StatusForbidden, status)
-	assert.Equal(t, "forbidden", payload["code"])
+	assert.Equal(t, fiber.StatusBadRequest, status)
+	assert.Equal(t, "invalid_input", payload["code"])
 	userRepo.AssertNotCalled(t, "ApplyUserUpdate", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
 
@@ -233,6 +233,23 @@ func TestAdminUpdateUser_RejectsLastActiveAdmin(t *testing.T) {
 	userRepo.On("CountActiveAdmins", mock.Anything, targetID).Return(int64(0), nil)
 
 	status, payload := adminRequest(t, app, token, http.MethodPatch, "/api/v1/admin/users/"+targetID, `{"role":"customer"}`)
+	assert.Equal(t, fiber.StatusConflict, status)
+	assert.Equal(t, "last_admin", payload["code"])
+	userRepo.AssertNotCalled(t, "ApplyUserUpdate", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestAdminUpdateUser_RejectsDeactivatingLastActiveAdmin(t *testing.T) {
+	app, authRepo, userRepo, _, tokens := newAdminUserApp(t)
+	adminID := uuid.NewString()
+	targetID := uuid.NewString()
+	expectActiveSession(authRepo, adminID, "session-admin", domain.RoleAdmin)
+	token, _ := tokens.IssueAccess(adminID, string(domain.RoleAdmin), "session-admin")
+	userRepo.On("GetUserByID", mock.Anything, targetID).Return(&domain.User{
+		ID: targetID, Email: "target@test.com", Role: domain.RoleAdmin, Active: true,
+	}, nil)
+	userRepo.On("CountActiveAdmins", mock.Anything, targetID).Return(int64(0), nil)
+
+	status, payload := adminRequest(t, app, token, http.MethodPatch, "/api/v1/admin/users/"+targetID, `{"active":false}`)
 	assert.Equal(t, fiber.StatusConflict, status)
 	assert.Equal(t, "last_admin", payload["code"])
 	userRepo.AssertNotCalled(t, "ApplyUserUpdate", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
@@ -273,8 +290,8 @@ func TestAdminDeleteUser_RejectsSelfDelete(t *testing.T) {
 	token, _ := tokens.IssueAccess(adminID, string(domain.RoleAdmin), "session-admin")
 
 	status, payload := adminRequest(t, app, token, http.MethodDelete, "/api/v1/admin/users/"+adminID, "")
-	assert.Equal(t, fiber.StatusForbidden, status)
-	assert.Equal(t, "forbidden", payload["code"])
+	assert.Equal(t, fiber.StatusBadRequest, status)
+	assert.Equal(t, "invalid_input", payload["code"])
 	userRepo.AssertNotCalled(t, "DeleteUser", mock.Anything, mock.Anything, mock.Anything)
 }
 
