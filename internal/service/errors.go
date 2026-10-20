@@ -54,4 +54,12 @@ var (
 	// ErrPaymentChannelNotEligible is reserved for a future server-side
 	// method/duration rule. It is not applied until Q1 is approved.
 	ErrPaymentChannelNotEligible = errors.New("Metode pembayaran tidak tersedia untuk durasi pesanan ini")
+	// ErrOrderNotApproved protects account delivery: credentials may only be
+	// decrypted and emailed after an administrator has moved the order to
+	// processing (or a later fulfilment state). A paid webhook alone is not an
+	// approval.
+	ErrOrderNotApproved = errors.New("Pesanan belum disetujui admin untuk pengiriman akun")
+	// ErrDeliveryNotFound means the delivery row does not belong to the named
+	// order, which also keeps cross-order probing out of the detail endpoint.
+	ErrDeliveryNotFound = errors.New("Status pengiriman tidak ditemukan")
 )

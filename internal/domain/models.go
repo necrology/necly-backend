@@ -265,9 +265,13 @@ type Order struct {
 	Payments           []Payment   `json:"payments,omitempty" gorm:"foreignKey:OrderID"`
 	// Customer backs the admin order list and dashboard, both of which preload
 	// it. Reads that do not preload simply omit the field.
-	Customer  *User     `json:"customer,omitempty" gorm:"foreignKey:UserID"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Customer *User `json:"customer,omitempty" gorm:"foreignKey:UserID"`
+	// Deliveries is populated only by the admin delivery read paths. The
+	// storefront order read does not preload it, so buyers never see internal
+	// delivery rows by accident.
+	Deliveries []OrderDelivery `json:"deliveries,omitempty" gorm:"foreignKey:OrderID"`
+	CreatedAt  time.Time       `json:"created_at"`
+	UpdatedAt  time.Time       `json:"updated_at"`
 }
 
 type OrderItem struct {
@@ -280,6 +284,32 @@ type OrderItem struct {
 	Quantity       int    `json:"quantity" gorm:"not null"`
 	DeviceCount    int    `json:"device_count" gorm:"not null;default:1"`
 	LineTotal      int64  `json:"line_total" gorm:"not null"`
+}
+
+// Order delivery states. A row is created as pending, moved to sending while
+// the mailer is called, and then committed as sent or failed. Only "sent" is
+// terminal for the automatic path; an administrator may retry a failed row.
+const (
+	DeliveryPending = "pending"
+	DeliverySending = "sending"
+	DeliverySent    = "sent"
+	DeliveryFailed  = "failed"
+)
+
+// OrderDelivery is the per-order-item delivery ledger. It deliberately stores
+// no credentials: the service decrypts inventory credentials only in memory
+// while composing the email and persists nothing but the outcome.
+type OrderDelivery struct {
+	ID            string     `json:"id" gorm:"type:uuid;primaryKey"`
+	OrderID       string     `json:"order_id" gorm:"type:uuid;not null;index"`
+	OrderItemID   string     `json:"order_item_id" gorm:"type:uuid;not null;uniqueIndex"`
+	Status        string     `json:"status" gorm:"size:24;not null;default:pending;index"`
+	Attempts      int        `json:"attempts" gorm:"not null;default:0"`
+	ErrorCode     *string    `json:"error_code,omitempty" gorm:"size:64"`
+	SentAt        *time.Time `json:"sent_at,omitempty"`
+	LastAttemptAt *time.Time `json:"last_attempt_at,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 type Payment struct {

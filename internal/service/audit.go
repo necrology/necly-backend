@@ -41,6 +41,13 @@ const (
 	AuditAdminUserActivated      = "admin.user.activated"
 	AuditAdminUserDeactivated    = "admin.user.deactivated"
 	AuditAdminUserDeleted        = "admin.user.deleted"
+
+	// Action names emitted by account delivery. Metadata carries the order,
+	// order item, delivery id and error code only. Credentials and rendered
+	// email bodies are never written to the audit log.
+	AuditOrderDeliverySent    = "admin.order.delivery_sent"
+	AuditOrderDeliveryFailed  = "admin.order.delivery_failed"
+	AuditOrderDeliveryRetried = "admin.order.delivery_retried"
 )
 
 // record is deliberately fire-and-forget: an audit write must never turn a
