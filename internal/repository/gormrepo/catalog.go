@@ -63,7 +63,7 @@ func activePricePreload(db *gorm.DB) *gorm.DB {
 	return db.Where("active = ?", true)
 }
 
-func applyProductFilters(query *gorm.DB, filter service.ProductFilter) *gorm.DB {
+func applyProductFilters(query *gorm.DB, filter service.ProductFilter, now time.Time) *gorm.DB {
 	query = query.Where("deleted_at IS NULL")
 	if filter.Active != nil {
 		query = query.Where("active = ?", *filter.Active)
@@ -94,9 +94,44 @@ func applyProductFilters(query *gorm.DB, filter service.ProductFilter) *gorm.DB 
 		query = query.Where(predicate, args...)
 	}
 	if filter.InStock {
-		query = query.Where("EXISTS (SELECT 1 FROM inventory_slots s JOIN product_prices pp ON pp.id = s.product_price_id WHERE pp.product_id = products.id AND pp.active = TRUE AND s.status = 'available')")
+		// Capacity is sellable only while the slot's account is active and not
+		// expired. Without this join the storefront advertises stock that
+		// checkout and delivery both refuse.
+		query = query.Where(`EXISTS (
+			SELECT 1 FROM inventory_slots s
+			JOIN product_prices pp ON pp.id = s.product_price_id
+			JOIN inventory_accounts a ON a.id = s.inventory_account_id
+			WHERE pp.product_id = products.id AND pp.active = TRUE AND s.status = 'available'
+			AND a.status = 'active' AND (a.expires_at IS NULL OR a.expires_at > ?))`, now)
 	}
 	return query
+}
+
+// availableSlotCounts counts the sellable slots for each price. It is shared by
+// the list and detail storefront reads so both apply the exact same account
+// lifecycle rule as checkout.
+func (s *Store) availableSlotCounts(ctx context.Context, priceIDs []string, now time.Time) (map[string]int, error) {
+	counts := make(map[string]int, len(priceIDs))
+	if len(priceIDs) == 0 {
+		return counts, nil
+	}
+	type slotCount struct {
+		ProductPriceID string
+		Count          int
+	}
+	var rows []slotCount
+	if err := s.db.WithContext(ctx).Table("inventory_slots AS s").
+		Select("s.product_price_id, COUNT(*) AS count").
+		Joins("JOIN inventory_accounts a ON a.id = s.inventory_account_id").
+		Where("s.product_price_id IN ? AND s.status = ? AND a.status = ? AND (a.expires_at IS NULL OR a.expires_at > ?)", priceIDs, "available", "active", now).
+		Group("s.product_price_id").
+		Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("count available slots: %w", err)
+	}
+	for _, row := range rows {
+		counts[row.ProductPriceID] = row.Count
+	}
+	return counts, nil
 }
 
 func sortPricesByDuration(prices []domain.ProductPrice) {
@@ -265,7 +300,7 @@ func (s *Store) ListProducts(ctx context.Context, filter service.ProductFilter, 
 	}
 	query := applyProductFilters(
 		s.db.WithContext(ctx).Model(&domain.Product{}).Preload("Category").Preload("Prices.Duration"),
-		filter,
+		filter, s.nowUTC(),
 	)
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
@@ -435,7 +470,7 @@ func (s *Store) ListProductsWithStock(ctx context.Context, filter service.Produc
 			Preload("Category").
 			Preload("Prices", activePricePreload).
 			Preload("Prices.Duration"),
-		filter,
+		filter, s.nowUTC(),
 	)
 
 	var total int64
@@ -457,23 +492,9 @@ func (s *Store) ListProductsWithStock(ctx context.Context, filter service.Produc
 		}
 	}
 
-	slotCountMap := map[string]int{}
-	if len(priceIDs) > 0 {
-		type slotCount struct {
-			ProductPriceID string
-			Count          int
-		}
-		var slotCounts []slotCount
-		if err := s.db.WithContext(ctx).Model(&domain.InventorySlot{}).
-			Select("product_price_id, COUNT(*) as count").
-			Where("product_price_id IN ? AND status = ?", priceIDs, "available").
-			Group("product_price_id").
-			Scan(&slotCounts).Error; err != nil {
-			return nil, 0, fmt.Errorf("count available slots: %w", err)
-		}
-		for _, count := range slotCounts {
-			slotCountMap[count.ProductPriceID] = count.Count
-		}
+	slotCountMap, err := s.availableSlotCounts(ctx, priceIDs, s.nowUTC())
+	if err != nil {
+		return nil, 0, err
 	}
 
 	results := make([]domain.ProductWithStock, len(products))
@@ -542,23 +563,9 @@ func (s *Store) productWithStock(ctx context.Context, p domain.Product) (*domain
 		priceIDs = append(priceIDs, price.ID)
 	}
 
-	slotCountMap := map[string]int{}
-	if len(priceIDs) > 0 {
-		type slotCount struct {
-			ProductPriceID string
-			Count          int
-		}
-		var slotCounts []slotCount
-		if err := s.db.WithContext(ctx).Model(&domain.InventorySlot{}).
-			Select("product_price_id, COUNT(*) as count").
-			Where("product_price_id IN ? AND status = ?", priceIDs, "available").
-			Group("product_price_id").
-			Scan(&slotCounts).Error; err != nil {
-			return nil, fmt.Errorf("count available slots: %w", err)
-		}
-		for _, count := range slotCounts {
-			slotCountMap[count.ProductPriceID] = count.Count
-		}
+	slotCountMap, err := s.availableSlotCounts(ctx, priceIDs, s.nowUTC())
+	if err != nil {
+		return nil, err
 	}
 
 	pricesWithStock := make([]domain.ProductPriceWithStock, len(p.Prices))
