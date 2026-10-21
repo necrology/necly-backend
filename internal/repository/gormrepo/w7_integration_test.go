@@ -325,26 +325,26 @@ func TestW7AdminProductCRUDUsesSharedErrors(t *testing.T) {
 	svc := service.NewAdminProductService(fixture.store)
 	category := "0192f0a2-0000-0000-0000-000000000001"
 
-	created, err := svc.CreateProduct(ctx, category, "Produk Baru", "produk-baru", "deskripsi", "")
+	created, err := svc.CreateProduct(ctx, category, "Produk Baru", "produk-baru", "deskripsi", "", false)
 	if err != nil {
 		t.Fatalf("create with free slug: %v", err)
 	}
 	if created.ID == "" || created.Slug != "produk-baru" {
 		t.Fatalf("created product = %#v", created)
 	}
-	if _, err := svc.CreateProduct(ctx, category, "Produk Lain", "produk-baru", "", ""); !errors.Is(err, service.ErrConflict) {
+	if _, err := svc.CreateProduct(ctx, category, "Produk Lain", "produk-baru", "", "", false); !errors.Is(err, service.ErrConflict) {
 		t.Fatalf("duplicate slug error = %v, want ErrConflict", err)
 	}
-	updated, err := svc.UpdateProduct(ctx, created.ID, "", "Produk Baru", "slug-baru", "", "", nil)
+	updated, err := svc.UpdateProduct(ctx, created.ID, "", "Produk Baru", "slug-baru", "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("update with free slug: %v", err)
 	}
 	// Re-submitting the product's own slug is a normal edit (name/status), not
 	// a duplicate conflict and never a nil-wrapped error.
-	if _, err := svc.UpdateProduct(ctx, updated.ID, "", "Nama Baru", updated.Slug, "", "", nil); err != nil {
+	if _, err := svc.UpdateProduct(ctx, updated.ID, "", "Nama Baru", updated.Slug, "", nil, nil, nil); err != nil {
 		t.Fatalf("update with unchanged slug: %v", err)
 	}
-	if _, err := svc.UpdateProduct(ctx, uuid.NewString(), "", "", "slug-lain", "", "", nil); !errors.Is(err, service.ErrNotFound) {
+	if _, err := svc.UpdateProduct(ctx, uuid.NewString(), "", "", "slug-lain", "", nil, nil, nil); !errors.Is(err, service.ErrNotFound) {
 		t.Fatalf("update missing product error = %v, want ErrNotFound", err)
 	}
 	if err := svc.DeleteProduct(ctx, uuid.NewString()); !errors.Is(err, service.ErrNotFound) {
@@ -353,10 +353,10 @@ func TestW7AdminProductCRUDUsesSharedErrors(t *testing.T) {
 	if _, err := svc.GetProduct(ctx, uuid.NewString()); !errors.Is(err, service.ErrNotFound) {
 		t.Fatalf("get missing product error = %v, want ErrNotFound", err)
 	}
-	if _, err := svc.CreateProduct(ctx, "Streaming", "Nama", "slug-streaming", "", ""); !errors.Is(err, service.ErrInvalidInput) {
+	if _, err := svc.CreateProduct(ctx, "Streaming", "Nama", "slug-streaming", "", "", false); !errors.Is(err, service.ErrInvalidInput) {
 		t.Fatalf("malformed category error = %v, want ErrInvalidInput", err)
 	}
-	if _, err := svc.CreateProduct(ctx, uuid.NewString(), "Nama", "slug-unknown-category", "", ""); !errors.Is(err, service.ErrInvalidInput) {
+	if _, err := svc.CreateProduct(ctx, uuid.NewString(), "Nama", "slug-unknown-category", "", "", false); !errors.Is(err, service.ErrInvalidInput) {
 		t.Fatalf("unknown category error = %v, want ErrInvalidInput", err)
 	}
 

@@ -1397,6 +1397,7 @@ func (r *Router) adminCreateProduct(c *fiber.Ctx) error {
 		Slug        string `json:"slug"`
 		Description string `json:"description"`
 		ImageURL    string `json:"image_url"`
+		ComingSoon  bool   `json:"coming_soon"`
 	}
 	if err := c.BodyParser(&input); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
@@ -1405,7 +1406,7 @@ func (r *Router) adminCreateProduct(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
 	defer cancel()
 
-	product, err := r.adminProductSvc.CreateProduct(ctx, input.CategoryID, input.Name, input.Slug, input.Description, input.ImageURL)
+	product, err := r.adminProductSvc.CreateProduct(ctx, input.CategoryID, input.Name, input.Slug, input.Description, input.ImageURL, input.ComingSoon)
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidInput) {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error(), "code": "invalid_input"})
@@ -1423,12 +1424,13 @@ func (r *Router) adminUpdateProduct(c *fiber.Ctx) error {
 	id := c.Params("id")
 
 	var input struct {
-		CategoryID  string `json:"category_id"`
-		Name        string `json:"name"`
-		Slug        string `json:"slug"`
-		Description string `json:"description"`
-		ImageURL    string `json:"image_url"`
-		Active      *bool  `json:"active"`
+		CategoryID  string  `json:"category_id"`
+		Name        string  `json:"name"`
+		Slug        string  `json:"slug"`
+		Description string  `json:"description"`
+		ImageURL    *string `json:"image_url"`
+		Active      *bool   `json:"active"`
+		ComingSoon  *bool   `json:"coming_soon"`
 	}
 	if err := c.BodyParser(&input); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid"})
@@ -1437,7 +1439,7 @@ func (r *Router) adminUpdateProduct(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
 	defer cancel()
 
-	product, err := r.adminProductSvc.UpdateProduct(ctx, id, input.CategoryID, input.Name, input.Slug, input.Description, input.ImageURL, input.Active)
+	product, err := r.adminProductSvc.UpdateProduct(ctx, id, input.CategoryID, input.Name, input.Slug, input.Description, input.ImageURL, input.Active, input.ComingSoon)
 	if err != nil {
 		if errors.Is(err, service.ErrNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Produk langganan tidak ditemukan", "code": "not_found"})

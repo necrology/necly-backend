@@ -120,7 +120,7 @@ func (s *Store) BeginCheckout(ctx context.Context, cmd service.CheckoutCommand) 
 		// before any order could be reserved.
 		if err := tx.Table("product_prices pp").
 			Select("pp.*, p.name as product_name, pd.name as duration_name, count(sl.id) as slot_count").
-			Joins("JOIN products p ON p.id = pp.product_id AND p.active = true").
+			Joins("JOIN products p ON p.id = pp.product_id AND p.active = true AND p.coming_soon = FALSE").
 			Joins("JOIN product_durations pd ON pd.id = pp.duration_id").
 			Joins("LEFT JOIN inventory_slots sl ON sl.product_price_id = pp.id AND sl.status = 'available'").
 			Where("pp.id IN ?", priceIDs).

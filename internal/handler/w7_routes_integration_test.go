@@ -190,4 +190,74 @@ func TestW7AdminCatalogRoutesExerciseTheRealStore(t *testing.T) {
 	if status != fiber.StatusBadRequest {
 		t.Fatalf("malformed category active filter = %d %s, want 400", status, payload)
 	}
+
+	// NEC-89: coming_soon and image_url must round-trip through the admin DTO,
+	// accept an explicit empty image_url as "clear", and reject the
+	// contradictory coming-soon + inactive state.
+	status, payload = do(http.MethodPost, "/api/v1/admin/products", map[string]any{
+		"category_id": categoryID,
+		"name":        "Produk Coming Soon",
+		"slug":        "produk-coming-soon",
+		"image_url":   "https://cdn.example.test/old.jpg",
+		"coming_soon": true,
+	})
+	if status != fiber.StatusCreated {
+		t.Fatalf("create coming soon = %d %s, want 201", status, payload)
+	}
+	var comingSoon domain.Product
+	if err := json.Unmarshal(payload, &comingSoon); err != nil {
+		t.Fatal(err)
+	}
+	if !comingSoon.ComingSoon || comingSoon.ImageURL != "https://cdn.example.test/old.jpg" {
+		t.Fatalf("created coming soon product = %#v", comingSoon)
+	}
+
+	status, payload = do(http.MethodPatch, "/api/v1/admin/products/"+comingSoon.ID, map[string]any{
+		"image_url": "",
+	})
+	if status != fiber.StatusOK {
+		t.Fatalf("clear image = %d %s, want 200", status, payload)
+	}
+	if err := json.Unmarshal(payload, &comingSoon); err != nil {
+		t.Fatal(err)
+	}
+	if comingSoon.ImageURL != "" || !comingSoon.ComingSoon {
+		t.Fatalf("cleared coming soon product = %#v", comingSoon)
+	}
+
+	status, payload = do(http.MethodPatch, "/api/v1/admin/products/"+comingSoon.ID, map[string]any{
+		"active": false,
+	})
+	if status != fiber.StatusBadRequest {
+		t.Fatalf("deactivate coming soon = %d %s, want 400", status, payload)
+	}
+	invalid = struct {
+		Code string `json:"code"`
+	}{}
+	_ = json.Unmarshal(payload, &invalid)
+	if invalid.Code != "invalid_input" {
+		t.Fatalf("deactivate coming soon code = %q, want invalid_input (%s)", invalid.Code, payload)
+	}
+
+	status, payload = do(http.MethodPatch, "/api/v1/admin/products/"+comingSoon.ID, map[string]any{
+		"active":      false,
+		"coming_soon": false,
+	})
+	if status != fiber.StatusOK {
+		t.Fatalf("deactivate after clearing coming soon = %d %s, want 200", status, payload)
+	}
+
+	status, payload = do(http.MethodPatch, "/api/v1/admin/products/"+comingSoon.ID, map[string]any{
+		"coming_soon": true,
+	})
+	if status != fiber.StatusBadRequest {
+		t.Fatalf("coming soon on inactive product = %d %s, want 400", status, payload)
+	}
+	invalid = struct {
+		Code string `json:"code"`
+	}{}
+	_ = json.Unmarshal(payload, &invalid)
+	if invalid.Code != "invalid_input" {
+		t.Fatalf("coming soon on inactive code = %q, want invalid_input (%s)", invalid.Code, payload)
+	}
 }

@@ -149,7 +149,7 @@ func TestAdminProductService_CreateProduct(t *testing.T) {
 		assert.True(t, product.Active)
 	})
 
-	product, err := svc.CreateProduct(ctx, categoryID, name, slug, "Description", "image.jpg")
+	product, err := svc.CreateProduct(ctx, categoryID, name, slug, "Description", "image.jpg", false)
 	assert.NoError(t, err)
 	assert.Equal(t, name, product.Name)
 	assert.Equal(t, slug, product.Slug)
@@ -166,7 +166,7 @@ func TestAdminProductService_CreateProduct_DuplicateSlug(t *testing.T) {
 
 	repo.On("GetProductBySlug", ctx, slug).Return(existing, nil)
 
-	_, err := svc.CreateProduct(ctx, uuid.NewString(), "Name", slug, "", "")
+	_, err := svc.CreateProduct(ctx, uuid.NewString(), "Name", slug, "", "", false)
 	assert.Error(t, err)
 	assert.Equal(t, ErrConflict, err)
 	repo.AssertExpectations(t)
@@ -190,13 +190,135 @@ func TestAdminProductService_UpdateProduct(t *testing.T) {
 	})
 
 	active := false
-	product, err := svc.UpdateProduct(ctx, id, "", "New Name", "new-slug", "", "", &active)
+	product, err := svc.UpdateProduct(ctx, id, "", "New Name", "new-slug", "", nil, &active, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, "New Name", product.Name)
 	assert.Equal(t, "new-slug", product.Slug)
 	assert.False(t, product.Active)
 	repo.AssertExpectations(t)
 }
+
+func TestAdminProductService_CreateProduct_ComingSoon(t *testing.T) {
+	ctx := context.Background()
+	repo := new(mockAdminProductRepository)
+	svc := NewAdminProductService(repo)
+
+	categoryID := uuid.NewString()
+	slug := "coming-soon-product"
+
+	repo.On("GetProductBySlug", ctx, slug).Return(nil, ErrNotFound)
+	repo.On("CreateProduct", ctx, mock.AnythingOfType("*domain.Product")).Return(nil).Run(func(args mock.Arguments) {
+		product := args.Get(1).(*domain.Product)
+		assert.True(t, product.ComingSoon)
+		assert.True(t, product.Active)
+		assert.Equal(t, "https://cdn.example.test/coming-soon.jpg", product.ImageURL)
+	})
+
+	product, err := svc.CreateProduct(ctx, categoryID, "Coming Soon", slug, "", "https://cdn.example.test/coming-soon.jpg", true)
+	assert.NoError(t, err)
+	assert.True(t, product.ComingSoon)
+	repo.AssertExpectations(t)
+}
+
+func TestAdminProductService_UpdateProduct_PointerFields(t *testing.T) {
+	ctx := context.Background()
+	repo := new(mockAdminProductRepository)
+	svc := NewAdminProductService(repo)
+
+	id := uuid.NewString()
+	existing := &domain.Product{ID: id, Name: "Old", Slug: "old", CategoryID: uuid.NewString(), Active: true, ImageURL: "old.jpg"}
+
+	repo.On("GetProductByID", ctx, id).Return(existing, nil)
+	repo.On("UpdateProduct", ctx, mock.AnythingOfType("*domain.Product")).Return(nil).Run(func(args mock.Arguments) {
+		product := args.Get(1).(*domain.Product)
+		assert.Equal(t, "new.jpg", product.ImageURL)
+		assert.True(t, product.ComingSoon)
+		assert.True(t, product.Active)
+	})
+
+	newImage := "new.jpg"
+	comingSoon := true
+	product, err := svc.UpdateProduct(ctx, id, "", "", "", "", &newImage, nil, &comingSoon)
+	assert.NoError(t, err)
+	assert.Equal(t, "new.jpg", product.ImageURL)
+	assert.True(t, product.ComingSoon)
+	assert.True(t, product.Active)
+	repo.AssertExpectations(t)
+}
+
+func TestAdminProductService_UpdateProduct_ClearsImageAndPreservesOmittedFields(t *testing.T) {
+	ctx := context.Background()
+	repo := new(mockAdminProductRepository)
+	svc := NewAdminProductService(repo)
+
+	id := uuid.NewString()
+	existing := &domain.Product{ID: id, Name: "Old", Slug: "old", CategoryID: uuid.NewString(), Active: true, ImageURL: "old.jpg", ComingSoon: true}
+
+	repo.On("GetProductByID", ctx, id).Return(existing, nil)
+	repo.On("UpdateProduct", ctx, mock.AnythingOfType("*domain.Product")).Return(nil).Run(func(args mock.Arguments) {
+		product := args.Get(1).(*domain.Product)
+		assert.Equal(t, "", product.ImageURL)
+		assert.True(t, product.ComingSoon)
+		assert.True(t, product.Active)
+		assert.Equal(t, "Old", product.Name)
+	})
+
+	empty := ""
+	product, err := svc.UpdateProduct(ctx, id, "", "", "", "", &empty, nil, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, "", product.ImageURL)
+	assert.True(t, product.ComingSoon)
+	assert.True(t, product.Active)
+	repo.AssertExpectations(t)
+}
+
+func TestAdminProductService_UpdateProduct_RejectsComingSoonOnInactiveProduct(t *testing.T) {
+	cases := []struct {
+		name       string
+		existing   *domain.Product
+		active     *bool
+		comingSoon *bool
+	}{
+		{
+			name:       "only coming_soon on already inactive product",
+			existing:   &domain.Product{Active: false, ComingSoon: false},
+			comingSoon: boolPtr(true),
+		},
+		{
+			name:       "coming_soon and active=false together",
+			existing:   &domain.Product{Active: true, ComingSoon: false},
+			active:     boolPtr(false),
+			comingSoon: boolPtr(true),
+		},
+		{
+			name:     "deactivating a coming soon product",
+			existing: &domain.Product{Active: true, ComingSoon: true},
+			active:   boolPtr(false),
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx := context.Background()
+			repo := new(mockAdminProductRepository)
+			svc := NewAdminProductService(repo)
+
+			id := uuid.NewString()
+			existing := *testCase.existing
+			existing.ID = id
+			existing.Slug = "existing"
+			existing.CategoryID = uuid.NewString()
+			repo.On("GetProductByID", ctx, id).Return(&existing, nil)
+
+			_, err := svc.UpdateProduct(ctx, id, "", "", "", "", nil, testCase.active, testCase.comingSoon)
+			assert.ErrorIs(t, err, ErrInvalidInput)
+			repo.AssertNotCalled(t, "UpdateProduct", mock.Anything, mock.Anything)
+			repo.AssertExpectations(t)
+		})
+	}
+}
+
+func boolPtr(value bool) *bool { return &value }
 
 func TestAdminProductService_DeleteProduct(t *testing.T) {
 	ctx := context.Background()

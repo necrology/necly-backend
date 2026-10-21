@@ -91,6 +91,11 @@ type Product struct {
 	Description string    `json:"description"`
 	ImageURL    string    `json:"image_url"`
 	Active      bool      `json:"active" gorm:"not null;default:true;index"`
+	// ComingSoon marks a product that is visible in the catalog but cannot be
+	// purchased yet. It is stored separately from Active: an inactive product
+	// stays hidden, while an active coming-soon product is shown with the flag
+	// and rejected by checkout.
+	ComingSoon bool `json:"coming_soon" gorm:"not null;default:false"`
 	// Labels and DeviceOptions are authored by administrators (migrations
 	// 006/007). They are part of the product DTO so the admin catalog reflects
 	// the stored configuration instead of silently dropping the columns.
