@@ -70,6 +70,7 @@ type Router struct {
 	adminVoucherSvc   *service.AdminVoucherService
 	adminInventorySvc *service.AdminInventoryService
 	orderDeliverySvc  *service.OrderDeliveryService
+	accountOTPSvc     *service.AccountOTPService
 	reportSvc         *service.ReportService
 	testimonialSvc    *service.TestimonialService
 	tokens            *service.TokenManager
@@ -117,6 +118,11 @@ func (r *Router) SetOAuthStateStore(store OAuthStateStore) { r.oauthStates = sto
 // than a NewRouter parameter so existing router tests keep their compact
 // constructor; a nil service simply leaves the delivery routes disabled.
 func (r *Router) SetDeliveryService(svc *service.OrderDeliveryService) { r.orderDeliverySvc = svc }
+
+// SetAccountOTPService wires the public email-OTP lookup. A nil service keeps
+// the lookup route disabled so a deployment without a mailbox cannot pretend
+// to retrieve codes.
+func (r *Router) SetAccountOTPService(svc *service.AccountOTPService) { r.accountOTPSvc = svc }
 
 func NewRouter(authSvc *service.AuthService, catalogSvc *service.CatalogService, cartSvc *service.CartService, checkoutSvc *service.CheckoutService, webhookSvc *service.WebhookService, orderSvc *service.OrderService, adminSvc *service.AdminDashboardService, adminUserSvc *service.AdminUserService, adminProductSvc *service.AdminProductService, adminCategorySvc *service.AdminCategoryService, adminOrderSvc *service.AdminOrderService, adminVoucherSvc *service.AdminVoucherService, adminInventorySvc *service.AdminInventoryService, tokens *service.TokenManager, cipher *service.CredentialCipher, redis *redis.Client, reportSvc *service.ReportService, testimonialSvc *service.TestimonialService) *Router {
 	r := &Router{authSvc: authSvc, catalogSvc: catalogSvc, cartSvc: cartSvc, checkoutSvc: checkoutSvc, webhookSvc: webhookSvc, orderSvc: orderSvc, adminSvc: adminSvc, adminUserSvc: adminUserSvc, adminProductSvc: adminProductSvc, adminCategorySvc: adminCategorySvc, adminOrderSvc: adminOrderSvc, adminVoucherSvc: adminVoucherSvc, adminInventorySvc: adminInventorySvc, reportSvc: reportSvc, testimonialSvc: testimonialSvc, tokens: tokens, cipher: cipher, redis: redis, authCookies: defaultAuthCookiePolicy()}
@@ -189,6 +195,10 @@ func (r *Router) registerPublic(api fiber.Router) {
 	// QA baris 55-57: "Laporan Kendala" is filed by visitors who are not signed
 	// in yet, so it sits with the other public routes.
 	public.Post("/reports", r.createReport)
+	// Email-OTP retrieval: the buyer proves ownership with the account email and
+	// the short-lived code generated from the order page. No session is needed
+	// because the customer may be signing in on another device.
+	public.Post("/account-otp/lookup", r.lookupAccountOTP)
 	// QA poin 16: halaman "Testimoni" reads the approved reviews. Public because
 	// the page is reachable without signing in.
 	public.Get("/testimonials", r.listTestimonials)
@@ -227,6 +237,9 @@ func (r *Router) registerProtected(api fiber.Router) {
 	protected.Post("/checkout", r.checkout)
 	protected.Get("/orders", r.listOrders)
 	protected.Get("/orders/:id", r.getOrder)
+	// Purchased-account access and the email-OTP access code are owner-only.
+	protected.Get("/orders/:id/account-access", r.getAccountAccess)
+	protected.Post("/orders/:id/account-access/:itemId/code", r.issueAccountAccessCode)
 	// Account security: these need the access token and, for the session checks,
 	// the refresh cookie that identifies the device making the request.
 	protected.Post("/auth/change-password", r.changePassword)
@@ -1201,6 +1214,115 @@ func (r *Router) listOrders(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{"orders": orders, "page": page, "per_page": perPage, "total": total})
+}
+
+func (r *Router) getAccountAccess(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(string)
+	id := c.Params("id")
+
+	if r.orderDeliverySvc == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "Akses akun belum tersedia", "code": "account_access_unavailable",
+		})
+	}
+
+	ctx, cancel := context.WithTimeout(c.Context(), 8*time.Second)
+	defer cancel()
+
+	items, err := r.orderDeliverySvc.ListAccountAccess(ctx, userID, id)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrNotFound):
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pesanan tidak ditemukan", "code": "not_found"})
+		case errors.Is(err, service.ErrOrderNotApproved):
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+				"error": "Akun belum dikirim. Akses OTP tersedia setelah admin menyetujui pesanan.",
+				"code":  "order_not_approved",
+			})
+		default:
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil akses akun", "code": "internal_error"})
+		}
+	}
+
+	otpReady := r.accountOTPSvc != nil && r.accountOTPSvc.InboxReady()
+	return c.JSON(fiber.Map{"items": items, "otp_inbox_ready": otpReady})
+}
+
+func (r *Router) issueAccountAccessCode(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(string)
+	orderID := c.Params("id")
+	itemID := c.Params("itemId")
+
+	if r.orderDeliverySvc == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "Akses OTP belum tersedia", "code": "otp_unavailable",
+		})
+	}
+
+	ctx, cancel := context.WithTimeout(c.Context(), 25*time.Second)
+	defer cancel()
+
+	result, err := r.orderDeliverySvc.IssueAccountAccessCode(ctx, userID, orderID, itemID)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrOTPUnavailable):
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+				"error": "Layanan ambil OTP belum dikonfigurasi. Hubungi dukungan.", "code": "otp_unavailable",
+			})
+		case errors.Is(err, service.ErrOrderNotApproved):
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+				"error": "Kode akses hanya dapat dibuat setelah akun dikirim admin.", "code": "order_not_approved",
+			})
+		case errors.Is(err, service.ErrNotFound):
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Akun tidak ditemukan pada pesanan ini", "code": "not_found"})
+		default:
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal membuat kode akses OTP", "code": "internal_error"})
+		}
+	}
+
+	return c.JSON(result)
+}
+
+func (r *Router) lookupAccountOTP(c *fiber.Ctx) error {
+	var input struct {
+		Email string `json:"email"`
+		Code  string `json:"code"`
+	}
+	if err := c.BodyParser(&input); err != nil {
+		return authError(c, fiber.StatusBadRequest, "Data permintaan tidak valid", "invalid_input")
+	}
+	input.Email = strings.TrimSpace(input.Email)
+	input.Code = strings.TrimSpace(input.Code)
+	if input.Email == "" || len(input.Email) > 254 || input.Code == "" || len(input.Code) > 32 {
+		return authError(c, fiber.StatusBadRequest, "Masukkan email akun dan kode akses yang valid", "invalid_input")
+	}
+	if r.accountOTPSvc == nil {
+		return authError(c, fiber.StatusServiceUnavailable, "Layanan ambil OTP belum tersedia", "otp_unavailable")
+	}
+
+	ctx, cancel := context.WithTimeout(c.Context(), 25*time.Second)
+	defer cancel()
+
+	message, err := r.accountOTPSvc.Lookup(ctx, input.Email, input.Code)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrOTPAccessInvalid):
+			// One message for a wrong email and a wrong code prevents account
+			// enumeration.
+			return authError(c, fiber.StatusNotFound, "Email atau kode akses tidak cocok. Periksa kembali lalu coba lagi.", "otp_access_invalid")
+		case errors.Is(err, service.ErrOTPUnavailable):
+			return authError(c, fiber.StatusServiceUnavailable, "Layanan ambil OTP belum dikonfigurasi. Hubungi dukungan.", "otp_unavailable")
+		case errors.Is(err, service.ErrOTPNotFound):
+			return authError(c, fiber.StatusNotFound, "Belum ada email OTP terbaru untuk akun ini. Tunggu beberapa saat lalu coba lagi.", "otp_not_found")
+		default:
+			return authError(c, fiber.StatusServiceUnavailable, "Gagal membaca email OTP. Coba lagi sebentar lagi.", "otp_lookup_failed")
+		}
+	}
+
+	return c.JSON(fiber.Map{
+		"otp":         message.Code,
+		"received_at": message.ReceivedAt,
+	})
 }
 
 func (r *Router) getOrder(c *fiber.Ctx) error {

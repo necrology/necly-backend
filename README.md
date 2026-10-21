@@ -103,6 +103,11 @@ go run ./cmd/server
 - `GET /api/v1/orders` — list my orders
 - `GET /api/v1/orders/:id` — order detail
 - `GET /api/v1/orders/:id/tracking` — order tracking/timeline
+- `GET /api/v1/orders/:id/account-access` — delivered account emails + OTP readiness
+- `POST /api/v1/orders/:id/account-access/:itemId/code` — issue a 15-minute OTP access code
+
+### Email OTP (public)
+- `POST /api/v1/account-otp/lookup` — resolve account email + access code to the newest OTP
 
 ### Payments (auth required)
 - `POST /api/v1/payments/:orderId/start` — initiate payment

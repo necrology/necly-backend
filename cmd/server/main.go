@@ -22,6 +22,7 @@ import (
 	"github.com/necly/services/internal/handler"
 	"github.com/necly/services/internal/platform/database"
 	"github.com/necly/services/internal/platform/mailer"
+	"github.com/necly/services/internal/platform/otpinbox"
 	"github.com/necly/services/internal/platform/rediscache"
 	"github.com/necly/services/internal/repository/gormrepo"
 	"github.com/necly/services/internal/service"
@@ -164,6 +165,18 @@ func main() {
 	adminVoucherSvc := service.NewAdminVoucherService(store)
 	adminInventorySvc := service.NewAdminInventoryService(store, cipher)
 	orderDeliverySvc := service.NewOrderDeliveryService(store, store, cipher, mail, store)
+	otpInbox := otpinbox.New(otpinbox.Config{
+		Addr: cfg.OTPInbox.Addr, User: cfg.OTPInbox.User, Password: cfg.OTPInbox.Password,
+		Mailbox: cfg.OTPInbox.Mailbox, UseTLS: cfg.OTPInbox.UseTLS, Timeout: cfg.OTPInbox.Timeout,
+	})
+	// A nil Redis client means the access-code store is unavailable. Passing it
+	// anyway keeps the store nil-safe and makes the feature fail closed.
+	var otpAccessCodes service.AccessCodeStore
+	if redisClient != nil {
+		otpAccessCodes = rediscache.NewOTPAccessCodes(redisClient, "necly:otp-access:")
+	}
+	orderDeliverySvc.SetAccessCodeSupport(otpAccessCodes, cfg.AppFrontendURL)
+	accountOTPSvc := service.NewAccountOTPService(otpAccessCodes, otpInbox, cfg.OTPInbox.Lookback)
 	orderExpirySvc := service.NewOrderExpiryService(store)
 
 	app := fiber.New(fiber.Config{
@@ -221,11 +234,15 @@ func main() {
 	// Both of these send an email to an address the caller chooses.
 	app.Use("/api/v1/auth/forgot-password", rateLimited(5, time.Hour, "Terlalu banyak permintaan atur ulang kata sandi. Coba lagi nanti."))
 	app.Use("/api/v1/auth/resend-verification", rateLimited(5, time.Hour, "Terlalu banyak permintaan tautan aktivasi. Coba lagi nanti."))
+	// The OTP page is public by design (the customer is signing in elsewhere),
+	// so it needs its own tight budget against code guessing.
+	app.Use("/api/v1/account-otp/lookup", rateLimited(10, time.Minute, "Terlalu banyak percobaan ambil OTP. Tunggu sebentar lalu coba lagi."))
 
 	router := handler.NewRouter(authSvc, catalogSvc, cartSvc, checkoutSvc, webhookSvc, orderSvc, adminSvc, adminUserSvc, adminProductSvc, adminCategorySvc, adminOrderSvc, adminVoucherSvc, adminInventorySvc, tokenManager, cipher, redisClient, reportSvc, testimonialSvc)
 	// W17: approval releases the purchased account credentials. Wiring is
 	// explicit so router tests that do not construct the full app stay small.
 	router.SetDeliveryService(orderDeliverySvc)
+	router.SetAccountOTPService(accountOTPSvc)
 	router.SetAuthCookiePolicy(handler.AuthCookiePolicy{
 		Secure: cfg.Cookie.Secure, HTTPOnly: cfg.Cookie.HTTPOnly, SameSite: cfg.Cookie.SameSite,
 		Domain: cfg.Cookie.Domain, Path: cfg.Cookie.Path,

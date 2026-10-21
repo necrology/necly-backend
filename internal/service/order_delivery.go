@@ -80,6 +80,11 @@ type OrderDeliveryService struct {
 	mail   MailSender
 	audit  AuditWriter
 	now    func() time.Time
+
+	// accessCodes and frontendURL power the email-OTP access page. Both are
+	// optional so the W17 delivery flow keeps working in existing deployments.
+	accessCodes AccessCodeStore
+	frontendURL string
 }
 
 func NewOrderDeliveryService(repo OrderDeliveryRepository, orders AdminOrderRepository, cipher *CredentialCipher, mail MailSender, audit AuditWriter) *OrderDeliveryService {
