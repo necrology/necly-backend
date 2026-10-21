@@ -108,17 +108,20 @@ func TestW17ApprovalDeliversCredentialsOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	accountID := uuid.NewString()
-	if err := db.Create(&domain.InventoryAccount{
-		ID: accountID, ProductID: productID, Label: "Akun utama", EncryptedCredentials: sealed,
-		Status: "active", SharingLimit: 5, CreatedAt: now, UpdatedAt: now,
-	}).Error; err != nil {
-		t.Fatal(err)
-	}
 
 	seedOrder := func(userID, number, status string) (string, string) {
 		t.Helper()
 		orderID, itemID := uuid.NewString(), uuid.NewString()
+		// Each fixture order gets its own account: NEC-89 Fase 2 deliberately
+		// refuses to reuse an account for the same buyer+product while another
+		// unused account exists.
+		accountID := uuid.NewString()
+		if err := db.Create(&domain.InventoryAccount{
+			ID: accountID, ProductID: productID, Label: "Akun " + number, EncryptedCredentials: sealed,
+			Status: "active", SharingLimit: 5, CreatedAt: now, UpdatedAt: now,
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
 		if err := db.Create(&domain.Order{
 			ID: orderID, Number: number, UserID: userID, Status: domain.OrderStatus(status),
 			Subtotal: 150000, Total: 150000, Currency: "IDR", PaymentDueAt: now.Add(time.Hour),

@@ -72,4 +72,34 @@ var (
 	// ErrDeliveryNotFound means the delivery row does not belong to the named
 	// order, which also keeps cross-order probing out of the detail endpoint.
 	ErrDeliveryNotFound = errors.New("Status pengiriman tidak ditemukan")
+	// ErrDeliveryAccountFull is returned when the selected account has no
+	// remaining seat capacity (sharing_limit, hard-capped at five users).
+	ErrDeliveryAccountFull = errors.New("Akun inventaris tidak memiliki slot tersisa")
+	// ErrAccountUsedByCustomer blocks a manual account choice that would reuse
+	// an account the buyer already received for the same product while another
+	// unused account is still available.
+	ErrAccountUsedByCustomer = errors.New("Akun sudah pernah dipakai pembeli ini untuk produk yang sama")
+	// ErrNoAlternativeAccount is the explicit all-accounts-used outcome. The
+	// delivery must not fall back to the same account; an admin must add a new
+	// account before sending.
+	ErrNoAlternativeAccount = errors.New("Semua akun yang tersedia sudah pernah dipakai pembeli ini. Tambahkan akun baru terlebih dahulu")
+	// ErrDeliveryAlreadySent protects a delivery that already emailed its
+	// credentials. Replacing it is a separate action with its own audit trail.
+	ErrDeliveryAlreadySent = errors.New("Akun sudah dikirim untuk pesanan ini")
+	// ErrDeliveryNotSent is the inverse guard for replacement: there is no
+	// delivered access to replace before the first email succeeds.
+	ErrDeliveryNotSent = errors.New("Pengiriman akun belum berhasil; akun belum dapat diganti")
+	// ErrAccountNotExpired blocks a replacement while the buyer's current access
+	// window is still active, unless the admin explicitly approves a complaint.
+	ErrAccountNotExpired = errors.New("Masa aktif akun lama belum berakhir")
+	// ErrAccountNotChanged rejects a replacement that names the account the
+	// buyer already has.
+	ErrAccountNotChanged = errors.New("Akun pengganti harus berbeda dari akun yang sedang dipakai")
+	// ErrDeliveryDurationUnavailable means the purchased item has no usable
+	// duration, so the access window cannot be calculated without guessing.
+	ErrDeliveryDurationUnavailable = errors.New("Durasi paket tidak tersedia; masa akses tidak dapat dihitung")
+	// ErrDeliveryReplacementFailed is returned when the replacement email could
+	// not be sent. The new account assignment is kept and the audit row records
+	// the failure for operator follow-up.
+	ErrDeliveryReplacementFailed = errors.New("Email akun pengganti gagal dikirim")
 )

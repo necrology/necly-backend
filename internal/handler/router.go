@@ -261,6 +261,11 @@ func (r *Router) registerAdmin(api fiber.Router) {
 	admin.Post("/orders/:id/approve-delivery", r.adminApproveOrderDelivery)
 	admin.Get("/orders/:id/deliveries", r.adminListOrderDeliveries)
 	admin.Post("/orders/:id/deliveries/:deliveryId/retry", r.adminRetryOrderDelivery)
+	// NEC-89 Fase 2: choose an eligible account before sending, and replace an
+	// account whose buyer access window has expired.
+	admin.Get("/orders/:id/delivery-options", r.adminOrderDeliveryOptions)
+	admin.Post("/orders/:id/deliveries/:deliveryId/assign", r.adminAssignDeliveryAccount)
+	admin.Post("/orders/:id/deliveries/:deliveryId/replace", r.adminReplaceDeliveryAccount)
 	admin.Get("/audit-logs", r.adminListAuditLogs)
 	// Voucher management
 	admin.Get("/vouchers", r.adminListVouchers)
@@ -1756,6 +1761,67 @@ func (r *Router) adminRetryOrderDelivery(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"delivery": delivery})
 }
 
+func (r *Router) adminOrderDeliveryOptions(c *fiber.Ctx) error {
+	if r.orderDeliverySvc == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Fitur pengiriman akun belum dikonfigurasi", "code": "delivery_unavailable"})
+	}
+	if _, err := uuid.Parse(c.Params("id")); err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pesanan tidak ditemukan", "code": "not_found"})
+	}
+	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+	defer cancel()
+	items, err := r.orderDeliverySvc.DeliveryOptions(ctx, c.Params("id"))
+	if err != nil {
+		return orderDeliveryError(c, err)
+	}
+	return c.JSON(fiber.Map{"items": items})
+}
+
+func (r *Router) adminAssignDeliveryAccount(c *fiber.Ctx) error {
+	if r.orderDeliverySvc == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Fitur pengiriman akun belum dikonfigurasi", "code": "delivery_unavailable"})
+	}
+	var input struct {
+		InventoryAccountID string `json:"inventory_account_id"`
+	}
+	if err := c.BodyParser(&input); err != nil || strings.TrimSpace(input.InventoryAccountID) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Akun inventaris wajib dipilih", "code": "invalid_input"})
+	}
+	ctx, cancel := context.WithTimeout(c.Context(), 10*time.Second)
+	defer cancel()
+	actor := service.AdminActor{UserID: localUserID(c), IPAddress: c.IP()}
+	delivery, err := r.orderDeliverySvc.AssignAccount(ctx, actor, c.Params("id"), c.Params("deliveryId"), strings.TrimSpace(input.InventoryAccountID))
+	if err != nil {
+		return orderDeliveryError(c, err)
+	}
+	return c.JSON(fiber.Map{"delivery": delivery})
+}
+
+func (r *Router) adminReplaceDeliveryAccount(c *fiber.Ctx) error {
+	if r.orderDeliverySvc == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Fitur pengiriman akun belum dikonfigurasi", "code": "delivery_unavailable"})
+	}
+	var input struct {
+		InventoryAccountID string `json:"inventory_account_id"`
+		Reason             string `json:"reason"`
+		ComplaintApproved  bool   `json:"complaint_approved"`
+	}
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid", "code": "invalid_input"})
+	}
+	ctx, cancel := context.WithTimeout(c.Context(), 30*time.Second)
+	defer cancel()
+	actor := service.AdminActor{UserID: localUserID(c), IPAddress: c.IP()}
+	delivery, err := r.orderDeliverySvc.ReplaceAccount(
+		ctx, actor, c.Params("id"), c.Params("deliveryId"),
+		strings.TrimSpace(input.InventoryAccountID), input.Reason, input.ComplaintApproved,
+	)
+	if err != nil {
+		return orderDeliveryError(c, err)
+	}
+	return c.JSON(fiber.Map{"delivery": delivery})
+}
+
 func orderDeliveryError(c *fiber.Ctx, err error) error {
 	switch {
 	case errors.Is(err, service.ErrNotFound):
@@ -1766,6 +1832,30 @@ func orderDeliveryError(c *fiber.Ctx, err error) error {
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "order_not_approved"})
 	case errors.Is(err, service.ErrInvalidTransition):
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "invalid_transition"})
+	case errors.Is(err, service.ErrNoAlternativeAccount):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "no_alternative_account"})
+	case errors.Is(err, service.ErrAccountUsedByCustomer):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "account_used_by_customer"})
+	case errors.Is(err, service.ErrDeliveryAccountFull), errors.Is(err, service.ErrSharingLimitExceeded):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "account_full"})
+	case errors.Is(err, service.ErrInventoryAccountUnavailable), errors.Is(err, service.ErrInventoryAccountNeedsReview):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "account_unavailable"})
+	case errors.Is(err, service.ErrInventoryAccountMismatch):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "account_mismatch"})
+	case errors.Is(err, service.ErrDeliveryAlreadySent):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "delivery_already_sent"})
+	case errors.Is(err, service.ErrDeliveryNotSent):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "delivery_not_sent"})
+	case errors.Is(err, service.ErrAccountNotExpired):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "account_not_expired"})
+	case errors.Is(err, service.ErrAccountNotChanged):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "account_not_changed"})
+	case errors.Is(err, service.ErrDeliveryDurationUnavailable):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "duration_unavailable"})
+	case errors.Is(err, service.ErrOutOfStock):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "out_of_stock"})
+	case errors.Is(err, service.ErrDeliveryReplacementFailed):
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error(), "code": "replacement_email_failed"})
 	case errors.Is(err, service.ErrInvalidInput):
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error(), "code": "invalid_input"})
 	default:

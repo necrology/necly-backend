@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -18,17 +19,26 @@ import (
 // delivery row and shown to administrators. They never contain credentials,
 // recipient addresses or mailer error text.
 const (
-	DeliveryErrorBuyerUnverified     = "buyer_email_unverified"
-	DeliveryErrorBuyerUnavailable    = "buyer_unavailable"
-	DeliveryErrorMailerDisabled      = "mailer_disabled"
-	DeliveryErrorCipherUnavailable   = "credential_cipher_unavailable"
-	DeliveryErrorInventoryMissing    = "inventory_unavailable"
-	DeliveryErrorAccountUnavailable  = "inventory_account_unavailable"
-	DeliveryErrorCredentialInvalid   = "credential_invalid"
-	DeliveryErrorEmailFailed         = "email_failed"
-	DeliveryErrorPersistenceFailed   = "persistence_failed"
+	DeliveryErrorBuyerUnverified    = "buyer_email_unverified"
+	DeliveryErrorBuyerUnavailable   = "buyer_unavailable"
+	DeliveryErrorMailerDisabled     = "mailer_disabled"
+	DeliveryErrorCipherUnavailable  = "credential_cipher_unavailable"
+	DeliveryErrorInventoryMissing   = "inventory_unavailable"
+	DeliveryErrorAccountUnavailable = "inventory_account_unavailable"
+	DeliveryErrorCredentialInvalid  = "credential_invalid"
+	DeliveryErrorEmailFailed        = "email_failed"
+	DeliveryErrorPersistenceFailed  = "persistence_failed"
+	// DeliveryErrorNoAlternativeAccount is recorded when every candidate
+	// account has already been used by this buyer for the same product. The
+	// delivery must not silently reuse one of them.
+	DeliveryErrorNoAlternativeAccount = "no_alternative_account"
+	// DeliveryErrorDurationUnavailable is recorded when the purchased item has
+	// no usable duration. The access window is never guessed from the account
+	// expiry or a default value.
+	DeliveryErrorDurationUnavailable = "duration_unavailable"
 	deliverySendTimeout              = 20 * time.Second
 	deliverySendingLease             = 5 * time.Minute
+	maxDeliveryReasonLength          = 500
 	inventoryCredentialInstructions  = "Simpan data akun ini. Jangan mengubah kata sandi atau profil akun karena akun digunakan bersama sesuai paket yang dibeli."
 	deliveryEmailUsageInstructions   = "Cara penggunaan:\n1. Buka layanan sesuai produk yang dibeli.\n2. Masuk menggunakan username dan password di atas.\n3. Jangan mengubah kata sandi, email, atau profil akun.\n4. Jika tidak dapat masuk, hubungi dukungan dengan menyertakan nomor pesanan."
 	maxDeliveryAccountLabelLength    = 120
@@ -51,7 +61,44 @@ type DeliverySlot struct {
 // in which case its credentials are listed once in the email.
 type DeliveryMaterial struct {
 	OrderItemID string
-	Slots       []DeliverySlot
+	// DurationDays is the purchased access length in days. It is loaded from
+	// product_durations through the order item's price. Zero means the item has
+	// no usable duration and the delivery must fail instead of guessing.
+	DurationDays int
+	Slots        []DeliverySlot
+}
+
+// DeliveryAccountOption is the credential-free eligibility shape returned to the
+// admin dashboard before an account is assigned. RemainingSlots already accounts
+// for the five-user hard cap, not only the stored sharing_limit.
+type DeliveryAccountOption struct {
+	InventoryAccountID string     `json:"inventory_account_id"`
+	Label              string     `json:"label"`
+	Status             string     `json:"status"`
+	ExpiresAt          *time.Time `json:"expires_at,omitempty"`
+	DaysRemaining      *int       `json:"days_remaining"`
+	SharingLimit       int        `json:"sharing_limit"`
+	AssignedUsers      int        `json:"assigned_users"`
+	UsedSlots          int        `json:"used_slots"`
+	RemainingSlots     int        `json:"remaining_slots"`
+	UsedByCustomer     bool       `json:"used_by_customer"`
+	AssignedToItem     bool       `json:"assigned_to_item"`
+	CanAssign          bool       `json:"can_assign"`
+}
+
+// DeliveryItemOptions groups the candidate accounts for one order item. The
+// admin picks one account for the delivery; a quantity above the five-user cap
+// is reported as not assignable rather than silently split.
+type DeliveryItemOptions struct {
+	DeliveryID         string                  `json:"delivery_id"`
+	OrderItemID        string                  `json:"order_item_id"`
+	ProductID          string                  `json:"product_id"`
+	ProductPriceID     string                  `json:"product_price_id"`
+	ProductName        string                  `json:"product_name"`
+	DurationName       string                  `json:"duration_name"`
+	Quantity           int                     `json:"quantity"`
+	AssignedAccountIDs []string                `json:"assigned_account_ids"`
+	Accounts           []DeliveryAccountOption `json:"accounts"`
 }
 
 // OrderDeliveryRepository is the persistence contract for the delivery ledger.
@@ -61,6 +108,24 @@ type OrderDeliveryRepository interface {
 	ListOrderDeliveries(ctx context.Context, orderID string) ([]domain.OrderDelivery, error)
 	GetOrderDelivery(ctx context.Context, orderID, deliveryID string) (*domain.OrderDelivery, error)
 	LoadDeliveryMaterial(ctx context.Context, orderID, orderItemID string) (*DeliveryMaterial, error)
+	// LoadDeliveryOptions returns every candidate account for every order item,
+	// including whether this buyer already used the account for the product.
+	LoadDeliveryOptions(ctx context.Context, orderID string) ([]DeliveryItemOptions, error)
+	// PrepareDeliveryAssignment keeps the current slots when they are valid and
+	// unused, otherwise moves them to an unused eligible account. It returns
+	// ErrNoAlternativeAccount when every account was already used.
+	PrepareDeliveryAssignment(ctx context.Context, orderID, orderItemID string, now time.Time) error
+	// AssignDeliveryAccount moves one item's reserved slots to an explicitly
+	// selected account under row locks.
+	AssignDeliveryAccount(ctx context.Context, orderID, deliveryID, accountID string, now time.Time) (*domain.OrderDelivery, error)
+	// ReplaceDeliveryAccount releases the expired slots and provisions new ones
+	// on another account, recording the audit row before the email is sent.
+	ReplaceDeliveryAccount(ctx context.Context, orderID, deliveryID, accountID, reason string, complaintApproved bool, actorUserID string, now time.Time) (*domain.DeliveryReplacement, error)
+	MarkDeliveryReplacementSent(ctx context.Context, replacementID string, now time.Time) error
+	MarkDeliveryReplacementFailed(ctx context.Context, replacementID, errorCode string, now time.Time) error
+	// ActivateDeliveryAccess fills the buyer's access window after the email has
+	// left the process. COALESCE keeps a retry from extending it.
+	ActivateDeliveryAccess(ctx context.Context, orderID, orderItemID string, now, expiresAt time.Time) error
 	// ClaimOrderDelivery atomically moves an open row to sending and increments
 	// attempts. It returns false when another worker already owns the row or the
 	// row is already sent. A stale sending row older than staleBefore may be
@@ -99,6 +164,134 @@ func (s *OrderDeliveryService) ListDeliveries(ctx context.Context, orderID strin
 		return nil, err
 	}
 	return s.repo.ListOrderDeliveries(ctx, orderID)
+}
+
+// DeliveryOptions returns the credential-free account candidates for every
+// order item. Delivery rows are created on demand so the dashboard can choose
+// an account before the first send.
+func (s *OrderDeliveryService) DeliveryOptions(ctx context.Context, orderID string) ([]DeliveryItemOptions, error) {
+	if _, err := uuid.Parse(orderID); err != nil {
+		return nil, ErrNotFound
+	}
+	order, err := s.orders.GetOrderByID(ctx, orderID)
+	if err != nil {
+		return nil, err
+	}
+	if !deliverySelectableStatus(order.Status) {
+		return nil, ErrOrderNotApproved
+	}
+	if _, err := s.repo.EnsureOrderDeliveries(ctx, order.ID, s.now()); err != nil {
+		return nil, err
+	}
+	return s.repo.LoadDeliveryOptions(ctx, order.ID)
+}
+
+// AssignAccount applies an explicit admin choice before the credentials are
+// emailed. The repository validates capacity, reuse rules and ownership under
+// row locks; this method only maps the outcome and writes the audit entry.
+func (s *OrderDeliveryService) AssignAccount(ctx context.Context, actor AdminActor, orderID, deliveryID, accountID string) (*domain.OrderDelivery, error) {
+	if _, err := uuid.Parse(orderID); err != nil {
+		return nil, ErrNotFound
+	}
+	if _, err := uuid.Parse(deliveryID); err != nil {
+		return nil, ErrDeliveryNotFound
+	}
+	if _, err := uuid.Parse(accountID); err != nil {
+		return nil, ErrInvalidInput
+	}
+	order, err := s.orders.GetOrderByID(ctx, orderID)
+	if err != nil {
+		return nil, err
+	}
+	if !deliverySelectableStatus(order.Status) {
+		return nil, ErrOrderNotApproved
+	}
+	delivery, err := s.repo.AssignDeliveryAccount(ctx, order.ID, deliveryID, accountID, s.now())
+	if err != nil {
+		return nil, err
+	}
+	s.record(ctx, actor, order, delivery, AuditOrderAccountAssigned, map[string]any{
+		"order_id": order.ID, "order_item_id": delivery.OrderItemID,
+		"delivery_id": delivery.ID, "inventory_account_id": accountID,
+	})
+	return delivery, nil
+}
+
+// ReplaceAccount releases an expired (or complaint-approved) access window and
+// emails the replacement account. No order or payment row is created or
+// modified. A repeated call immediately after success is rejected because the
+// newly assigned slot is no longer expired.
+func (s *OrderDeliveryService) ReplaceAccount(ctx context.Context, actor AdminActor, orderID, deliveryID, accountID, reason string, complaintApproved bool) (*domain.OrderDelivery, error) {
+	if _, err := uuid.Parse(orderID); err != nil {
+		return nil, ErrNotFound
+	}
+	if _, err := uuid.Parse(deliveryID); err != nil {
+		return nil, ErrDeliveryNotFound
+	}
+	if _, err := uuid.Parse(accountID); err != nil {
+		return nil, ErrInvalidInput
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" || utf8.RuneCountInString(reason) > maxDeliveryReasonLength {
+		return nil, ErrInvalidInput
+	}
+	order, err := s.orders.GetOrderByID(ctx, orderID)
+	if err != nil {
+		return nil, err
+	}
+	delivery, err := s.repo.GetOrderDelivery(ctx, order.ID, deliveryID)
+	if err != nil {
+		return nil, err
+	}
+	if delivery.Status != domain.DeliverySent {
+		return nil, ErrDeliveryNotSent
+	}
+
+	replacement, err := s.repo.ReplaceDeliveryAccount(ctx, order.ID, delivery.ID, accountID, reason, complaintApproved, actor.UserID, s.now())
+	if err != nil {
+		return nil, err
+	}
+
+	material, err := s.repo.LoadDeliveryMaterial(ctx, order.ID, delivery.OrderItemID)
+	if err != nil {
+		s.markReplacementFailed(ctx, replacement.ID)
+		return nil, fmt.Errorf("load replacement material: %w", err)
+	}
+	if material.DurationDays <= 0 {
+		s.markReplacementFailed(ctx, replacement.ID)
+		return nil, ErrDeliveryDurationUnavailable
+	}
+	accounts, reasonCode := s.decryptAccounts(material)
+	if reasonCode != "" {
+		s.markReplacementFailed(ctx, replacement.ID)
+		return nil, ErrDeliveryReplacementFailed
+	}
+	expiresAt := s.now().AddDate(0, 0, material.DurationDays)
+	msg := s.buildReplacementMessage(order, findOrderItemByID(order, delivery.OrderItemID), accounts, expiresAt, reason)
+	sendCtx, cancel := context.WithTimeout(ctx, deliverySendTimeout)
+	defer cancel()
+	if err := s.mail.Send(sendCtx, msg); err != nil {
+		log.Printf("delivery: replacement email for order %s delivery %s failed: %v", order.ID, delivery.ID, err)
+		s.markReplacementFailed(ctx, replacement.ID)
+		return nil, ErrDeliveryReplacementFailed
+	}
+	if err := s.repo.MarkDeliveryReplacementSent(ctx, replacement.ID, s.now()); err != nil {
+		log.Printf("delivery: mark replacement %s sent failed: %v", replacement.ID, err)
+	}
+	s.record(ctx, actor, order, delivery, AuditOrderDeliveryReplaced, map[string]any{
+		"order_id": order.ID, "order_item_id": delivery.OrderItemID,
+		"delivery_id": delivery.ID, "replacement_id": replacement.ID,
+		"old_inventory_account_id": replacement.OldInventoryAccountID,
+		"inventory_account_id":     replacement.InventoryAccountID,
+		"complaint_approved":       complaintApproved,
+	})
+	return s.repo.GetOrderDelivery(ctx, order.ID, delivery.ID)
+}
+
+func (s *OrderDeliveryService) markReplacementFailed(ctx context.Context, replacementID string) {
+	if err := s.repo.MarkDeliveryReplacementFailed(ctx, replacementID, DeliveryErrorEmailFailed, s.now()); err != nil {
+		log.Printf("delivery: mark replacement %s failed: %v", replacementID, err)
+	}
 }
 
 // DeliverApprovedOrder sends the account email for every order item that has
@@ -201,6 +394,32 @@ func (s *OrderDeliveryService) deliverOne(ctx context.Context, actor AdminActor,
 		s.fail(ctx, actor, order, delivery, DeliveryErrorInventoryMissing, isRetry)
 		return
 	}
+	if material.DurationDays <= 0 {
+		s.fail(ctx, actor, order, delivery, DeliveryErrorDurationUnavailable, isRetry)
+		return
+	}
+	// Keep the current account only when it is still usable and has not been
+	// sent to this buyer for the same product. Otherwise move the reserved
+	// slots to an unused account before any credentials are emailed.
+	if err := s.repo.PrepareDeliveryAssignment(ctx, order.ID, item.ID, now); err != nil {
+		if errors.Is(err, ErrNoAlternativeAccount) {
+			s.fail(ctx, actor, order, delivery, DeliveryErrorNoAlternativeAccount, isRetry)
+			return
+		}
+		log.Printf("delivery: prepare assignment for order %s item %s failed: %v", order.ID, item.ID, err)
+		s.fail(ctx, actor, order, delivery, DeliveryErrorInventoryMissing, isRetry)
+		return
+	}
+	material, err = s.repo.LoadDeliveryMaterial(ctx, order.ID, item.ID)
+	if err != nil {
+		log.Printf("delivery: reload material for order %s item %s failed: %v", order.ID, item.ID, err)
+		s.fail(ctx, actor, order, delivery, DeliveryErrorInventoryMissing, isRetry)
+		return
+	}
+	if len(material.Slots) < item.Quantity {
+		s.fail(ctx, actor, order, delivery, DeliveryErrorInventoryMissing, isRetry)
+		return
+	}
 
 	accounts, reason := s.decryptAccounts(material)
 	if reason != "" {
@@ -208,7 +427,8 @@ func (s *OrderDeliveryService) deliverOne(ctx context.Context, actor AdminActor,
 		return
 	}
 
-	msg := s.buildMessage(order, item, accounts)
+	accessExpiresAt := now.AddDate(0, 0, material.DurationDays)
+	msg := s.buildMessage(order, item, accounts, accessExpiresAt)
 	sendCtx, cancel := context.WithTimeout(ctx, deliverySendTimeout)
 	defer cancel()
 	if err := s.mail.Send(sendCtx, msg); err != nil {
@@ -216,6 +436,15 @@ func (s *OrderDeliveryService) deliverOne(ctx context.Context, actor AdminActor,
 		// address; the delivery row carries the stable error code instead.
 		log.Printf("delivery: sending order %s item %s failed: %v", order.ID, item.ID, err)
 		s.fail(ctx, actor, order, delivery, DeliveryErrorEmailFailed, isRetry)
+		return
+	}
+
+	// The credentials are already on their way, so the buyer's access window is
+	// anchored at the send time. COALESCE inside the repository keeps a retry
+	// from extending it.
+	if err := s.repo.ActivateDeliveryAccess(ctx, order.ID, item.ID, s.now(), accessExpiresAt); err != nil {
+		log.Printf("delivery: activate access for order %s item %s failed: %v", order.ID, item.ID, err)
+		s.fail(ctx, actor, order, delivery, DeliveryErrorPersistenceFailed, isRetry)
 		return
 	}
 
@@ -358,23 +587,16 @@ func validDeliveryCredentialField(value string) bool {
 	return value != "" && utf8.RuneCountInString(value) <= maxDeliveryCredentialFieldLength && !strings.ContainsAny(value, "\r\n")
 }
 
-func (s *OrderDeliveryService) buildMessage(order *domain.Order, item *domain.OrderItem, accounts []deliveryAccount) mailer.Message {
+func (s *OrderDeliveryService) buildMessage(order *domain.Order, item *domain.OrderItem, accounts []deliveryAccount, accessExpiresAt time.Time) mailer.Message {
 	var body strings.Builder
 	body.WriteString("Halo " + order.Customer.Name + ",\n\n")
 	body.WriteString("Pembayaran dan pesanan Anda telah disetujui. Berikut akun yang dapat digunakan:\n\n")
 	fmt.Fprintf(&body, "Nomor pesanan : %s\n", order.Number)
 	fmt.Fprintf(&body, "Produk        : %s\n", item.ProductName)
 	fmt.Fprintf(&body, "Durasi        : %s\n", item.DurationName)
-	fmt.Fprintf(&body, "Jumlah        : %d\n\n", item.Quantity)
-	for index, account := range accounts {
-		fmt.Fprintf(&body, "Akun %d (%s)\n", index+1, account.Label)
-		fmt.Fprintf(&body, "  Username : %s\n", account.Username)
-		fmt.Fprintf(&body, "  Password : %s\n", account.Password)
-		if strings.TrimSpace(account.Instructions) != "" {
-			fmt.Fprintf(&body, "  Catatan  : %s\n", account.Instructions)
-		}
-		body.WriteString("\n")
-	}
+	fmt.Fprintf(&body, "Jumlah        : %d\n", item.Quantity)
+	fmt.Fprintf(&body, "Masa akses    : sampai %s\n\n", accessExpiresAt.Format("2 January 2006"))
+	writeDeliveryAccounts(&body, accounts)
 	body.WriteString(deliveryEmailUsageInstructions)
 	body.WriteString("\n\nJika ada kendala, balas email ini atau hubungi dukungan dengan menyertakan nomor pesanan.\n")
 	body.WriteString("— NECLY Services\n")
@@ -382,6 +604,44 @@ func (s *OrderDeliveryService) buildMessage(order *domain.Order, item *domain.Or
 		To:      order.Customer.Email,
 		Subject: "Akun pesanan " + order.Number + " — " + item.ProductName,
 		Body:    body.String(),
+	}
+}
+
+// buildReplacementMessage is deliberately separate from the first-delivery
+// email: it explains why the account changed and never implies a new order or
+// payment was created.
+func (s *OrderDeliveryService) buildReplacementMessage(order *domain.Order, item *domain.OrderItem, accounts []deliveryAccount, accessExpiresAt time.Time, reason string) mailer.Message {
+	var body strings.Builder
+	body.WriteString("Halo " + order.Customer.Name + ",\n\n")
+	body.WriteString("Akun untuk pesanan Anda telah diganti karena masa aktif akun sebelumnya berakhir atau keluhan Anda disetujui.\n\n")
+	fmt.Fprintf(&body, "Nomor pesanan : %s\n", order.Number)
+	if item != nil {
+		fmt.Fprintf(&body, "Produk        : %s\n", item.ProductName)
+		fmt.Fprintf(&body, "Durasi        : %s\n", item.DurationName)
+	}
+	fmt.Fprintf(&body, "Alasan        : %s\n", reason)
+	fmt.Fprintf(&body, "Masa akses    : sampai %s\n\n", accessExpiresAt.Format("2 January 2006"))
+	body.WriteString("Berikut akun pengganti Anda:\n\n")
+	writeDeliveryAccounts(&body, accounts)
+	body.WriteString(deliveryEmailUsageInstructions)
+	body.WriteString("\n\nTidak ada tagihan baru untuk penggantian ini. Jika ada kendala, hubungi dukungan dengan menyertakan nomor pesanan.\n")
+	body.WriteString("— NECLY Services\n")
+	subject := "Akun pengganti pesanan " + order.Number
+	if item != nil {
+		subject += " — " + item.ProductName
+	}
+	return mailer.Message{To: order.Customer.Email, Subject: subject, Body: body.String()}
+}
+
+func writeDeliveryAccounts(body *strings.Builder, accounts []deliveryAccount) {
+	for index, account := range accounts {
+		fmt.Fprintf(body, "Akun %d (%s)\n", index+1, account.Label)
+		fmt.Fprintf(body, "  Username : %s\n", account.Username)
+		fmt.Fprintf(body, "  Password : %s\n", account.Password)
+		if strings.TrimSpace(account.Instructions) != "" {
+			fmt.Fprintf(body, "  Catatan  : %s\n", account.Instructions)
+		}
+		body.WriteString("\n")
 	}
 }
 
@@ -413,6 +673,13 @@ func (s *OrderDeliveryService) record(ctx context.Context, actor AdminActor, ord
 	})
 }
 
+// deliverySelectableStatus allows the dashboard to prepare an assignment while
+// the order is still paid/fulfilling. Sending still requires an approved
+// fulfilment state.
+func deliverySelectableStatus(status domain.OrderStatus) bool {
+	return status == domain.OrderPaid || status == domain.OrderFulfilling || deliveryApprovedStatus(status)
+}
+
 func deliveryApprovedStatus(status domain.OrderStatus) bool {
 	switch status {
 	case domain.OrderProcessing, domain.OrderShipped, domain.OrderDelivered, domain.OrderCompleted:
@@ -429,6 +696,10 @@ func findOrderItem(order *domain.Order, itemID string) *domain.OrderItem {
 		}
 	}
 	return nil
+}
+
+func findOrderItemByID(order *domain.Order, itemID string) *domain.OrderItem {
+	return findOrderItem(order, itemID)
 }
 
 // IsDeliveryApprovedStatus is exported for the handler so it can distinguish a
