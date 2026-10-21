@@ -14,7 +14,7 @@ cd "$ROOT"
 echo "verifying W0 migration checksums"
 (cd migrations && sha256sum -c ../deploy/validation/migration-checksums.sha256)
 
-FILES="001_initial_schema.sql 003_localize_catalog_copy.sql 004_issue_reports.sql 005_password_reset_tokens.sql 006_product_labels.sql 007_device_count.sql 008_add_users_active.sql 009_order_compatibility.sql 010_checkout_idempotency.sql 011_order_expiry_index.sql 012_inventory_account_sharing.sql 013_inventory_account_label_backfill.sql 014_order_deliveries.sql"
+FILES="001_initial_schema.sql 003_localize_catalog_copy.sql 004_issue_reports.sql 005_password_reset_tokens.sql 006_product_labels.sql 007_device_count.sql 008_add_users_active.sql 009_order_compatibility.sql 010_checkout_idempotency.sql 011_order_expiry_index.sql 012_inventory_account_sharing.sql 013_inventory_account_label_backfill.sql 014_order_deliveries.sql 015_product_coming_soon.sql"
 
 for pass in 1 2; do
   echo "schema pass $pass"
@@ -65,4 +65,9 @@ DELIVERY_UNIQUE=$(psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM pg_constrai
 [ "$DELIVERY_TABLE" = "1" ] || { echo "FAIL: order_deliveries table missing"; exit 1; }
 [ "$DELIVERY_UNIQUE" = "1" ] || { echo "FAIL: order_deliveries order_item uniqueness missing"; exit 1; }
 
-echo "PASS: schema applied twice; tables=$TABLES; no development seed rows; compatibility columns=$COLUMNS; checkout_attempts=$ATTEMPT_TABLE; inventory sharing columns=$SHARING; order_deliveries=$DELIVERY_TABLE"
+# Migration 015 adds the independent Coming Soon flag; it must survive the
+# second pass and default every pre-existing product to FALSE.
+COMING_SOON=$(psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='products' AND column_name='coming_soon' AND is_nullable='NO' AND column_default='false'")
+[ "$COMING_SOON" = "1" ] || { echo "FAIL: products.coming_soon column missing or wrong shape"; exit 1; }
+
+echo "PASS: schema applied twice; tables=$TABLES; no development seed rows; compatibility columns=$COLUMNS; checkout_attempts=$ATTEMPT_TABLE; inventory sharing columns=$SHARING; order_deliveries=$DELIVERY_TABLE; coming_soon=$COMING_SOON"

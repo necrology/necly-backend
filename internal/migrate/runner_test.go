@@ -58,7 +58,7 @@ func TestFreshRunIsRepeatableAndSeedFree(t *testing.T) {
 	if first.Adopted {
 		t.Fatal("fresh database must not be reported as adopted")
 	}
-	if got, want := first.Applied, []string{"001", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013", "014"}; !reflect.DeepEqual(got, want) {
+	if got, want := first.Applied, []string{"001", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013", "014", "015"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("applied = %v, want %v", got, want)
 	}
 
@@ -109,8 +109,8 @@ func TestAdoptedSchemaConvergesWithFreshSchema(t *testing.T) {
 	if !result.Adopted {
 		t.Fatal("existing baseline schema was not adopted")
 	}
-	if !reflect.DeepEqual(result.Applied, []string{"009", "010", "011", "012", "013", "014"}) {
-		t.Fatalf("adoption should apply 009 through 013, got %v", result.Applied)
+	if !reflect.DeepEqual(result.Applied, []string{"009", "010", "011", "012", "013", "014", "015"}) {
+		t.Fatalf("adoption should apply 009 through 015, got %v", result.Applied)
 	}
 
 	type ledgerRow struct {
@@ -121,8 +121,8 @@ func TestAdoptedSchemaConvergesWithFreshSchema(t *testing.T) {
 	if err := adopted.Raw("SELECT version, mode FROM schema_migrations ORDER BY version").Scan(&rows).Error; err != nil {
 		t.Fatalf("read ledger: %v", err)
 	}
-	if len(rows) != 13 {
-		t.Fatalf("expected 13 ledger rows, got %d: %#v", len(rows), rows)
+	if len(rows) != 14 {
+		t.Fatalf("expected 14 ledger rows, got %d: %#v", len(rows), rows)
 	}
 	for _, row := range rows {
 		want := "adopted"

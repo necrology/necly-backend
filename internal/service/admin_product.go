@@ -49,7 +49,7 @@ func (s *AdminProductService) GetProductBySlug(ctx context.Context, slug string)
 	return s.repo.GetProductBySlug(ctx, slug)
 }
 
-func (s *AdminProductService) CreateProduct(ctx context.Context, categoryID, name, slug, description, imageURL string) (*domain.Product, error) {
+func (s *AdminProductService) CreateProduct(ctx context.Context, categoryID, name, slug, description, imageURL string, comingSoon bool) (*domain.Product, error) {
 	if categoryID == "" || name == "" || slug == "" {
 		return nil, ErrInvalidInput
 	}
@@ -81,6 +81,7 @@ func (s *AdminProductService) CreateProduct(ctx context.Context, categoryID, nam
 		Description: description,
 		ImageURL:    imageURL,
 		Active:      true,
+		ComingSoon:  comingSoon,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
@@ -91,7 +92,7 @@ func (s *AdminProductService) CreateProduct(ctx context.Context, categoryID, nam
 	return product, nil
 }
 
-func (s *AdminProductService) UpdateProduct(ctx context.Context, id, categoryID, name, slug, description, imageURL string, active *bool) (*domain.Product, error) {
+func (s *AdminProductService) UpdateProduct(ctx context.Context, id, categoryID, name, slug, description string, imageURL *string, active, comingSoon *bool) (*domain.Product, error) {
 	if _, err := uuid.Parse(id); err != nil {
 		return nil, ErrNotFound
 	}
@@ -128,11 +129,22 @@ func (s *AdminProductService) UpdateProduct(ctx context.Context, id, categoryID,
 	if description != "" {
 		product.Description = description
 	}
-	if imageURL != "" {
-		product.ImageURL = imageURL
+	if imageURL != nil {
+		// A pointer distinguishes "field not sent" (preserve) from an explicit
+		// empty string, which clears the product photo.
+		product.ImageURL = *imageURL
 	}
 	if active != nil {
 		product.Active = *active
+	}
+	if comingSoon != nil {
+		product.ComingSoon = *comingSoon
+	}
+	// Reject the contradictory final state regardless of which field the
+	// request changed: a coming-soon product must remain active so the
+	// catalog can show it while checkout refuses it.
+	if product.ComingSoon && !product.Active {
+		return nil, fmt.Errorf("%w: produk coming soon harus aktif", ErrInvalidInput)
 	}
 
 	product.UpdatedAt = time.Now().UTC()
