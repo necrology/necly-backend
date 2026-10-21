@@ -37,7 +37,17 @@ var (
 	// ErrSharingLimitExceeded is the capacity guard. It is enforced under a row
 	// lock so two concurrent requests cannot exceed sharing_limit together.
 	ErrSharingLimitExceeded = errors.New("Jumlah slot melebihi batas sharing akun inventaris")
-	ErrInvalidTransition    = errors.New("Perubahan status pesanan tidak valid")
+	// ErrInventoryAccountNeedsReview is the legacy-data guard: an account whose
+	// sharing_limit is above the five-user rule keeps its sold slots, but no
+	// new slot may be added until an administrator lowers the limit.
+	ErrInventoryAccountNeedsReview = errors.New("Akun inventaris melebihi batas 5 pengguna dan perlu ditinjau sebelum menambah slot")
+	// ErrOTPNotConfigured means the account has no TOTP secret yet. It is a
+	// conflict, not a server error: the admin can set the secret first.
+	ErrOTPNotConfigured = errors.New("OTP belum dikonfigurasi untuk akun inventaris ini")
+	// ErrOTPRateLimited is returned when one admin asks for too many codes for
+	// the same account in a short window. The message never includes the code.
+	ErrOTPRateLimited    = errors.New("Terlalu banyak permintaan kode OTP. Coba lagi sebentar lagi")
+	ErrInvalidTransition = errors.New("Perubahan status pesanan tidak valid")
 	// ErrInvalidPaymentEvent covers a callback whose fields are incomplete or
 	// whose state cannot be mapped. It is rejected before any row is mutated.
 	ErrInvalidPaymentEvent = errors.New("Notifikasi pembayaran tidak valid")

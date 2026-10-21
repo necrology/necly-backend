@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 type UserRole string
 
@@ -148,21 +151,34 @@ type InventoryAccount struct {
 	// Label is the operator-facing name of this account (for example
 	// "Akun utama" or "Akun cadangan"). SharingLimit caps how many slot rows may
 	// be created against the account; one slot is one sellable seat.
-	Label                string     `json:"label" gorm:"size:120;not null;default:''"`
-	EncryptedCredentials []byte     `json:"-" gorm:"not null"`
-	Status               string     `json:"status" gorm:"size:24;not null;default:active;index"`
-	SharingLimit         int        `json:"sharing_limit" gorm:"not null;default:1"`
-	ExpiresAt            *time.Time `json:"expires_at,omitempty"`
-	CreatedAt            time.Time  `json:"created_at"`
-	UpdatedAt            time.Time  `json:"updated_at"`
-	// Slot counters are derived from inventory_slots and never stored on the
-	// account row. The list endpoint exposes them so the dashboard can show
-	// capacity without issuing one query per account.
+	Label                string `json:"label" gorm:"size:120;not null;default:''"`
+	EncryptedCredentials []byte `json:"-" gorm:"not null"`
+	// OTPSecretEncrypted is the TOTP seed sealed by CredentialCipher. It is
+	// write-only: every read path clears it and only OTPConfigured is exposed.
+	OTPSecretEncrypted []byte     `json:"-" gorm:"column:otp_secret_encrypted"`
+	Status             string     `json:"status" gorm:"size:24;not null;default:active;index"`
+	SharingLimit       int        `json:"sharing_limit" gorm:"not null;default:1"`
+	ExpiresAt          *time.Time `json:"expires_at,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	// Slot counters and account-level presentation fields are derived from
+	// inventory_slots and never stored on the account row. The list endpoint
+	// exposes them so the dashboard can show capacity without issuing one query
+	// per account.
 	TotalSlots     int  `json:"total_slots" gorm:"-"`
 	AvailableSlots int  `json:"available_slots" gorm:"-"`
 	UsedSlots      int  `json:"used_slots" gorm:"-"`
 	RemainingSlots int  `json:"remaining_slots" gorm:"-"`
 	Sellable       bool `json:"sellable" gorm:"-"`
+	AssignedUsers  int  `json:"assigned_users" gorm:"-"`
+	// DaysRemaining is nil when the account has no expiry, so the dashboard can
+	// distinguish "unlimited" from "expires today" (zero).
+	DaysRemaining *int `json:"days_remaining" gorm:"-"`
+	OTPConfigured bool `json:"otp_configured" gorm:"-"`
+	// NeedsReview marks a legacy account above the five-user sharing limit. Its
+	// existing slots stay usable, but no new slot may be provisioned until an
+	// administrator lowers the limit to five or less.
+	NeedsReview bool `json:"needs_review" gorm:"-"`
 }
 
 // InventorySlotAssignment is the read-only admin view of a slot. It joins the
@@ -179,8 +195,12 @@ type InventorySlotAssignment struct {
 	OrderItemID        *string    `json:"order_item_id,omitempty"`
 	OrderID            *string    `json:"order_id,omitempty"`
 	OrderNumber        *string    `json:"order_number,omitempty"`
+	PaymentStatus      *string    `json:"payment_status,omitempty"`
 	ReservedEmail      *string    `json:"reserved_email,omitempty"`
 	ReservedName       *string    `json:"reserved_name,omitempty"`
+	ActivatedAt        *time.Time `json:"activated_at,omitempty"`
+	AccessExpiresAt    *time.Time `json:"access_expires_at,omitempty"`
+	DaysRemaining      *int       `json:"days_remaining"`
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 }
@@ -193,8 +213,24 @@ type InventorySlot struct {
 	ReservedBy         *string    `json:"reserved_by,omitempty" gorm:"type:uuid;index"`
 	ReservedUntil      *time.Time `json:"reserved_until,omitempty" gorm:"index"`
 	OrderItemID        *string    `json:"order_item_id,omitempty" gorm:"type:uuid;index"`
+	ActivatedAt        *time.Time `json:"activated_at,omitempty"`
+	AccessExpiresAt    *time.Time `json:"access_expires_at,omitempty"`
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
+}
+
+// DaysRemaining converts an expiry into a whole, non-negative day count. A nil
+// expiry means "no limit" and stays nil; a past expiry is zero rather than a
+// negative number the dashboard would have to special-case.
+func DaysRemaining(expiresAt *time.Time, now time.Time) *int {
+	if expiresAt == nil {
+		return nil
+	}
+	days := int(math.Ceil(expiresAt.Sub(now).Hours() / 24))
+	if days < 0 {
+		days = 0
+	}
+	return &days
 }
 
 type Cart struct {

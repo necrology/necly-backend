@@ -18,7 +18,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -87,48 +86,12 @@ func main() {
 	accountsCreated, slotsCreated, slotsExisting := 0, 0, 0
 
 	for _, product := range products {
-		// Akun induk per produk: baris slot wajib menunjuk salah satunya. Bila
-		// belum ada, buat dengan batas sharing yang cukup untuk target slot;
-		// bila sudah ada, naikkan batasnya agar target tetap tercapai.
-		account, err := store.GetAccountByProductID(ctx, product.ID)
-		if err != nil && !errors.Is(err, service.ErrNotFound) {
+		// Satu akun maksimal melayani lima user. Seed lama memakai satu akun
+		// dengan limit sebesar target; sejak aturan Fase 2 itu tidak valid, jadi
+		// seed membagi kapasitas ke beberapa akun (masing-masing <= 5 seat).
+		accounts, _, err := store.ListAccounts(ctx, 1, 100, product.ID, "")
+		if err != nil {
 			log.Fatalf("baca akun %s: %v", product.Name, err)
-		}
-
-		var provisioned int64
-		if account != nil {
-			provisioned, err = store.CountSlotsForAccount(ctx, account.ID)
-			if err != nil {
-				log.Fatalf("hitung slot akun %s: %v", product.Name, err)
-			}
-		}
-
-		// Batas sharing harus menampung seluruh paket produk (perPrice per paket),
-		// bukan hanya satu paket. Sebelumnya limit diset *perPrice saja sehingga
-		// paket kedua menabrak batas dan perintah berhenti dengan fatal. Slot yang
-		// sudah ada ikut dihitung karena sharing_limit membatasi semua baris slot,
-		// bukan hanya yang berstatus available.
-		limit, fits := requiredSharingLimit(*perPrice, product.Prices, provisioned)
-		if !fits {
-			log.Fatalf("produk %s butuh lebih dari %d slot sharing; kecilkan -per-price atau bagi ke akun lain", product.Name, service.MaxSharingLimit)
-		}
-
-		if account == nil {
-			account, err = inventory.CreateInventoryAccount(ctx, service.CreateInventoryAccountInput{
-				ProductID:    product.ID,
-				Credentials:  placeholderCredentials,
-				SharingLimit: limit,
-			})
-			if err != nil {
-				log.Fatalf("buat akun untuk %s: %v", product.Name, err)
-			}
-			accountsCreated++
-			fmt.Printf("  akun induk dibuat untuk %s (limit %d)\n", product.Name, limit)
-		} else if account.SharingLimit < limit {
-			newLimit := limit
-			if _, err := inventory.UpdateInventoryAccount(ctx, account.ID, service.UpdateInventoryAccountInput{SharingLimit: &newLimit}); err != nil {
-				log.Fatalf("naikkan batas sharing %s: %v", product.Name, err)
-			}
 		}
 
 		for _, price := range product.Prices {
@@ -138,43 +101,73 @@ func main() {
 			if missing <= 0 {
 				continue
 			}
-			result, err := inventory.CreateSlots(ctx, service.CreateSlotsInput{
-				ProductPriceID: price.ID,
-				Quantity:       missing,
-			})
-			if err != nil {
-				log.Fatalf("buat slot %s: %v", product.Name, err)
+			createdForPrice := 0
+			for missing > 0 {
+				index, capacity := seedCapacity(accounts, time.Now().UTC())
+				if capacity == 0 {
+					limit := missing
+					if limit > service.MaxSharingLimit {
+						limit = service.MaxSharingLimit
+					}
+					account, err := inventory.CreateInventoryAccount(ctx, service.CreateInventoryAccountInput{
+						ProductID:    product.ID,
+						Credentials:  placeholderCredentials,
+						SharingLimit: limit,
+					})
+					if err != nil {
+						log.Fatalf("buat akun untuk %s: %v", product.Name, err)
+					}
+					accounts = append(accounts, *account)
+					index = len(accounts) - 1
+					capacity = limit
+					accountsCreated++
+					fmt.Printf("  akun dibuat untuk %s (limit %d)\n", product.Name, limit)
+				}
+				quantity := missing
+				if quantity > capacity {
+					quantity = capacity
+				}
+				result, err := inventory.CreateSlots(ctx, service.CreateSlotsInput{
+					ProductPriceID:     price.ID,
+					InventoryAccountID: accounts[index].ID,
+					Quantity:           quantity,
+				})
+				if err != nil {
+					log.Fatalf("buat slot %s: %v", product.Name, err)
+				}
+				accounts[index].TotalSlots += result.Created
+				accounts[index].AvailableSlots += result.Created
+				missing -= result.Created
+				createdForPrice += result.Created
 			}
-			slotsCreated += result.Created
-			fmt.Printf("  +%d slot untuk %s (%s)\n", result.Created, product.Name, durationName(price))
+			slotsCreated += createdForPrice
+			fmt.Printf("  +%d slot untuk %s (%s)\n", createdForPrice, product.Name, durationName(price))
 		}
 	}
 
 	fmt.Printf("\nselesai: %d akun dibuat, %d slot ditambahkan, %d slot sudah ada sebelumnya\n", accountsCreated, slotsCreated, slotsExisting)
 }
 
-// requiredSharingLimit menghitung batas sharing terkecil yang cukup untuk
-// menyiapkan perPrice slot bagi setiap paket, tanpa melupakan slot yang sudah
-// terprovisi (status apa pun dihitung terhadap batas). Nilai kedua bernilai
-// false bila kebutuhan melampaui service.MaxSharingLimit, supaya pemanggil bisa
-// berhenti dengan pesan yang jelas alih-alih menabrak batas di tengah jalan.
-func requiredSharingLimit(perPrice int, prices []domain.ProductPriceWithStock, provisioned int64) (int, bool) {
-	needed := provisioned
-	for _, price := range prices {
-		if missing := perPrice - price.AvailableSlots; missing > 0 {
-			needed += int64(missing)
+// seedCapacity finds an active account that may still accept seats. Accounts
+// above the five-user rule are skipped exactly like the admin API does, so the
+// seed never deepens a legacy violation.
+func seedCapacity(accounts []domain.InventoryAccount, now time.Time) (int, int) {
+	for i := range accounts {
+		account := accounts[i]
+		if account.Status != service.InventoryStatusActive {
+			continue
+		}
+		if account.ExpiresAt != nil && !account.ExpiresAt.After(now) {
+			continue
+		}
+		if account.SharingLimit > service.MaxSharingLimit {
+			continue
+		}
+		if remaining := account.SharingLimit - account.TotalSlots; remaining > 0 {
+			return i, remaining
 		}
 	}
-	if baseline := int64(perPrice) * int64(len(prices)); needed < baseline {
-		needed = baseline
-	}
-	if needed > service.MaxSharingLimit {
-		return service.MaxSharingLimit, false
-	}
-	if needed < 1 {
-		needed = 1
-	}
-	return int(needed), true
+	return -1, 0
 }
 
 func durationName(price domain.ProductPriceWithStock) string {

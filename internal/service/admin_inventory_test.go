@@ -1,9 +1,12 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/necly/services/internal/domain"
@@ -93,7 +96,12 @@ func (s *stubInventoryRepo) UpdateAccount(_ context.Context, a *domain.Inventory
 	if s.updateErr != nil {
 		return s.updateErr
 	}
-	s.updatedAccount = a
+	// Copy the value: the service clears write-only ciphertext on the same
+	// struct before returning, so keeping the pointer would hide what was saved.
+	copied := *a
+	copied.EncryptedCredentials = append([]byte(nil), a.EncryptedCredentials...)
+	copied.OTPSecretEncrypted = append([]byte(nil), a.OTPSecretEncrypted...)
+	s.updatedAccount = &copied
 	return nil
 }
 
@@ -458,4 +466,206 @@ func TestNormalizeSharingLimitAndStatus(t *testing.T) {
 	if _, ok := normalizeInventoryStatus("paused"); ok {
 		t.Fatal("status tak dikenal diterima")
 	}
+}
+
+func TestSharingLimitEnforcesFiveUserRule(t *testing.T) {
+	if MaxSharingLimit != 5 {
+		t.Fatalf("MaxSharingLimit = %d, want 5", MaxSharingLimit)
+	}
+	if limit, err := normalizeSharingLimit(5); err != nil || limit != 5 {
+		t.Fatalf("normalizeSharingLimit(5) = %d, %v", limit, err)
+	}
+	if _, err := normalizeSharingLimit(6); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("limit 6 yielded %v, want ErrInvalidInput", err)
+	}
+}
+
+func TestUpdateInventoryAccountRejectsSharingLimitAboveFive(t *testing.T) {
+	id := uuid.NewString()
+	repo := &stubInventoryRepo{
+		accountWithCredentials: &domain.InventoryAccount{ID: id, SharingLimit: 5},
+	}
+	svc := NewAdminInventoryService(repo, testCipher(t))
+
+	for _, limit := range []int{0, 6, 1000} {
+		value := limit
+		if _, err := svc.UpdateInventoryAccount(context.Background(), id, UpdateInventoryAccountInput{SharingLimit: &value}); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("limit %d yielded %v, want ErrInvalidInput", limit, err)
+		}
+	}
+}
+
+func TestPresentAccountFlagsLegacyLimitAndStripsOTPSecret(t *testing.T) {
+	cipher := testCipher(t)
+	sealed, err := cipher.Encrypt([]byte("JBSWY3DPEHPK3PXP"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewAdminInventoryService(&stubInventoryRepo{}, cipher)
+	account := &domain.InventoryAccount{
+		ID:                   uuid.NewString(),
+		SharingLimit:         10,
+		TotalSlots:           2,
+		OTPSecretEncrypted:   sealed,
+		EncryptedCredentials: []byte("cipher"),
+	}
+
+	svc.presentAccount(account)
+
+	if !account.NeedsReview {
+		t.Fatal("legacy account above five users must be flagged needs_review")
+	}
+	if !account.OTPConfigured {
+		t.Fatal("an encrypted secret must be reported as otp_configured")
+	}
+	if account.OTPSecretEncrypted != nil || account.EncryptedCredentials != nil {
+		t.Fatal("presentAccount left write-only ciphertext on the response")
+	}
+	payload, err := json.Marshal(account)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(payload, []byte("otp_secret")) || bytes.Contains(payload, []byte("JBSWY3DPEHPK3PXP")) {
+		t.Fatalf("account JSON leaked OTP material: %s", payload)
+	}
+}
+
+func TestGenerateOTPUsesRFC6238AtFixedTime(t *testing.T) {
+	const secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ" // base32("12345678901234567890")
+	id := uuid.NewString()
+	cipher := testCipher(t)
+	sealed, err := cipher.Encrypt([]byte(secret))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &stubInventoryRepo{accountWithCredentials: &domain.InventoryAccount{ID: id, OTPSecretEncrypted: sealed}}
+	svc := NewAdminInventoryService(repo, cipher)
+	svc.now = func() time.Time { return time.Unix(59, 0).UTC() }
+
+	code, err := svc.GenerateOTP(context.Background(), id, "admin-1")
+	if err != nil {
+		t.Fatalf("GenerateOTP: %v", err)
+	}
+	if code.Code != "287082" || code.Period != 30 || code.ExpiresIn != 1 {
+		t.Fatalf("code = %+v, want 287082 period 30 expires_in 1", code)
+	}
+	payload, err := json.Marshal(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(payload, []byte(secret)) || bytes.Contains(payload, []byte("secret")) {
+		t.Fatalf("OTP response leaked the secret: %s", payload)
+	}
+}
+
+func TestGenerateOTPWithoutSecretIsNotConfigured(t *testing.T) {
+	id := uuid.NewString()
+	svc := NewAdminInventoryService(&stubInventoryRepo{
+		accountWithCredentials: &domain.InventoryAccount{ID: id},
+	}, testCipher(t))
+
+	if _, err := svc.GenerateOTP(context.Background(), id, "admin-1"); !errors.Is(err, ErrOTPNotConfigured) {
+		t.Fatalf("error = %v, want ErrOTPNotConfigured", err)
+	}
+}
+
+func TestGenerateOTPIsRateLimitedPerAccountAndActor(t *testing.T) {
+	id := uuid.NewString()
+	cipher := testCipher(t)
+	sealed, err := cipher.Encrypt([]byte("JBSWY3DPEHPK3PXP"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewAdminInventoryService(&stubInventoryRepo{
+		accountWithCredentials: &domain.InventoryAccount{ID: id, OTPSecretEncrypted: sealed},
+	}, cipher)
+	svc.now = func() time.Time { return time.Unix(59, 0).UTC() }
+	svc.otp.now = svc.now
+
+	for attempt := 0; attempt < otpRateLimit; attempt++ {
+		if _, err := svc.GenerateOTP(context.Background(), id, "admin-1"); err != nil {
+			t.Fatalf("attempt %d: %v", attempt+1, err)
+		}
+	}
+	if _, err := svc.GenerateOTP(context.Background(), id, "admin-1"); !errors.Is(err, ErrOTPRateLimited) {
+		t.Fatalf("error after budget = %v, want ErrOTPRateLimited", err)
+	}
+	// Another admin has an independent budget for the same account.
+	if _, err := svc.GenerateOTP(context.Background(), id, "admin-2"); err != nil {
+		t.Fatalf("other actor: %v", err)
+	}
+}
+
+func TestCreateInventoryAccountSealsOptionalOTPSecret(t *testing.T) {
+	productID := uuid.NewString()
+	repo := &stubInventoryRepo{productExists: true}
+	svc := NewAdminInventoryService(repo, testCipher(t))
+	secret := "jbswy3dpehpk3pxp"
+
+	account, err := svc.CreateInventoryAccount(context.Background(), CreateInventoryAccountInput{
+		ProductID:   productID,
+		Credentials: "user:pass",
+		OTPSecret:   &secret,
+	})
+	if err != nil {
+		t.Fatalf("CreateInventoryAccount: %v", err)
+	}
+	if repo.createdAccount == nil || len(repo.createdAccount.OTPSecretEncrypted) == 0 {
+		t.Fatal("OTP secret was not encrypted before persisting")
+	}
+	if !account.OTPConfigured || account.OTPSecretEncrypted != nil {
+		t.Fatalf("created account OTPConfigured=%t secret=%v", account.OTPConfigured, account.OTPSecretEncrypted)
+	}
+	if bytes.Contains(mustJSON(t, account), []byte(secret)) || bytes.Contains(mustJSON(t, account), []byte("otp_secret")) {
+		t.Fatal("create response leaked OTP material")
+	}
+}
+
+func TestUpdateInventoryAccountOTPSecretOmittedPreservesEmptyRemoves(t *testing.T) {
+	id := uuid.NewString()
+	cipher := testCipher(t)
+	sealed, err := cipher.Encrypt([]byte("JBSWY3DPEHPK3PXP"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &stubInventoryRepo{
+		accountWithCredentials: &domain.InventoryAccount{ID: id, SharingLimit: 5, OTPSecretEncrypted: sealed},
+	}
+	svc := NewAdminInventoryService(repo, cipher)
+
+	label := "Baru"
+	if _, err := svc.UpdateInventoryAccount(context.Background(), id, UpdateInventoryAccountInput{Label: &label}); err != nil {
+		t.Fatalf("update label: %v", err)
+	}
+	if len(repo.updatedAccount.OTPSecretEncrypted) == 0 {
+		t.Fatal("omitting otp_secret removed the stored secret")
+	}
+
+	empty := ""
+	if _, err := svc.UpdateInventoryAccount(context.Background(), id, UpdateInventoryAccountInput{OTPSecret: &empty}); err != nil {
+		t.Fatalf("clear otp secret: %v", err)
+	}
+	if repo.updatedAccount.OTPSecretEncrypted != nil {
+		t.Fatal("otp_secret empty string did not remove the stored secret")
+	}
+}
+
+func TestUpdateInventoryAccountRejectsMalformedOTPSecret(t *testing.T) {
+	id := uuid.NewString()
+	repo := &stubInventoryRepo{accountWithCredentials: &domain.InventoryAccount{ID: id, SharingLimit: 5}}
+	svc := NewAdminInventoryService(repo, testCipher(t))
+	bad := "not a base32 secret!"
+
+	if _, err := svc.UpdateInventoryAccount(context.Background(), id, UpdateInventoryAccountInput{OTPSecret: &bad}); !errors.Is(err, ErrOTPSecretInvalid) {
+		t.Fatalf("error = %v, want ErrOTPSecretInvalid", err)
+	}
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	payload, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return payload
 }

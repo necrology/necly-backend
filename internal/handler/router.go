@@ -275,6 +275,8 @@ func (r *Router) registerAdmin(api fiber.Router) {
 	admin.Post("/inventory/slots", r.adminCreateInventorySlots)
 	admin.Get("/inventory/:id", r.adminGetInventoryAccount)
 	admin.Get("/inventory/:id/slots", r.adminListInventorySlots)
+	// Kode TOTP aktif untuk satu akun. Hanya admin, tanpa secret di response.
+	admin.Post("/inventory/:id/otp", r.adminGenerateInventoryOTP)
 	admin.Patch("/inventory/:id", r.adminUpdateInventoryAccount)
 	admin.Delete("/inventory/:id", r.adminDeleteInventoryAccount)
 	// Payment list for dashboard
@@ -2018,8 +2020,8 @@ func (r *Router) adminCreateInventoryAccount(c *fiber.Ctx) error {
 
 	account, err := r.adminInventorySvc.CreateInventoryAccount(ctx, input)
 	if err != nil {
-		if errors.Is(err, service.ErrInvalidInput) {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		if errors.Is(err, service.ErrInvalidInput) || errors.Is(err, service.ErrOTPSecretInvalid) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error(), "code": "invalid_input"})
 		}
 		if errors.Is(err, service.ErrNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Produk tidak ditemukan"})
@@ -2028,6 +2030,7 @@ func (r *Router) adminCreateInventoryAccount(c *fiber.Ctx) error {
 	}
 
 	account.EncryptedCredentials = nil
+	account.OTPSecretEncrypted = nil
 	return c.Status(fiber.StatusCreated).JSON(account)
 }
 
@@ -2049,6 +2052,8 @@ func (r *Router) adminCreateInventorySlots(c *fiber.Ctx) error {
 			return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": err.Error(), "code": "account_required"})
 		case errors.Is(err, service.ErrSharingLimitExceeded):
 			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "sharing_limit_exceeded"})
+		case errors.Is(err, service.ErrInventoryAccountNeedsReview):
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "needs_review"})
 		case errors.Is(err, service.ErrInventoryAccountUnavailable):
 			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "inventory_account_unavailable"})
 		case errors.Is(err, service.ErrInventoryAccountMismatch):
@@ -2125,8 +2130,8 @@ func (r *Router) adminUpdateInventoryAccount(c *fiber.Ctx) error {
 		if errors.Is(err, service.ErrNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Akun inventaris tidak ditemukan"})
 		}
-		if errors.Is(err, service.ErrInvalidInput) {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		if errors.Is(err, service.ErrInvalidInput) || errors.Is(err, service.ErrOTPSecretInvalid) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error(), "code": "invalid_input"})
 		}
 		// Menurunkan sharing_limit di bawah jumlah slot terprovisi bukan kesalahan
 		// server: kontrak W15 meminta 409 dengan kode yang bisa dibaca frontend.
@@ -2137,7 +2142,34 @@ func (r *Router) adminUpdateInventoryAccount(c *fiber.Ctx) error {
 	}
 
 	account.EncryptedCredentials = nil
+	account.OTPSecretEncrypted = nil
 	return c.JSON(account)
+}
+
+// adminGenerateInventoryOTP returns the currently valid RFC 6238 code. The
+// secret stays encrypted at rest and is never echoed; the response carries only
+// the short-lived code and its remaining seconds.
+func (r *Router) adminGenerateInventoryOTP(c *fiber.Ctx) error {
+	id := c.Params("id")
+	actorID := localUserID(c)
+
+	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+	defer cancel()
+
+	code, err := r.adminInventorySvc.GenerateOTP(ctx, id, actorID)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrNotFound):
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Akun inventaris tidak ditemukan"})
+		case errors.Is(err, service.ErrOTPNotConfigured):
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "otp_not_configured"})
+		case errors.Is(err, service.ErrOTPRateLimited):
+			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{"error": err.Error(), "code": "rate_limited"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal membuat kode OTP"})
+	}
+
+	return c.JSON(code)
 }
 
 func (r *Router) adminDeleteInventoryAccount(c *fiber.Ctx) error {

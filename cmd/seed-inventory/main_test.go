@@ -2,71 +2,54 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"github.com/necly/services/internal/domain"
-	"github.com/necly/services/internal/service"
 )
 
-func priceWith(available int) domain.ProductPriceWithStock {
-	return domain.ProductPriceWithStock{AvailableSlots: available}
-}
-
-// TestRequiredSharingLimitCoversEveryPackage guards the review finding that
-// cmd/seed-inventory sized the account for one package while provisioning one
-// slot per package. A product with N packages needs perPrice*N seats.
-func TestRequiredSharingLimitCoversEveryPackage(t *testing.T) {
+// TestSeedCapacityHonorsFiveUserRule guards the Fase 2 rule: the dev seed must
+// spread capacity across several accounts instead of creating or extending an
+// account beyond five seats.
+func TestSeedCapacityHonorsFiveUserRule(t *testing.T) {
+	now := time.Now().UTC()
+	past := now.Add(-time.Hour)
 	cases := []struct {
-		name        string
-		perPrice    int
-		prices      []domain.ProductPriceWithStock
-		provisioned int64
-		want        int
-		wantOK      bool
+		name     string
+		accounts []domain.InventoryAccount
+		want     int
+		capacity int
 	}{
 		{
-			name:     "fresh multi-package covers every package",
-			perPrice: 3,
-			prices:   []domain.ProductPriceWithStock{priceWith(0), priceWith(0)},
-			want:     6,
-			wantOK:   true,
+			name:     "first account with spare capacity is used",
+			accounts: []domain.InventoryAccount{{ID: "a", Status: "active", SharingLimit: 5, TotalSlots: 2}},
+			want:     0,
+			capacity: 3,
 		},
 		{
-			name:        "partial provisioning adds only the missing rows",
-			perPrice:    3,
-			prices:      []domain.ProductPriceWithStock{priceWith(3), priceWith(0)},
-			provisioned: 3,
-			want:        6,
-			wantOK:      true,
+			name: "full and legacy accounts are skipped",
+			accounts: []domain.InventoryAccount{
+				{ID: "full", Status: "active", SharingLimit: 5, TotalSlots: 5},
+				{ID: "legacy", Status: "active", SharingLimit: 10, TotalSlots: 0},
+			},
+			want: -1,
 		},
 		{
-			name:        "used slots above the target keep the larger limit",
-			perPrice:    3,
-			prices:      []domain.ProductPriceWithStock{priceWith(5), priceWith(0)},
-			provisioned: 5,
-			want:        8,
-			wantOK:      true,
-		},
-		{
-			name:     "single package keeps the documented target",
-			perPrice: 10,
-			prices:   []domain.ProductPriceWithStock{priceWith(0)},
-			want:     10,
-			wantOK:   true,
-		},
-		{
-			name:     "requirement above the cap fails closed",
-			perPrice: 100,
-			prices:   make([]domain.ProductPriceWithStock, 11),
-			want:     service.MaxSharingLimit,
-			wantOK:   false,
+			name: "inactive and expired accounts are skipped",
+			accounts: []domain.InventoryAccount{
+				{ID: "inactive", Status: "inactive", SharingLimit: 5, TotalSlots: 0},
+				{ID: "expired", Status: "active", SharingLimit: 5, TotalSlots: 0, ExpiresAt: &past},
+				{ID: "usable", Status: "active", SharingLimit: 4, TotalSlots: 1},
+			},
+			want:     2,
+			capacity: 3,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := requiredSharingLimit(tc.perPrice, tc.prices, tc.provisioned)
-			if got != tc.want || ok != tc.wantOK {
-				t.Fatalf("requiredSharingLimit = %d, %t; want %d, %t", got, ok, tc.want, tc.wantOK)
+			index, capacity := seedCapacity(tc.accounts, now)
+			if index != tc.want || capacity != tc.capacity {
+				t.Fatalf("seedCapacity = %d, %d; want %d, %d", index, capacity, tc.want, tc.capacity)
 			}
 		})
 	}
