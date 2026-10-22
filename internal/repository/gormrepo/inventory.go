@@ -49,15 +49,18 @@ func (s *Store) ListAccounts(ctx context.Context, page, perPage int, productID, 
 	if err := s.attachSlotCounts(ctx, accounts); err != nil {
 		return nil, 0, err
 	}
-	// Never return encrypted credentials
+	// Never return encrypted credentials or the encrypted OTP seed.
 	for i := range accounts {
 		accounts[i].EncryptedCredentials = nil
+		accounts[i].OTPSecretEncrypted = nil
 	}
 	return accounts, total, nil
 }
 
 // attachSlotCounts fills the derived capacity fields in one grouped query so
-// the admin list does not issue one COUNT per account.
+// the admin list does not issue one COUNT per account. assigned_users follows
+// the same ownership rule as the slot detail: an order's buyer, or the user who
+// reserved the seat when the order row is not reachable.
 func (s *Store) attachSlotCounts(ctx context.Context, accounts []domain.InventoryAccount) error {
 	if len(accounts) == 0 {
 		return nil
@@ -70,12 +73,19 @@ func (s *Store) attachSlotCounts(ctx context.Context, accounts []domain.Inventor
 		InventoryAccountID string
 		Total              int64
 		Available          int64
+		Assigned           int64
 	}
 	var rows []slotCountRow
-	if err := s.db.WithContext(ctx).Table("inventory_slots").
-		Select("inventory_account_id, COUNT(*) AS total, COUNT(*) FILTER (WHERE status = 'available') AS available").
-		Where("inventory_account_id IN ?", ids).
-		Group("inventory_account_id").
+	if err := s.db.WithContext(ctx).Table("inventory_slots AS s").
+		Select(`s.inventory_account_id,
+			COUNT(*) AS total,
+			COUNT(*) FILTER (WHERE s.status = 'available') AS available,
+			COUNT(DISTINCT COALESCE(o.user_id, s.reserved_by))
+				FILTER (WHERE COALESCE(o.user_id, s.reserved_by) IS NOT NULL) AS assigned`).
+		Joins("LEFT JOIN order_items oi ON oi.id = s.order_item_id").
+		Joins("LEFT JOIN orders o ON o.id = oi.order_id").
+		Where("s.inventory_account_id IN ?", ids).
+		Group("s.inventory_account_id").
 		Scan(&rows).Error; err != nil {
 		return fmt.Errorf("count inventory slots: %w", err)
 	}
@@ -86,7 +96,7 @@ func (s *Store) attachSlotCounts(ctx context.Context, accounts []domain.Inventor
 	now := s.nowUTC()
 	for i := range accounts {
 		count := counts[accounts[i].ID]
-		applyAccountDerived(&accounts[i], count.Total, count.Available, now)
+		applyAccountDerived(&accounts[i], count.Total, count.Available, count.Assigned, now)
 	}
 	return nil
 }
@@ -94,16 +104,20 @@ func (s *Store) attachSlotCounts(ctx context.Context, accounts []domain.Inventor
 // applyAccountDerived fills the read-only capacity fields the admin API
 // exposes. They are never stored (gorm:"-"), so every response path must
 // recompute them from the slot rows it just read.
-func applyAccountDerived(account *domain.InventoryAccount, total, available int64, now time.Time) {
+func applyAccountDerived(account *domain.InventoryAccount, total, available, assigned int64, now time.Time) {
 	account.TotalSlots = int(total)
 	account.AvailableSlots = int(available)
 	account.UsedSlots = account.TotalSlots - account.AvailableSlots
+	account.AssignedUsers = int(assigned)
 	if account.SharingLimit > account.TotalSlots {
 		account.RemainingSlots = account.SharingLimit - account.TotalSlots
 	} else {
 		account.RemainingSlots = 0
 	}
 	account.Sellable = account.Status == "active" && (account.ExpiresAt == nil || account.ExpiresAt.After(now))
+	account.NeedsReview = account.SharingLimit > service.MaxSharingLimit || account.TotalSlots > service.MaxSharingLimit
+	account.OTPConfigured = len(account.OTPSecretEncrypted) > 0
+	account.DaysRemaining = domain.DaysRemaining(account.ExpiresAt, now)
 }
 
 // hydrateAccount counts the slots owned by a single account and fills its
@@ -131,6 +145,7 @@ func (s *Store) GetAccount(ctx context.Context, id string) (*domain.InventoryAcc
 	if err := s.hydrateAccount(ctx, &a); err != nil {
 		return nil, err
 	}
+	a.OTPSecretEncrypted = nil
 	return &a, nil
 }
 
@@ -159,6 +174,10 @@ func (s *Store) GetAccountByProductID(ctx context.Context, productID string) (*d
 		return nil, fmt.Errorf("get inventory account by product: %w", err)
 	}
 	a.EncryptedCredentials = nil
+	if err := s.hydrateAccount(ctx, &a); err != nil {
+		return nil, err
+	}
+	a.OTPSecretEncrypted = nil
 	return &a, nil
 }
 
@@ -171,7 +190,7 @@ func (s *Store) CreateAccount(ctx context.Context, a *domain.InventoryAccount) e
 	}
 	// A brand-new account owns no slots yet, so the derived counters are known
 	// without another query while still matching the list endpoint shape.
-	applyAccountDerived(a, 0, 0, a.CreatedAt)
+	applyAccountDerived(a, 0, 0, 0, a.CreatedAt)
 	return nil
 }
 
@@ -190,7 +209,7 @@ func (s *Store) UpdateAccount(ctx context.Context, a *domain.InventoryAccount) e
 			return fmt.Errorf("load inventory account: %w", err)
 		}
 
-		var total, available int64
+		var total, available, assigned int64
 		if err := tx.Model(&domain.InventorySlot{}).
 			Where("inventory_account_id = ?", a.ID).Count(&total).Error; err != nil {
 			return fmt.Errorf("count inventory slots: %w", err)
@@ -198,6 +217,14 @@ func (s *Store) UpdateAccount(ctx context.Context, a *domain.InventoryAccount) e
 		if err := tx.Model(&domain.InventorySlot{}).
 			Where("inventory_account_id = ? AND status = ?", a.ID, "available").Count(&available).Error; err != nil {
 			return fmt.Errorf("count available inventory slots: %w", err)
+		}
+		if err := tx.Raw(`SELECT COUNT(DISTINCT COALESCE(o.user_id, s.reserved_by))
+			FROM inventory_slots s
+			LEFT JOIN order_items oi ON oi.id = s.order_item_id
+			LEFT JOIN orders o ON o.id = oi.order_id
+			WHERE s.inventory_account_id = ? AND COALESCE(o.user_id, s.reserved_by) IS NOT NULL`, a.ID).
+			Scan(&assigned).Error; err != nil {
+			return fmt.Errorf("count assigned inventory users: %w", err)
 		}
 		if int64(a.SharingLimit) < total {
 			return service.ErrSharingLimitExceeded
@@ -207,7 +234,7 @@ func (s *Store) UpdateAccount(ctx context.Context, a *domain.InventoryAccount) e
 		if err := tx.Save(a).Error; err != nil {
 			return err
 		}
-		applyAccountDerived(a, total, available, a.UpdatedAt)
+		applyAccountDerived(a, total, available, assigned, a.UpdatedAt)
 		return nil
 	})
 }
@@ -304,13 +331,20 @@ func (s *Store) ListSlotAssignments(ctx context.Context, accountID, productPrice
 	if err := query.
 		Select(`s.id, s.inventory_account_id, s.product_price_id, s.status,
 			s.reserved_by, s.reserved_until, s.order_item_id,
+			s.activated_at, s.access_expires_at,
 			o.id AS order_id, o.number AS order_number,
+			(SELECT p.status FROM payments p WHERE p.order_id = o.id
+				ORDER BY p.created_at DESC, p.id DESC LIMIT 1) AS payment_status,
 			u.email AS reserved_email, u.name AS reserved_name,
 			s.created_at, s.updated_at`).
 		Order("s.created_at DESC, s.id DESC").
 		Offset(offset).Limit(perPage).
 		Scan(&assignments).Error; err != nil {
 		return nil, 0, fmt.Errorf("list inventory slots: %w", err)
+	}
+	now := s.nowUTC()
+	for i := range assignments {
+		assignments[i].DaysRemaining = domain.DaysRemaining(assignments[i].AccessExpiresAt, now)
 	}
 	return assignments, total, nil
 }
@@ -367,6 +401,12 @@ func (s *Store) CreateSlotsForAccount(ctx context.Context, accountID, productID 
 		if !accountSellable(account, now) {
 			return service.ErrInventoryAccountUnavailable
 		}
+		if account.SharingLimit > service.MaxSharingLimit {
+			// A legacy account above the five-user rule keeps every existing
+			// slot, but adding more would deepen the violation. The admin must
+			// lower the limit first (or split capacity into another account).
+			return service.ErrInventoryAccountNeedsReview
+		}
 		var count int64
 		if err := tx.Model(&domain.InventorySlot{}).
 			Where("inventory_account_id = ?", accountID).Count(&count).Error; err != nil {
@@ -402,7 +442,12 @@ func (s *Store) CreateSlotsAuto(ctx context.Context, productID string, slots []d
 		if len(accounts) == 0 {
 			return service.ErrAccountRequired
 		}
+		sawNeedsReview := false
 		for _, account := range accounts {
+			if account.SharingLimit > service.MaxSharingLimit {
+				sawNeedsReview = true
+				continue
+			}
 			var count int64
 			if err := tx.Model(&domain.InventorySlot{}).
 				Where("inventory_account_id = ?", account.ID).Count(&count).Error; err != nil {
@@ -412,6 +457,9 @@ func (s *Store) CreateSlotsAuto(ctx context.Context, productID string, slots []d
 				chosen = account.ID
 				return insertSlots(tx, account.ID, slots, now)
 			}
+		}
+		if sawNeedsReview {
+			return service.ErrInventoryAccountNeedsReview
 		}
 		return service.ErrSharingLimitExceeded
 	})

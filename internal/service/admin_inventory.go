@@ -20,9 +20,10 @@ const (
 	// DefaultSharingLimit is deliberately conservative. A new account is not a
 	// free-for-all seat pool; an administrator raises the limit explicitly.
 	DefaultSharingLimit = 1
-	// MaxSharingLimit bounds a single account so a typo cannot provision an
-	// unbounded number of seats. It is far above realistic sharing plans.
-	MaxSharingLimit = 1000
+	// MaxSharingLimit is the product rule: one account serves at most five
+	// users. Legacy accounts above this cap are not truncated automatically;
+	// they are flagged needs_review and cannot add new slots until lowered.
+	MaxSharingLimit = 5
 	// MaxSlotsPerRequest matches the existing CreateSlots contract.
 	MaxSlotsPerRequest = 100
 	// MaxInventoryLabelLength matches inventory_accounts.label VARCHAR(120).
@@ -32,10 +33,13 @@ const (
 type AdminInventoryService struct {
 	repo   InventoryRepository
 	cipher *CredentialCipher
+	now    func() time.Time
+	otp    *otpRateLimiter
 }
 
 func NewAdminInventoryService(repo InventoryRepository, cipher *CredentialCipher) *AdminInventoryService {
-	return &AdminInventoryService{repo: repo, cipher: cipher}
+	now := func() time.Time { return time.Now().UTC() }
+	return &AdminInventoryService{repo: repo, cipher: cipher, now: now, otp: newOTPRateLimiter(now)}
 }
 
 type InventoryAccountFilter struct {
@@ -53,6 +57,9 @@ type CreateInventoryAccountInput struct {
 	Label        string     `json:"label"`
 	SharingLimit int        `json:"sharing_limit"`
 	ExpiresAt    *time.Time `json:"expires_at"`
+	// OTPSecret is write-only. It is accepted on create/update but never part
+	// of a response; an empty value on update removes the stored secret.
+	OTPSecret *string `json:"otp_secret"`
 }
 
 type UpdateInventoryAccountInput struct {
@@ -61,6 +68,7 @@ type UpdateInventoryAccountInput struct {
 	ExpiresAt    *time.Time `json:"expires_at"`
 	Label        *string    `json:"label"`
 	SharingLimit *int       `json:"sharing_limit"`
+	OTPSecret    *string    `json:"otp_secret"`
 }
 
 type CreateSlotsInput struct {
@@ -152,7 +160,7 @@ func (s *AdminInventoryService) ListInventoryAccounts(ctx context.Context, filte
 		return nil, 0, err
 	}
 	for i := range accounts {
-		accounts[i].EncryptedCredentials = nil
+		s.presentAccount(&accounts[i])
 	}
 	return accounts, total, nil
 }
@@ -191,11 +199,16 @@ func (s *AdminInventoryService) CreateInventoryAccount(ctx context.Context, inpu
 	}
 
 	now := time.Now().UTC()
+	otpSecret, err := s.sealOTPSecret(input.OTPSecret)
+	if err != nil {
+		return nil, err
+	}
 	account := &domain.InventoryAccount{
 		ID:                   uuid.NewString(),
 		ProductID:            input.ProductID,
 		Label:                label,
 		EncryptedCredentials: encrypted,
+		OTPSecretEncrypted:   otpSecret,
 		Status:               InventoryStatusActive,
 		SharingLimit:         sharingLimit,
 		ExpiresAt:            input.ExpiresAt,
@@ -206,7 +219,7 @@ func (s *AdminInventoryService) CreateInventoryAccount(ctx context.Context, inpu
 	if err := s.repo.CreateAccount(ctx, account); err != nil {
 		return nil, fmt.Errorf("create inventory account: %w", err)
 	}
-	account.EncryptedCredentials = nil
+	s.presentAccount(account)
 	return account, nil
 }
 
@@ -269,6 +282,19 @@ func (s *AdminInventoryService) UpdateInventoryAccount(ctx context.Context, id s
 		}
 		account.SharingLimit = sharingLimit
 	}
+	if input.OTPSecret != nil {
+		if strings.TrimSpace(*input.OTPSecret) == "" {
+			// Explicit empty string deletes the secret. An omitted field (nil)
+			// leaves the existing secret untouched.
+			account.OTPSecretEncrypted = nil
+		} else {
+			sealed, err := s.sealOTPSecret(input.OTPSecret)
+			if err != nil {
+				return nil, err
+			}
+			account.OTPSecretEncrypted = sealed
+		}
+	}
 	if input.ExpiresAt != nil {
 		account.ExpiresAt = input.ExpiresAt
 	}
@@ -277,7 +303,7 @@ func (s *AdminInventoryService) UpdateInventoryAccount(ctx context.Context, id s
 	if err := s.repo.UpdateAccount(ctx, account); err != nil {
 		return nil, err
 	}
-	account.EncryptedCredentials = nil
+	s.presentAccount(account)
 	return account, nil
 }
 
@@ -289,7 +315,7 @@ func (s *AdminInventoryService) GetInventoryAccount(ctx context.Context, id stri
 	if err != nil {
 		return nil, err
 	}
-	account.EncryptedCredentials = nil
+	s.presentAccount(account)
 	return account, nil
 }
 
@@ -321,7 +347,79 @@ func (s *AdminInventoryService) ListSlots(ctx context.Context, accountID, produc
 	if _, err := s.repo.GetAccount(ctx, accountID); err != nil {
 		return nil, 0, err
 	}
-	return s.repo.ListSlotAssignments(ctx, accountID, productPriceID, status, page, perPage)
+	slots, total, err := s.repo.ListSlotAssignments(ctx, accountID, productPriceID, status, page, perPage)
+	if err != nil {
+		return nil, 0, err
+	}
+	now := s.now()
+	for i := range slots {
+		slots[i].DaysRemaining = domain.DaysRemaining(slots[i].AccessExpiresAt, now)
+	}
+	return slots, total, nil
+}
+
+// presentAccount normalizes the derived fields every account response carries
+// and strips both write-only secrets. The repository already computes the
+// counters; this is the last line of defence so a handler cannot serialize a
+// ciphertext, and it recomputes time-dependent fields with the service clock.
+func (s *AdminInventoryService) presentAccount(account *domain.InventoryAccount) {
+	if len(account.OTPSecretEncrypted) > 0 {
+		account.OTPConfigured = true
+	}
+	account.NeedsReview = account.SharingLimit > MaxSharingLimit || account.TotalSlots > MaxSharingLimit
+	account.DaysRemaining = domain.DaysRemaining(account.ExpiresAt, s.now())
+	account.EncryptedCredentials = nil
+	account.OTPSecretEncrypted = nil
+}
+
+func (s *AdminInventoryService) sealOTPSecret(value *string) ([]byte, error) {
+	if value == nil || strings.TrimSpace(*value) == "" {
+		return nil, nil
+	}
+	canonical, err := normalizeOTPSecret(*value)
+	if err != nil {
+		return nil, err
+	}
+	if s.cipher == nil {
+		return nil, errors.New("credential cipher not configured")
+	}
+	sealed, err := s.cipher.Encrypt([]byte(canonical))
+	if err != nil {
+		// The encryption error is about the cipher, never the secret value.
+		return nil, fmt.Errorf("encrypt otp secret: %w", err)
+	}
+	return sealed, nil
+}
+
+// GenerateOTP returns the current six-digit TOTP code for one account. The
+// caller must be an authenticated admin; the rate key additionally scopes the
+// budget to this account and actor.
+func (s *AdminInventoryService) GenerateOTP(ctx context.Context, accountID, actorID string) (*OTPCode, error) {
+	if _, err := uuid.Parse(accountID); err != nil {
+		return nil, ErrNotFound
+	}
+	if !s.otp.allow(accountID + "|" + actorID) {
+		return nil, ErrOTPRateLimited
+	}
+	account, err := s.repo.GetAccountWithCredentials(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if len(account.OTPSecretEncrypted) == 0 {
+		return nil, ErrOTPNotConfigured
+	}
+	if s.cipher == nil {
+		return nil, errors.New("credential cipher not configured")
+	}
+	plain, err := s.cipher.Decrypt(account.OTPSecretEncrypted)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt otp secret: %w", err)
+	}
+	code, err := GenerateTOTP(string(plain), s.now())
+	if err != nil {
+		return nil, fmt.Errorf("generate otp: %w", err)
+	}
+	return &code, nil
 }
 
 func createInventoryLabel(value string) (string, error) {
