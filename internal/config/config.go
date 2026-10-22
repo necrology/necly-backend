@@ -32,6 +32,7 @@ type Config struct {
 	RateLimit         RateLimitConfig
 	Payment           PaymentConfig
 	Email             EmailConfig
+	OTPInbox          OTPInboxConfig
 	Google            GoogleConfig
 	Storage           StorageConfig
 	CORS              CORSConfig
@@ -96,6 +97,20 @@ type EmailConfig struct {
 	FromEmail    string
 	FromName     string
 	UseTLS       bool
+}
+
+// OTPInboxConfig configures the IMAP mailbox that receives one-time-password
+// (OTP) mail for purchased subscription accounts. The mailbox is optional: when
+// it is not configured the public OTP lookup fails closed with a clear
+// "otp_unavailable" response instead of guessing a code.
+type OTPInboxConfig struct {
+	Addr     string
+	User     string
+	Password string
+	Mailbox  string
+	UseTLS   bool
+	Lookback time.Duration
+	Timeout  time.Duration
 }
 
 type GoogleConfig struct {
@@ -213,6 +228,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	otpIMAPTLS, err := envBool("OTP_IMAP_TLS", true)
+	if err != nil {
+		return nil, err
+	}
 
 	corsOrigins := splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173"))
 	frontendURL := strings.TrimSpace(os.Getenv("FRONTEND_BASE_URL"))
@@ -259,6 +278,15 @@ func Load() (*Config, error) {
 			SMTPHost: os.Getenv("SMTP_HOST"), SMTPPort: smtpPort, SMTPUser: os.Getenv("SMTP_USER"),
 			SMTPPassword: os.Getenv("SMTP_PASSWORD"), FromEmail: getEnv("EMAIL_FROM", "noreply@necly.example"),
 			FromName: getEnv("EMAIL_FROM_NAME", "Necly Services"), UseTLS: smtpTLS,
+		},
+		OTPInbox: OTPInboxConfig{
+			Addr:     strings.TrimSpace(os.Getenv("OTP_IMAP_ADDR")),
+			User:     strings.TrimSpace(os.Getenv("OTP_IMAP_USER")),
+			Password: os.Getenv("OTP_IMAP_PASSWORD"),
+			Mailbox:  getEnv("OTP_IMAP_MAILBOX", "INBOX"),
+			UseTLS:   otpIMAPTLS,
+			Lookback: mustEnvDuration("OTP_IMAP_LOOKBACK", 15*time.Minute),
+			Timeout:  mustEnvDuration("OTP_IMAP_TIMEOUT", 20*time.Second),
 		},
 		Google: GoogleConfig{
 			ClientID: os.Getenv("GOOGLE_CLIENT_ID"), ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
@@ -399,6 +427,14 @@ func (c *Config) Validate() error {
 		}
 		if strings.TrimSpace(c.Email.FromEmail) == "" {
 			return errors.New("EMAIL_FROM is required when SMTP_HOST is configured")
+		}
+	}
+	if strings.TrimSpace(c.OTPInbox.Addr) != "" {
+		if strings.TrimSpace(c.OTPInbox.User) == "" || strings.TrimSpace(c.OTPInbox.Password) == "" {
+			return errors.New("OTP_IMAP_USER and OTP_IMAP_PASSWORD are required when OTP_IMAP_ADDR is configured")
+		}
+		if !c.OTPInbox.UseTLS {
+			return errors.New("OTP_IMAP_TLS must be true: OTP mailboxes may not be read over a cleartext connection")
 		}
 	}
 	if c.AppEnv == "production" {

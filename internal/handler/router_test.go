@@ -132,6 +132,22 @@ func setupTestApp(t *testing.T) (*fiber.App, *service.TokenManager, *dummyAuthRe
 	return app, tokens, authRepo
 }
 
+// TestAccountOTPLookupIsPublicAtTheDocumentedPath guards the contract used by
+// the /otp page: POST /api/v1/account-otp/lookup. Registering the handler under
+// the /public group made the browser call hit authMiddleware (401) and left the
+// per-route rate limiter pointing at a route that did not exist.
+func TestAccountOTPLookupIsPublicAtTheDocumentedPath(t *testing.T) {
+	app, _, _ := setupTestApp(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/account-otp/lookup", strings.NewReader(`{"email":"akun@example.test","code":"ABCD234567"}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req)
+	assert.NoError(t, err)
+	// A nil service is the "mailbox not configured" state. A 503 proves the
+	// request reached the handler instead of being stopped by authMiddleware.
+	assert.Equal(t, fiber.StatusServiceUnavailable, resp.StatusCode)
+}
+
 func TestAuthMiddleware_LocalizedMissingHeader(t *testing.T) {
 	app, _, _ := setupTestApp(t)
 
