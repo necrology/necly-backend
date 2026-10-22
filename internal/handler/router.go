@@ -197,8 +197,10 @@ func (r *Router) registerPublic(api fiber.Router) {
 	public.Post("/reports", r.createReport)
 	// Email-OTP retrieval: the buyer proves ownership with the account email and
 	// the short-lived code generated from the order page. No session is needed
-	// because the customer may be signing in on another device.
-	public.Post("/account-otp/lookup", r.lookupAccountOTP)
+	// because the customer may be signing in on another device. It must sit on
+	// the API root, not the /public group: the storefront and the per-route rate
+	// limiter both use POST /api/v1/account-otp/lookup.
+	api.Post("/account-otp/lookup", r.lookupAccountOTP)
 	// QA poin 16: halaman "Testimoni" reads the approved reviews. Public because
 	// the page is reachable without signing in.
 	public.Get("/testimonials", r.listTestimonials)
