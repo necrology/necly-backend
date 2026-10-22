@@ -14,7 +14,7 @@ cd "$ROOT"
 echo "verifying W0 migration checksums"
 (cd migrations && sha256sum -c ../deploy/validation/migration-checksums.sha256)
 
-FILES="001_initial_schema.sql 003_localize_catalog_copy.sql 004_issue_reports.sql 005_password_reset_tokens.sql 006_product_labels.sql 007_device_count.sql 008_add_users_active.sql 009_order_compatibility.sql 010_checkout_idempotency.sql 011_order_expiry_index.sql 012_inventory_account_sharing.sql 013_inventory_account_label_backfill.sql 014_order_deliveries.sql 015_product_coming_soon.sql 016_inventory_account_otp_access.sql 017_delivery_replacements.sql"
+FILES="001_initial_schema.sql 003_localize_catalog_copy.sql 004_issue_reports.sql 005_password_reset_tokens.sql 006_product_labels.sql 007_device_count.sql 008_add_users_active.sql 009_order_compatibility.sql 010_checkout_idempotency.sql 011_order_expiry_index.sql 012_inventory_account_sharing.sql 013_inventory_account_label_backfill.sql 014_order_deliveries.sql 015_product_coming_soon.sql 016_clean_product_names.sql 017_delivery_replacements.sql 018_inventory_account_otp_access.sql"
 
 for pass in 1 2; do
   echo "schema pass $pass"
