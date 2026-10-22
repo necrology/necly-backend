@@ -311,8 +311,11 @@ type Order struct {
 	// storefront order read does not preload it, so buyers never see internal
 	// delivery rows by accident.
 	Deliveries []OrderDelivery `json:"deliveries,omitempty" gorm:"foreignKey:OrderID"`
-	CreatedAt  time.Time       `json:"created_at"`
-	UpdatedAt  time.Time       `json:"updated_at"`
+	// PaymentStatus is the status of the most recent payment row. It is derived
+	// for the admin detail view; the payment history itself stays in Payments.
+	PaymentStatus string    `json:"payment_status,omitempty" gorm:"-"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type OrderItem struct {
@@ -351,6 +354,47 @@ type OrderDelivery struct {
 	LastAttemptAt *time.Time `json:"last_attempt_at,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
 	UpdatedAt     time.Time  `json:"updated_at"`
+	// AssignedAccounts and Replacements are read-only presentation data for the
+	// admin detail view. They are filled from inventory_slots and
+	// delivery_replacements and never contain credentials.
+	AssignedAccounts []DeliveryAssignedAccount `json:"assigned_accounts,omitempty" gorm:"-"`
+	Replacements     []DeliveryReplacement     `json:"replacements,omitempty" gorm:"-"`
+}
+
+// DeliveryAssignedAccount is the credential-free view of one account backing a
+// delivered order item. A quantity above the five-user sharing limit may need
+// more than one account, so the delivery exposes a list.
+type DeliveryAssignedAccount struct {
+	InventoryAccountID string     `json:"inventory_account_id"`
+	Label              string     `json:"label"`
+	Status             string     `json:"status"`
+	ActivatedAt        *time.Time `json:"activated_at,omitempty"`
+	AccessExpiresAt    *time.Time `json:"access_expires_at,omitempty"`
+	DaysRemaining      *int       `json:"days_remaining"`
+}
+
+// DeliveryReplacement is an immutable audit trail of one account replacement.
+// replacement_of points at the old slot; the old and new account ids let the
+// dashboard explain what changed without reading credentials.
+type DeliveryReplacement struct {
+	ID                    string      `json:"id" gorm:"type:uuid;primaryKey"`
+	OrderID               string      `json:"order_id" gorm:"type:uuid;not null;index"`
+	OrderItemID           string      `json:"order_item_id" gorm:"type:uuid;not null;index"`
+	DeliveryID            string      `json:"delivery_id" gorm:"type:uuid;not null;index"`
+	ReplacementOf         string      `json:"replacement_of" gorm:"type:uuid;not null"`
+	OldInventoryAccountID *string     `json:"old_inventory_account_id,omitempty" gorm:"type:uuid"`
+	InventoryAccountID    string      `json:"inventory_account_id" gorm:"type:uuid;not null"`
+	OldSlotIDs            StringArray `json:"-" gorm:"type:uuid[];not null;default:'{}'"`
+	NewSlotIDs            StringArray `json:"-" gorm:"type:uuid[];not null;default:'{}'"`
+	Reason                string      `json:"reason" gorm:"not null"`
+	ComplaintApproved     bool        `json:"complaint_approved" gorm:"not null;default:false"`
+	Status                string      `json:"status" gorm:"size:24;not null;default:pending;index"`
+	Attempts              int         `json:"attempts" gorm:"not null;default:0"`
+	ErrorCode             *string     `json:"error_code,omitempty" gorm:"size:64"`
+	EmailSentAt           *time.Time  `json:"email_sent_at,omitempty"`
+	ReplacedBy            *string     `json:"replaced_by,omitempty" gorm:"type:uuid"`
+	CreatedAt             time.Time   `json:"created_at"`
+	UpdatedAt             time.Time   `json:"updated_at"`
 }
 
 type Payment struct {

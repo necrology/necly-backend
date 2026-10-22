@@ -49,6 +49,9 @@ func (s *Store) ListOrderDeliveries(ctx context.Context, orderID string) ([]doma
 		Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("list order deliveries: %w", err)
 	}
+	if err := s.attachDeliveryDetails(ctx, orderID, rows); err != nil {
+		return nil, err
+	}
 	return rows, nil
 }
 
@@ -61,7 +64,11 @@ func (s *Store) GetOrderDelivery(ctx context.Context, orderID, deliveryID string
 	if err != nil {
 		return nil, fmt.Errorf("get order delivery: %w", err)
 	}
-	return &row, nil
+	rows := []domain.OrderDelivery{row}
+	if err := s.attachDeliveryDetails(ctx, orderID, rows); err != nil {
+		return nil, err
+	}
+	return &rows[0], nil
 }
 
 // LoadDeliveryMaterial returns the reserved slots and their account ciphertext
@@ -75,20 +82,27 @@ func (s *Store) LoadDeliveryMaterial(ctx context.Context, orderID, orderItemID s
 		AccountStatus        string
 		AccountExpiresAt     *time.Time
 		EncryptedCredentials []byte
+		DurationDays         int
 	}
 	var rows []materialRow
 	if err := s.db.WithContext(ctx).Table("inventory_slots AS s").
 		Select(`s.id AS slot_id, s.inventory_account_id,
 			COALESCE(a.label, '') AS account_label, a.status AS account_status,
-			a.expires_at AS account_expires_at, a.encrypted_credentials`).
+			a.expires_at AS account_expires_at, a.encrypted_credentials,
+			COALESCE(pd.days, 0) AS duration_days`).
 		Joins("JOIN inventory_accounts a ON a.id = s.inventory_account_id").
 		Joins("JOIN order_items oi ON oi.id = s.order_item_id").
-		Where("s.order_item_id = ? AND oi.order_id = ?", orderItemID, orderID).
+		Joins("JOIN product_prices pp ON pp.id = oi.product_price_id").
+		Joins("JOIN product_durations pd ON pd.id = pp.duration_id").
+		Where("s.order_item_id = ? AND oi.order_id = ? AND s.status <> ?", orderItemID, orderID, "released").
 		Order("s.created_at ASC, s.id ASC").
 		Scan(&rows).Error; err != nil {
 		return nil, fmt.Errorf("load delivery material: %w", err)
 	}
 	material := &service.DeliveryMaterial{OrderItemID: orderItemID, Slots: make([]service.DeliverySlot, 0, len(rows))}
+	if len(rows) > 0 {
+		material.DurationDays = rows[0].DurationDays
+	}
 	for _, row := range rows {
 		material.Slots = append(material.Slots, service.DeliverySlot{
 			SlotID: row.SlotID, InventoryAccountID: row.InventoryAccountID,

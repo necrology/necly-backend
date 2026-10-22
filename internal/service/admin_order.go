@@ -27,7 +27,27 @@ func (s *AdminOrderService) ListOrders(ctx context.Context, filter OrderFilter, 
 }
 
 func (s *AdminOrderService) GetOrder(ctx context.Context, id string) (*domain.Order, error) {
-	return s.repo.GetOrderByID(ctx, id)
+	order, err := s.repo.GetOrderByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	applyLatestPaymentStatus(order)
+	return order, nil
+}
+
+// applyLatestPaymentStatus exposes the newest payment row as a single field for
+// the admin detail view. The full payment history stays in Payments.
+func applyLatestPaymentStatus(order *domain.Order) {
+	if order == nil || len(order.Payments) == 0 {
+		return
+	}
+	latest := order.Payments[0]
+	for _, payment := range order.Payments[1:] {
+		if payment.CreatedAt.After(latest.CreatedAt) {
+			latest = payment
+		}
+	}
+	order.PaymentStatus = latest.Status
 }
 
 func (s *AdminOrderService) UpdateOrderStatus(ctx context.Context, id string, status domain.OrderStatus) (*domain.Order, error) {

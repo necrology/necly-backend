@@ -100,6 +100,34 @@ func (r *deliveryFakeRepo) LoadDeliveryMaterial(_ context.Context, orderID, orde
 	return &DeliveryMaterial{OrderItemID: orderItemID}, nil
 }
 
+func (r *deliveryFakeRepo) LoadDeliveryOptions(context.Context, string) ([]DeliveryItemOptions, error) {
+	return nil, nil
+}
+
+func (r *deliveryFakeRepo) PrepareDeliveryAssignment(context.Context, string, string, time.Time) error {
+	return nil
+}
+
+func (r *deliveryFakeRepo) AssignDeliveryAccount(context.Context, string, string, string, time.Time) (*domain.OrderDelivery, error) {
+	return nil, ErrConflict
+}
+
+func (r *deliveryFakeRepo) ReplaceDeliveryAccount(context.Context, string, string, string, string, bool, string, time.Time) (*domain.DeliveryReplacement, error) {
+	return nil, ErrConflict
+}
+
+func (r *deliveryFakeRepo) MarkDeliveryReplacementSent(context.Context, string, time.Time) error {
+	return nil
+}
+
+func (r *deliveryFakeRepo) MarkDeliveryReplacementFailed(context.Context, string, string, time.Time) error {
+	return nil
+}
+
+func (r *deliveryFakeRepo) ActivateDeliveryAccess(context.Context, string, string, time.Time, time.Time) error {
+	return nil
+}
+
 func (r *deliveryFakeRepo) ClaimOrderDelivery(_ context.Context, deliveryID string, now, staleBefore time.Time) (bool, error) {
 	for i := range r.deliveries {
 		delivery := &r.deliveries[i]
@@ -198,7 +226,8 @@ func newDeliveryFixture(t *testing.T, verified bool, credential string) *deliver
 	repo := &deliveryFakeRepo{
 		order: order,
 		material: map[string]*DeliveryMaterial{itemID: {
-			OrderItemID: itemID,
+			OrderItemID:  itemID,
+			DurationDays: 30,
 			Slots: []DeliverySlot{
 				{SlotID: uuid.NewString(), InventoryAccountID: accountID, AccountLabel: "Akun utama", AccountStatus: "active", EncryptedCredentials: sealed},
 				{SlotID: uuid.NewString(), InventoryAccountID: accountID, AccountLabel: "Akun utama", AccountStatus: "active", EncryptedCredentials: sealed},

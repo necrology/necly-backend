@@ -1,5 +1,5 @@
 -- ============================================================
--- 016: Account OTP secrets and per-slot access windows (NEC-89 Fase 2).
+-- 018: Account OTP secrets and per-slot access windows (NEC-89 Fase 2).
 --
 -- inventory_accounts gains an optional TOTP secret. It is stored encrypted
 -- with the same CredentialCipher as the account credentials and is never part

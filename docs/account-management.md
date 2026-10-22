@@ -86,3 +86,121 @@ Response `200`:
 | `reserved_email` / `reserved_name` | identitas pembeli |
 
 Response slot tidak pernah memuat kredensial akun.
+
+## Alokasi akun saat pengiriman (Fase 2 backend B)
+
+Semua endpoint di bawah ini hanya untuk admin, tidak pernah mengembalikan
+kredensial, dan memakai transaksi dengan row lock agar dua admin tidak dapat
+memakai kapasitas akun yang sama secara bersamaan.
+
+### Pilihan akun per item
+
+`GET /api/v1/admin/orders/:id/delivery-options`
+
+Response:
+
+```json
+{
+  "items": [
+    {
+      "delivery_id": "uuid",
+      "order_item_id": "uuid",
+      "product_id": "uuid",
+      "product_price_id": "uuid",
+      "product_name": "Netflix Premium",
+      "duration_name": "1 Bulan",
+      "quantity": 1,
+      "assigned_account_ids": ["uuid"],
+      "accounts": [
+        {
+          "inventory_account_id": "uuid",
+          "label": "Akun utama",
+          "status": "active",
+          "expires_at": "2026-12-31T23:59:59Z",
+          "days_remaining": 70,
+          "sharing_limit": 5,
+          "assigned_users": 2,
+          "used_slots": 2,
+          "remaining_slots": 3,
+          "used_by_customer": false,
+          "assigned_to_item": false,
+          "can_assign": true
+        }
+      ]
+    }
+  ]
+}
+```
+
+- Hanya akun `active`, belum kedaluwarsa, dan milik produk item yang muncul.
+- `remaining_slots` memakai `min(sharing_limit, 5)` dan tidak menghitung slot
+  berstatus `released`.
+- `used_by_customer=true` berarti pembeli sudah pernah menerima akun tersebut
+  untuk produk yang sama pada pengiriman yang berhasil.
+- `can_assign=false` bila akun penuh, sudah dipakai pembeli, atau item quantity
+  melebihi kapasitas akun.
+
+### Pilih akun sebelum kirim
+
+`POST /api/v1/admin/orders/:id/deliveries/:deliveryId/assign`
+
+```json
+{ "inventory_account_id": "uuid" }
+```
+
+- Memindahkan seluruh slot item ke akun terpilih secara atomik dan melepas slot
+  dari akun lama.
+- Menolak akun produk lain (`409 account_mismatch`), akun nonaktif/kedaluwarsa
+  (`409 account_unavailable`), akun penuh (`409 account_full`), akun yang sudah
+  dipakai pembeli bila masih ada alternatif (`409 account_used_by_customer`),
+  dan semua akun sudah dipakai (`409 no_alternative_account`).
+- Tidak mengirim email. Pengiriman tetap dilakukan oleh aksi setujui/kirim.
+
+### Pengiriman otomatis
+
+Saat admin menyetujui pengiriman tanpa memilih akun, backend mempertahankan slot
+yang ada hanya bila akunnya aktif, tidak kedaluwarsa, dan belum pernah dikirim
+ke pembeli untuk produk yang sama. Bila tidak, slot dipindahkan ke akun eligible
+yang belum dipakai. Jika semua akun sudah dipakai, delivery dicatat `failed`
+dengan `error_code=no_alternative_account` dan **tidak ada email yang dikirim**.
+
+### Masa akses pembeli
+
+Saat email pengiriman berhasil terkirim, `inventory_slots.activated_at` diisi
+waktu kirim dan `access_expires_at` dihitung dari durasi paket pada
+`product_durations.days`. Bila durasi tidak tersedia, delivery gagal dengan
+`error_code=duration_unavailable`; sistem tidak menebak dari expiry akun.
+
+### Ganti akun expired
+
+`POST /api/v1/admin/orders/:id/deliveries/:deliveryId/replace`
+
+```json
+{
+  "inventory_account_id": "uuid",
+  "reason": "Akun lama expired, pembeli komplain",
+  "complaint_approved": false
+}
+```
+
+- Hanya untuk delivery berstatus `sent`.
+- Slot lama harus sudah melewati `access_expires_at`. Bila masih aktif, jawab
+  `409 account_not_expired` kecuali `complaint_approved=true` (flag eksplisit
+  untuk komplain yang disetujui admin).
+- Akun pengganti harus berbeda, aktif, belum kedaluwarsa, milik produk yang
+  sama, punya kapasitas, dan belum dipakai pembeli untuk produk tersebut.
+- Slot lama ditandai `released`, slot baru dibuat dengan status `reserved` dan
+  masa akses baru. Audit `delivery_replacements` menyimpan `replacement_of`,
+  daftar slot lama/baru, alasan, dan status email.
+- Satu email pengganti dikirim setelah transaksi berhasil. Tidak ada order,
+  payment, atau status pembayaran baru.
+
+### Detail pesanan admin
+
+`GET /api/v1/admin/orders/:id` sekarang memuat:
+
+- `payment_status`: status pembayaran terbaru.
+- `deliveries[].assigned_accounts[]`: akun terpilih tanpa kredensial, lengkap
+  dengan `activated_at`, `access_expires_at`, dan `days_remaining`.
+- `deliveries[].replacements[]`: riwayat penggantian beserta status email.
+- `deliveries[].status` dan `error_code` tetap seperti kontrak pengiriman lama.
