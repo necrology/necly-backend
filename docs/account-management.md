@@ -33,7 +33,7 @@ update mengembalikan field turunan berikut:
 | `days_remaining` | sisa hari sampai `expires_at`; `null` berarti tanpa batas, `0` berarti sudah kedaluwarsa |
 | `otp_configured` | apakah secret TOTP tersimpan |
 | `account_email` | email login akun langganan (read-only, boleh kosong pada akun lama) |
-| `mailbox_imap_host` | host mailbox akun, default `imap.gmail.com` |
+| `mailbox_imap_host` | host mailbox akun; hanya allowlist Gmail, dinormalisasi tanpa port, default `imap.gmail.com` |
 | `otp_inbox_configured` | apakah ada mailbox yang bisa dibaca untuk akun ini |
 | `otp_inbox_source` | `direct` bila app password akun tersimpan, `central` bila hanya mailbox pusat `OTP_IMAP_*`, `none` bila keduanya tidak tersedia |
 | `needs_review` | akun lama di atas limit lima pengguna |
@@ -69,9 +69,13 @@ update mengembalikan field turunan berikut:
   dengan `CredentialCipher` dan dipakai untuk membaca mailbox akun sendiri.
   String kosong eksplisit menghapus app password (kembali ke mailbox pusat);
   field yang tidak dikirim mempertahankan nilai lama.
-- `mailbox_imap_host` menerima hostname atau `hostname:port`, maksimal 255
-  karakter. Skema URL, path, dan port tidak valid ditolak `400 invalid_input`.
-  Nilai kosong memakai default `imap.gmail.com`.
+- `mailbox_imap_host` hanya menerima `imap.gmail.com` atau
+  `imap.googlemail.com`, dengan port opsional `:993`. Nilai disimpan sebagai
+  hostname tanpa port dan nilai kosong memakai default `imap.gmail.com`.
+  Host lain, port selain 993, skema URL, path, alamat IP, dan IPv6 literal
+  ditolak `400 invalid_input`. Pembatasan ini juga diterapkan ulang oleh reader
+  sebelum dial, sehingga baris database lama atau yang dimanipulasi tidak bisa
+  mengarahkan kredensial mailbox ke host lain.
 - `otp_secret` hanya untuk ditulis (write-only). Secret base32 divalidasi;
   spasi, huruf kecil, dan padding `=` diterima lalu dinormalisasi.
 - Pada `PATCH`, field yang **tidak dikirim** mempertahankan nilai lama. Update

@@ -39,7 +39,66 @@ var (
 	ErrNotConfigured = errors.New("otp inbox is not configured")
 	// ErrNotFound means the mailbox has no recent OTP for that recipient.
 	ErrNotFound = errors.New("no recent otp message")
+	// ErrMailboxHostNotAllowed means an inventory account points at a mailbox
+	// destination outside the operator-approved allowlist. It fails closed
+	// before any dial or credential exchange happens.
+	ErrMailboxHostNotAllowed = errors.New("otp inbox host is not allowed")
 )
+
+const (
+	// DefaultMailboxIMAPHost is used when an account does not store an explicit
+	// mailbox host.
+	DefaultMailboxIMAPHost = "imap.gmail.com"
+	// mailboxIMAPPort is the only port the account reader may use. OTP mailbox
+	// credentials are Gmail app passwords and IMAPS is always 993.
+	mailboxIMAPPort = "993"
+	// maxMailboxHostLength keeps a stored host bounded before validation.
+	maxMailboxHostLength = 255
+)
+
+// mailboxIMAPHostAllowlist is the complete set of destinations an account
+// mailbox may contact. A host copied from an admin record is never trusted on
+// its own: allowing arbitrary hosts would turn the reader into an SSRF
+// primitive that also sends the mailbox username and app password.
+var mailboxIMAPHostAllowlist = map[string]struct{}{
+	"imap.gmail.com":      {},
+	"imap.googlemail.com": {},
+}
+
+// NormalizeMailboxIMAPHost validates and canonicalizes an account mailbox host.
+// It accepts an empty value (the Gmail default), an allowlisted Gmail host, or
+// that host with the explicit :993 IMAPS port. It returns the canonical bare
+// hostname. Any other host, port, scheme, path or address literal is rejected.
+func NormalizeMailboxIMAPHost(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return DefaultMailboxIMAPHost, nil
+	}
+	if len(value) > maxMailboxHostLength || strings.ContainsAny(value, "/@ \t\r\n") || strings.Contains(value, "://") {
+		return "", ErrMailboxHostNotAllowed
+	}
+
+	host := value
+	switch strings.Count(value, ":") {
+	case 0:
+	case 1:
+		parsedHost, port, err := net.SplitHostPort(value)
+		if err != nil || port != mailboxIMAPPort {
+			return "", ErrMailboxHostNotAllowed
+		}
+		host = parsedHost
+	default:
+		// IPv6 literals, bracketed addresses and URL-like values are not part
+		// of the Gmail allowlist.
+		return "", ErrMailboxHostNotAllowed
+	}
+
+	host = strings.ToLower(strings.TrimSpace(host))
+	if _, ok := mailboxIMAPHostAllowlist[host]; !ok {
+		return "", ErrMailboxHostNotAllowed
+	}
+	return host, nil
+}
 
 // Message is the minimal, non-sensitive result of a mailbox lookup. The raw
 // email body, sender address and mailbox credentials never leave this package.
@@ -82,22 +141,22 @@ func New(cfg Config) Reader {
 
 // AccountReaderFactory builds a TLS reader for a single inventory account's
 // own mailbox. The caller supplies the login email and the decrypted Gmail app
-// password; the factory never persists either value. Host may be a hostname or
-// hostname:port and defaults to Gmail's IMAPS port when no port is given.
+// password; the factory never persists either value. The host is validated
+// again here against the allowlist, so a stale or tampered database row can
+// never reach the dialer unvalidated.
 type AccountReaderFactory struct {
 	Mailbox string
 	Timeout time.Duration
 }
 
 func (f AccountReaderFactory) NewReader(accountEmail, appPassword, imapHost string) Reader {
-	host := strings.TrimSpace(imapHost)
-	if host == "" {
-		host = "imap.gmail.com"
+	host, err := NormalizeMailboxIMAPHost(imapHost)
+	if err != nil {
+		// Fail closed without dialing or touching the credential. The caller may
+		// still fall back to the operator-configured central mailbox.
+		return disabledReader{}
 	}
-	addr := host
-	if _, _, err := net.SplitHostPort(addr); err != nil {
-		addr = net.JoinHostPort(host, "993")
-	}
+	addr := net.JoinHostPort(host, mailboxIMAPPort)
 	mailbox := f.Mailbox
 	if mailbox == "" {
 		mailbox = "INBOX"
@@ -122,15 +181,37 @@ func (disabledReader) Latest(context.Context, string, time.Time) (*Message, erro
 
 type imapReader struct {
 	cfg Config
+	// tlsConfig is only set by tests that need a private test CA. Production
+	// readers always verify the real Gmail certificate chain.
+	tlsConfig *tls.Config
+	// logoutTimeout is overridable by tests; production uses logoutTimeout.
+	logoutTimeout time.Duration
 }
 
 func (r *imapReader) Enabled() bool { return true }
+
+func (r *imapReader) clientTLSConfig(addr string) *tls.Config {
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: serverName(addr)}
+	if r.tlsConfig != nil {
+		tlsConfig = r.tlsConfig.Clone()
+		if tlsConfig.MinVersion < tls.VersionTLS12 {
+			tlsConfig.MinVersion = tls.VersionTLS12
+		}
+		if tlsConfig.ServerName == "" {
+			tlsConfig.ServerName = serverName(addr)
+		}
+	}
+	return tlsConfig
+}
 
 const (
 	// maxFetchedMessages bounds the work and memory for one lookup. An OTP
 	// normally arrives within seconds; a larger window only costs latency.
 	maxFetchedMessages = 25
 	maxRawMessageBytes = 2 << 20
+	// logoutTimeout bounds the best-effort LOGOUT so a server that stops
+	// responding cannot extend the session past the caller's deadline.
+	logoutTimeout = 2 * time.Second
 )
 
 func (r *imapReader) Latest(ctx context.Context, recipient string, since time.Time) (*Message, error) {
@@ -138,49 +219,88 @@ func (r *imapReader) Latest(ctx context.Context, recipient string, since time.Ti
 	if recipient == "" {
 		return nil, ErrNotFound
 	}
-
-	type result struct {
-		msg *Message
-		err error
-	}
-	done := make(chan result, 1)
-	go func() {
-		msg, err := r.fetchLatest(recipient, since)
-		done <- result{msg: msg, err: err}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case out := <-done:
-		if out.err != nil {
-			return nil, out.err
-		}
-		return out.msg, nil
-	}
+	// fetchLatest is intentionally synchronous. The context watcher below
+	// closes the socket on cancellation, so every blocking IMAP operation
+	// returns instead of leaving a goroutine or connection behind.
+	return r.fetchLatest(ctx, recipient, since)
 }
 
-func (r *imapReader) fetchLatest(recipient string, since time.Time) (*Message, error) {
-	dialer := &net.Dialer{Timeout: r.cfg.Timeout}
-	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: serverName(r.cfg.Addr)}
-	c, err := client.DialWithDialerTLS(dialer, r.cfg.Addr, tlsConfig)
-	if err != nil {
-		return nil, fmt.Errorf("otp inbox dial: %w", err)
+func (r *imapReader) fetchLatest(ctx context.Context, recipient string, since time.Time) (*Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	defer func() { _ = c.Logout() }()
+	timeout := r.cfg.Timeout
+	if timeout <= 0 {
+		timeout = 20 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	sessionCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return nil, context.DeadlineExceeded
+	}
 
+	dialer := &net.Dialer{Timeout: remaining}
+	rawConn, err := dialer.DialContext(sessionCtx, "tcp", r.cfg.Addr)
+	if err != nil {
+		return nil, fmt.Errorf("otp inbox dial: %w", sessionError(sessionCtx, err))
+	}
+	// The absolute deadline covers the greeting, TLS handshake and every IMAP
+	// command. deadlineConn below prevents the client from clearing it when it
+	// manages its own per-command deadline.
+	if err := rawConn.SetDeadline(deadline); err != nil {
+		_ = rawConn.Close()
+		return nil, fmt.Errorf("otp inbox deadline: %w", err)
+	}
+	tlsConn := tls.Client(rawConn, r.clientTLSConfig(r.cfg.Addr))
+	bounded := &deadlineConn{Conn: tlsConn, deadline: deadline}
+	// Register the watchdog before the greeting/TLS handshake: client.New can
+	// block there, so the connection must be closable even before a client
+	// object exists.
+	stopClose := context.AfterFunc(sessionCtx, func() { _ = rawConn.Close() })
+	defer stopClose()
+	c, err := client.New(bounded)
+	if err != nil {
+		_ = bounded.Close()
+		return nil, fmt.Errorf("otp inbox handshake: %w", sessionError(sessionCtx, err))
+	}
+
+	defer func() {
+		// LOGOUT is bounded too: on cancellation the socket is already closed,
+		// otherwise it gets a short budget that never exceeds the session deadline.
+		logoutLimit := r.logoutTimeout
+		if logoutLimit <= 0 {
+			logoutLimit = logoutTimeout
+		}
+		logoutBudget := time.Until(deadline)
+		if logoutBudget <= 0 || logoutBudget > logoutLimit {
+			logoutBudget = logoutLimit
+		}
+		c.Timeout = logoutBudget
+		_ = c.Logout()
+		_ = c.Terminate()
+	}()
+
+	c.Timeout = time.Until(deadline)
+	if c.Timeout <= 0 {
+		return nil, context.DeadlineExceeded
+	}
 	if err := c.Login(r.cfg.User, r.cfg.Password); err != nil {
-		return nil, fmt.Errorf("otp inbox login: %w", err)
+		return nil, fmt.Errorf("otp inbox login: %w", sessionError(sessionCtx, err))
 	}
 	if _, err := c.Select(r.cfg.Mailbox, true); err != nil {
-		return nil, fmt.Errorf("otp inbox select: %w", err)
+		return nil, fmt.Errorf("otp inbox select: %w", sessionError(sessionCtx, err))
 	}
 
 	criteria := imap.NewSearchCriteria()
 	criteria.Since = since.Add(-2 * time.Minute)
 	uids, err := c.UidSearch(criteria)
 	if err != nil {
-		return nil, fmt.Errorf("otp inbox search: %w", err)
+		return nil, fmt.Errorf("otp inbox search: %w", sessionError(sessionCtx, err))
 	}
 	if len(uids) == 0 {
 		return nil, ErrNotFound
@@ -196,9 +316,9 @@ func (r *imapReader) fetchLatest(recipient string, since time.Time) (*Message, e
 	section := &imap.BodySectionName{Peek: true}
 	items := []imap.FetchItem{imap.FetchUid, imap.FetchInternalDate, section.FetchItem()}
 	messages := make(chan *imap.Message, 16)
-	done := make(chan error, 1)
+	fetchDone := make(chan error, 1)
 	go func() {
-		done <- c.UidFetch(seqset, items, messages)
+		fetchDone <- c.UidFetch(seqset, items, messages)
 	}()
 
 	var best *Message
@@ -222,13 +342,52 @@ func (r *imapReader) fetchLatest(recipient string, since time.Time) (*Message, e
 			best = candidate
 		}
 	}
-	if err := <-done; err != nil {
-		return nil, fmt.Errorf("otp inbox fetch: %w", err)
+	if err := <-fetchDone; err != nil {
+		return nil, fmt.Errorf("otp inbox fetch: %w", sessionError(sessionCtx, err))
 	}
 	if best == nil {
 		return nil, ErrNotFound
 	}
+	if err := sessionCtx.Err(); err != nil {
+		return nil, err
+	}
 	return best, nil
+}
+
+// deadlineConn enforces one absolute session deadline even though the IMAP
+// client sets a fresh per-command deadline (including the zero value, which
+// would otherwise clear the deadline) before every command.
+type deadlineConn struct {
+	net.Conn
+	deadline time.Time
+}
+
+func (c *deadlineConn) capDeadline(value time.Time) time.Time {
+	if value.IsZero() || value.After(c.deadline) {
+		return c.deadline
+	}
+	return value
+}
+
+func (c *deadlineConn) SetDeadline(value time.Time) error {
+	return c.Conn.SetDeadline(c.capDeadline(value))
+}
+
+func (c *deadlineConn) SetReadDeadline(value time.Time) error {
+	return c.Conn.SetReadDeadline(c.capDeadline(value))
+}
+
+func (c *deadlineConn) SetWriteDeadline(value time.Time) error {
+	return c.Conn.SetWriteDeadline(c.capDeadline(value))
+}
+
+// sessionError preserves the caller-visible cancellation reason instead of
+// surfacing a transport error caused by the socket watchdog.
+func sessionError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	return err
 }
 
 func serverName(addr string) string {
@@ -280,10 +439,39 @@ func normalizeAddress(value string) string {
 }
 
 func addressedTo(header mail.Header, recipient string) bool {
-	keys := []string{"Delivered-To", "X-Original-To", "Envelope-To", "X-Forwarded-To", "To", "Cc"}
-	for _, key := range keys {
+	recipient = normalizeAddress(recipient)
+	if recipient == "" {
+		return false
+	}
+
+	// To/Cc may legitimately contain an address list. Parse every value and
+	// compare the mailbox address exactly; never inspect a display name, a
+	// comment or the raw header text.
+	for _, key := range []string{"To", "Cc"} {
 		for _, value := range header[key] {
-			if strings.Contains(strings.ToLower(value), recipient) {
+			addresses, err := mail.ParseAddressList(value)
+			if err != nil {
+				// Malformed values are ignored, not matched by substring.
+				continue
+			}
+			for _, address := range addresses {
+				if normalizeAddress(address.Address) == recipient {
+					return true
+				}
+			}
+		}
+	}
+
+	// Envelope headers carry exactly one original recipient. Malformed or
+	// multi-address values fail closed so a crafted forwarding header cannot
+	// smuggle in a different mailbox.
+	for _, key := range []string{"Delivered-To", "X-Original-To", "Envelope-To", "X-Forwarded-To"} {
+		for _, value := range header[key] {
+			addresses, err := mail.ParseAddressList(value)
+			if err != nil || len(addresses) != 1 {
+				continue
+			}
+			if normalizeAddress(addresses[0].Address) == recipient {
 				return true
 			}
 		}

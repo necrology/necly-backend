@@ -119,8 +119,10 @@ Untuk akun Gmail yang dipakai membaca OTP:
 3. Simpan password 16 karakter itu di field `mailbox_app_password` pada
    manajemen akun. Password login akun tetap disimpan terpisah di
    `account_password`.
-4. Pastikan IMAP aktif untuk akun tersebut dan host `imap.gmail.com`
-   (opsional `imap.gmail.com:993`).
+4. Pastikan IMAP aktif untuk akun tersebut. Field `mailbox_imap_host` hanya
+   menerima `imap.gmail.com` atau `imap.googlemail.com` (opsional `:993`);
+   host/port lain ditolak `400 invalid_input` dan reader menolak dial ke tujuan
+   di luar allowlist tersebut.
 
 Jika Google Workspace organisasi melarang app password, akun tersebut tidak
 bisa memakai sumber `direct`. Jangan memaksa password utama akun ke kolom app
@@ -155,7 +157,18 @@ aktif karena kode akses disimpan di sana dengan TTL.
 - Email, kode akses, dan OTP tidak pernah ditulis ke log, audit, atau pesan
   error.
 - Mailbox (pusat maupun per akun) hanya dibaca (IMAP `EXAMINE`) dan koneksi
-  wajib TLS. App password mailbox disimpan terenkripsi dengan
-  `CredentialCipher` dan didekripsi hanya di memori saat lookup.
+  wajib TLS minimal 1.2 dengan verifikasi hostname. App password mailbox
+  disimpan terenkripsi dengan `CredentialCipher` dan didekripsi hanya di memori
+  saat lookup.
+- Mailbox per akun dibatasi fail-closed ke allowlist Gmail
+  (`imap.gmail.com`/`imap.googlemail.com`, port 993). Nilai host dari record
+  admin divalidasi ulang oleh factory reader; host lain tidak pernah didial.
+- Penerima OTP dibandingkan sebagai alamat email hasil parse `net/mail`, exact
+  case-insensitive. Display name, komentar, dan substring pada header mentah
+  tidak pernah dianggap cocok. Header envelope yang malformed atau berisi lebih
+  dari satu alamat diabaikan.
+- Deadline absolut dipasang pada socket setelah dial; pembatalan context
+  menutup koneksi sehingga `LOGIN`/`EXAMINE`/`SEARCH`/`FETCH`/`LOGOUT` tidak
+  menggantung setelah timeout.
 - OTP yang ditampilkan adalah kode terbaru yang dialamatkan ke email akun dan
   masuk dalam lookback window; tidak ada pembacaan seluruh isi mailbox ke klien.

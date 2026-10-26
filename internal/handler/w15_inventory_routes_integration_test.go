@@ -236,7 +236,7 @@ func TestW15AdminInventoryUpdateContractExercisesTheRealStore(t *testing.T) {
 	if err := json.Unmarshal(emailPayload, &updatedAccount); err != nil {
 		t.Fatal(err)
 	}
-	if updatedAccount.AccountEmail != "family@example.test" || updatedAccount.MailboxIMAPHost != "imap.gmail.com:993" {
+	if updatedAccount.AccountEmail != "family@example.test" || updatedAccount.MailboxIMAPHost != "imap.gmail.com" {
 		t.Fatalf("email response = %+v", updatedAccount)
 	}
 	if !updatedAccount.OTPInboxConfigured || updatedAccount.OTPInboxSource != "direct" {

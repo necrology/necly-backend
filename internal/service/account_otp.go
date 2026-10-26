@@ -447,11 +447,9 @@ func (s *AccountOTPService) lookupMailbox(ctx context.Context, email string) (*o
 			directAttempted = true
 			appPassword, decryptErr := s.cipher.Decrypt(account.MailboxAppPasswordEncrypted)
 			if decryptErr == nil {
-				host := strings.TrimSpace(account.MailboxIMAPHost)
-				if host == "" {
-					host = "imap.gmail.com"
-				}
-				reader := s.factory.NewReader(email, string(appPassword), host)
+				// Pass the stored value as-is. The factory revalidates it against
+				// the allowlist so an old or tampered row cannot reach the dialer.
+				reader := s.factory.NewReader(email, string(appPassword), account.MailboxIMAPHost)
 				if reader != nil && reader.Enabled() {
 					timeout := s.directTimeout
 					if timeout <= 0 {

@@ -5,15 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/mail"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/necly/services/internal/domain"
+	"github.com/necly/services/internal/platform/otpinbox"
 )
 
 const (
@@ -34,7 +33,7 @@ const (
 	MaxInventoryLabelLength = 120
 	// DefaultMailboxIMAPHost is used when an account does not specify its own
 	// mailbox host. Gmail is the common case for the accounts this store sells.
-	DefaultMailboxIMAPHost = "imap.gmail.com"
+	DefaultMailboxIMAPHost = otpinbox.DefaultMailboxIMAPHost
 	// maxAccountEmailLength is the RFC practical limit for an email address.
 	maxAccountEmailLength = 254
 	// maxMailboxIMAPHostLength keeps the host column bounded and rejects
@@ -656,51 +655,11 @@ func normalizeAccountEmail(value string) (string, error) {
 }
 
 func normalizeMailboxIMAPHost(value string) (string, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return DefaultMailboxIMAPHost, nil
-	}
-	if len(value) > maxMailboxIMAPHostLength || strings.ContainsAny(value, "/@ \t\r\n") || strings.Contains(value, "://") {
+	host, err := otpinbox.NormalizeMailboxIMAPHost(value)
+	if err != nil {
 		return "", ErrInvalidInput
 	}
-	host := value
-	if strings.Count(value, ":") == 1 {
-		parsedHost, port, err := net.SplitHostPort(value)
-		if err != nil {
-			return "", ErrInvalidInput
-		}
-		number, err := strconv.Atoi(port)
-		if err != nil || number < 1 || number > 65535 {
-			return "", ErrInvalidInput
-		}
-		host = parsedHost
-	} else if strings.Count(value, ":") > 1 {
-		// IPv6 literals are not part of this dashboard contract; rejecting them
-		// keeps the value a plain hostname or hostname:port.
-		return "", ErrInvalidInput
-	}
-	if !validMailboxHostname(host) {
-		return "", ErrInvalidInput
-	}
-	return value, nil
-}
-
-func validMailboxHostname(host string) bool {
-	host = strings.TrimSpace(host)
-	if host == "" || len(host) > 253 || strings.HasPrefix(host, ".") || strings.HasSuffix(host, ".") {
-		return false
-	}
-	for _, label := range strings.Split(host, ".") {
-		if label == "" || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
-			return false
-		}
-		for _, char := range label {
-			if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '-' {
-				return false
-			}
-		}
-	}
-	return true
+	return host, nil
 }
 
 // hydrateAccountEmail backfills the dedicated email column for accounts created

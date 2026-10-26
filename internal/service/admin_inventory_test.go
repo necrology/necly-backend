@@ -758,7 +758,7 @@ func TestCreateInventoryAccountAcceptsSeparateLoginAndMailboxSecrets(t *testing.
 	if account.OTPInboxSource != "direct" || !account.OTPInboxConfigured {
 		t.Fatalf("otp inbox = %s/%t, want direct/true", account.OTPInboxSource, account.OTPInboxConfigured)
 	}
-	if account.MailboxIMAPHost != "imap.gmail.com:993" {
+	if account.MailboxIMAPHost != "imap.gmail.com" {
 		t.Fatalf("mailbox host = %q", account.MailboxIMAPHost)
 	}
 	payload := string(mustJSON(t, account))
@@ -897,6 +897,15 @@ func TestInventoryAccountRejectsInvalidEmailPasswordAndHost(t *testing.T) {
 		{ProductID: productID, AccountEmail: "family@example.test", AccountPassword: "   "},
 		{ProductID: productID, AccountEmail: "family@example.test", AccountPassword: "pass", MailboxIMAPHost: "https://imap.gmail.com"},
 		{ProductID: productID, AccountEmail: "family@example.test", AccountPassword: "pass", MailboxIMAPHost: "imap.gmail.com:notaport"},
+		{ProductID: productID, AccountEmail: "family@example.test", AccountPassword: "pass", MailboxIMAPHost: "imap.gmail.com:443"},
+		{ProductID: productID, AccountEmail: "family@example.test", AccountPassword: "pass", MailboxIMAPHost: "imap.gmail.com:143"},
+		{ProductID: productID, AccountEmail: "family@example.test", AccountPassword: "pass", MailboxIMAPHost: "localhost"},
+		{ProductID: productID, AccountEmail: "family@example.test", AccountPassword: "pass", MailboxIMAPHost: "127.0.0.1"},
+		{ProductID: productID, AccountEmail: "family@example.test", AccountPassword: "pass", MailboxIMAPHost: "169.254.169.254"},
+		{ProductID: productID, AccountEmail: "family@example.test", AccountPassword: "pass", MailboxIMAPHost: "metadata.google.internal"},
+		{ProductID: productID, AccountEmail: "family@example.test", AccountPassword: "pass", MailboxIMAPHost: "[::1]"},
+		{ProductID: productID, AccountEmail: "family@example.test", AccountPassword: "pass", MailboxIMAPHost: "imap.gmail.com.evil.test"},
+		{ProductID: productID, AccountEmail: "family@example.test", AccountPassword: "pass", MailboxIMAPHost: "user@imap.gmail.com"},
 		{ProductID: productID, AccountEmail: "family@example.test", AccountPassword: "pass", MailboxIMAPHost: strings.Repeat("a", maxMailboxIMAPHostLength+1)},
 	}
 	for _, input := range cases {
@@ -904,6 +913,47 @@ func TestInventoryAccountRejectsInvalidEmailPasswordAndHost(t *testing.T) {
 		svc := NewAdminInventoryService(repo, cipher)
 		if _, err := svc.CreateInventoryAccount(context.Background(), input); !errors.Is(err, ErrInvalidInput) {
 			t.Fatalf("input %+v yielded %v, want ErrInvalidInput", input, err)
+		}
+	}
+}
+
+func TestUpdateInventoryAccountRejectsDisallowedMailboxHost(t *testing.T) {
+	cipher := testCipher(t)
+	sealedApp, err := cipher.Encrypt([]byte("app-password-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []string{
+		"localhost",
+		"127.0.0.1:993",
+		"[::1]",
+		"169.254.169.254",
+		"metadata.google.internal:993",
+		"imap.gmail.com:443",
+		"imap.gmail.com:143",
+		"imap.gmail.com.evil.test",
+		"https://imap.gmail.com",
+	} {
+		repo := &stubInventoryRepo{accountWithCredentials: &domain.InventoryAccount{
+			ID: uuid.NewString(), SharingLimit: 5, AccountEmail: "family@example.test",
+			MailboxAppPasswordEncrypted: sealedApp, MailboxIMAPHost: "imap.gmail.com",
+		}}
+		svc := NewAdminInventoryService(repo, cipher)
+		hostValue := host
+		appPassword := "new-app-password"
+		_, err := svc.UpdateInventoryAccount(context.Background(), repo.accountWithCredentials.ID, UpdateInventoryAccountInput{
+			MailboxIMAPHost: &hostValue, MailboxAppPassword: &appPassword,
+		})
+		if !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("host %q yielded %v, want ErrInvalidInput", host, err)
+		}
+		if repo.updatedAccount != nil {
+			t.Fatalf("host %q was persisted", host)
+		}
+		for _, secret := range []string{appPassword, "app-password-secret"} {
+			if strings.Contains(err.Error(), secret) {
+				t.Fatalf("host %q error leaked a credential", host)
+			}
 		}
 	}
 }
