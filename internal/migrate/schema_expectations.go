@@ -175,6 +175,7 @@ var baselineSchema = schemaExpectation{
 		{"products", "slug", "character varying", 255, false, "", "baseline"},
 		{"products", "description", "text", 0, true, "", "baseline"},
 		{"products", "image_url", "text", 0, true, "", "baseline"},
+		{"products", "icon_url", "text", 0, true, "", "019"},
 		{"products", "active", "boolean", 0, false, "true", "baseline"},
 		{"products", "coming_soon", "boolean", 0, false, "false", "015"},
 		{"products", "created_at", "timestamp with time zone", 0, false, "now()", "baseline"},

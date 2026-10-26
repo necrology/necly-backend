@@ -423,6 +423,43 @@ func TestGetProduct_UnknownSlugStaysNotFound(t *testing.T) {
 	assert.Equal(t, fiber.StatusNotFound, resp.StatusCode)
 }
 
+func TestPublicCatalogExposesProductIconURL(t *testing.T) {
+	product := domain.ProductWithStock{Product: domain.Product{
+		ID:       "0192f0a3-0000-0000-0000-000000000001",
+		Name:     "Netflix Premium",
+		Slug:     "netflix-premium",
+		IconURL:  "/design-assets/logo-netflix.png",
+		ImageURL: "https://cdn.example.test/netflix.jpg",
+		Active:   true,
+	}}
+	app := setupCatalogApp(t, stubCatalogRepo{
+		slugProduct:  &product,
+		listProducts: []domain.ProductWithStock{product},
+		listTotal:    1,
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/api/v1/public/products", nil))
+	assert.NoError(t, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+	var listPayload struct {
+		Products []domain.Product `json:"products"`
+	}
+	assert.NoError(t, json.NewDecoder(resp.Body).Decode(&listPayload))
+	if assert.Len(t, listPayload.Products, 1) {
+		assert.Equal(t, "/design-assets/logo-netflix.png", listPayload.Products[0].IconURL)
+	}
+
+	resp, err = app.Test(httptest.NewRequest(http.MethodGet, "/api/v1/public/products/netflix-premium", nil))
+	assert.NoError(t, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	assert.NoError(t, err)
+	assert.Contains(t, string(body), `"icon_url":"/design-assets/logo-netflix.png"`)
+	var detail domain.ProductWithStock
+	assert.NoError(t, json.Unmarshal(body, &detail))
+	assert.Equal(t, "/design-assets/logo-netflix.png", detail.IconURL)
+}
+
 func TestListProductsRejectsMalformedFilters(t *testing.T) {
 	app := setupCatalogApp(t, stubCatalogRepo{})
 
