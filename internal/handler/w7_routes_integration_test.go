@@ -199,6 +199,7 @@ func TestW7AdminCatalogRoutesExerciseTheRealStore(t *testing.T) {
 		"name":        "Produk Coming Soon",
 		"slug":        "produk-coming-soon",
 		"image_url":   "https://cdn.example.test/old.jpg",
+		"icon_url":    "  /design-assets/logo-netflix.png  ",
 		"coming_soon": true,
 	})
 	if status != fiber.StatusCreated {
@@ -208,12 +209,13 @@ func TestW7AdminCatalogRoutesExerciseTheRealStore(t *testing.T) {
 	if err := json.Unmarshal(payload, &comingSoon); err != nil {
 		t.Fatal(err)
 	}
-	if !comingSoon.ComingSoon || comingSoon.ImageURL != "https://cdn.example.test/old.jpg" {
+	if !comingSoon.ComingSoon || comingSoon.ImageURL != "https://cdn.example.test/old.jpg" || comingSoon.IconURL != "/design-assets/logo-netflix.png" {
 		t.Fatalf("created coming soon product = %#v", comingSoon)
 	}
 
 	status, payload = do(http.MethodPatch, "/api/v1/admin/products/"+comingSoon.ID, map[string]any{
 		"image_url": "",
+		"icon_url":  "",
 	})
 	if status != fiber.StatusOK {
 		t.Fatalf("clear image = %d %s, want 200", status, payload)
@@ -221,8 +223,15 @@ func TestW7AdminCatalogRoutesExerciseTheRealStore(t *testing.T) {
 	if err := json.Unmarshal(payload, &comingSoon); err != nil {
 		t.Fatal(err)
 	}
-	if comingSoon.ImageURL != "" || !comingSoon.ComingSoon {
+	if comingSoon.ImageURL != "" || comingSoon.IconURL != "" || !comingSoon.ComingSoon {
 		t.Fatalf("cleared coming soon product = %#v", comingSoon)
+	}
+
+	status, payload = do(http.MethodPatch, "/api/v1/admin/products/"+comingSoon.ID, map[string]any{
+		"icon_url": "javascript:alert(1)",
+	})
+	if status != fiber.StatusBadRequest {
+		t.Fatalf("invalid icon_url = %d %s, want 400", status, payload)
 	}
 
 	status, payload = do(http.MethodPatch, "/api/v1/admin/products/"+comingSoon.ID, map[string]any{

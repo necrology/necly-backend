@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -49,11 +50,15 @@ func (s *AdminProductService) GetProductBySlug(ctx context.Context, slug string)
 	return s.repo.GetProductBySlug(ctx, slug)
 }
 
-func (s *AdminProductService) CreateProduct(ctx context.Context, categoryID, name, slug, description, imageURL string, comingSoon bool) (*domain.Product, error) {
+func (s *AdminProductService) CreateProduct(ctx context.Context, categoryID, name, slug, description, imageURL, iconURL string, comingSoon bool) (*domain.Product, error) {
 	if categoryID == "" || name == "" || slug == "" {
 		return nil, ErrInvalidInput
 	}
 	if err := ValidateCategoryID(categoryID); err != nil {
+		return nil, err
+	}
+	icon, err := normalizeProductIconURL(iconURL)
+	if err != nil {
 		return nil, err
 	}
 
@@ -80,6 +85,7 @@ func (s *AdminProductService) CreateProduct(ctx context.Context, categoryID, nam
 		Slug:        strings.ToLower(slug),
 		Description: description,
 		ImageURL:    imageURL,
+		IconURL:     icon,
 		Active:      true,
 		ComingSoon:  comingSoon,
 		CreatedAt:   now,
@@ -92,7 +98,7 @@ func (s *AdminProductService) CreateProduct(ctx context.Context, categoryID, nam
 	return product, nil
 }
 
-func (s *AdminProductService) UpdateProduct(ctx context.Context, id, categoryID, name, slug, description string, imageURL *string, active, comingSoon *bool) (*domain.Product, error) {
+func (s *AdminProductService) UpdateProduct(ctx context.Context, id, categoryID, name, slug, description string, imageURL, iconURL *string, active, comingSoon *bool) (*domain.Product, error) {
 	if _, err := uuid.Parse(id); err != nil {
 		return nil, ErrNotFound
 	}
@@ -133,6 +139,14 @@ func (s *AdminProductService) UpdateProduct(ctx context.Context, id, categoryID,
 		// A pointer distinguishes "field not sent" (preserve) from an explicit
 		// empty string, which clears the product photo.
 		product.ImageURL = *imageURL
+	}
+	if iconURL != nil {
+		// Same semantics as image_url: omitted preserves, empty clears.
+		icon, err := normalizeProductIconURL(*iconURL)
+		if err != nil {
+			return nil, err
+		}
+		product.IconURL = icon
 	}
 	if active != nil {
 		product.Active = *active
@@ -222,4 +236,26 @@ func (s *AdminProductService) DeleteProductPrice(ctx context.Context, id string)
 		return ErrNotFound
 	}
 	return s.repo.DeleteProductPrice(ctx, id)
+}
+
+// normalizeProductIconURL trims the value and accepts either an absolute
+// storefront path or an http(s) URL. Any other scheme (data:, javascript:, a
+// relative path, a protocol-relative //host) is rejected so the field cannot
+// smuggle a value the frontend would not render as an image.
+func normalizeProductIconURL(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	if strings.HasPrefix(value, "/") {
+		if strings.HasPrefix(value, "//") {
+			return "", fmt.Errorf("%w: icon_url harus path absolut atau URL http/https", ErrInvalidInput)
+		}
+		return value, nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return "", fmt.Errorf("%w: icon_url harus path absolut atau URL http/https", ErrInvalidInput)
+	}
+	return value, nil
 }

@@ -149,7 +149,7 @@ func TestAdminProductService_CreateProduct(t *testing.T) {
 		assert.True(t, product.Active)
 	})
 
-	product, err := svc.CreateProduct(ctx, categoryID, name, slug, "Description", "image.jpg", false)
+	product, err := svc.CreateProduct(ctx, categoryID, name, slug, "Description", "image.jpg", "", false)
 	assert.NoError(t, err)
 	assert.Equal(t, name, product.Name)
 	assert.Equal(t, slug, product.Slug)
@@ -166,7 +166,7 @@ func TestAdminProductService_CreateProduct_DuplicateSlug(t *testing.T) {
 
 	repo.On("GetProductBySlug", ctx, slug).Return(existing, nil)
 
-	_, err := svc.CreateProduct(ctx, uuid.NewString(), "Name", slug, "", "", false)
+	_, err := svc.CreateProduct(ctx, uuid.NewString(), "Name", slug, "", "", "", false)
 	assert.Error(t, err)
 	assert.Equal(t, ErrConflict, err)
 	repo.AssertExpectations(t)
@@ -190,7 +190,7 @@ func TestAdminProductService_UpdateProduct(t *testing.T) {
 	})
 
 	active := false
-	product, err := svc.UpdateProduct(ctx, id, "", "New Name", "new-slug", "", nil, &active, nil)
+	product, err := svc.UpdateProduct(ctx, id, "", "New Name", "new-slug", "", nil, nil, &active, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, "New Name", product.Name)
 	assert.Equal(t, "new-slug", product.Slug)
@@ -214,7 +214,7 @@ func TestAdminProductService_CreateProduct_ComingSoon(t *testing.T) {
 		assert.Equal(t, "https://cdn.example.test/coming-soon.jpg", product.ImageURL)
 	})
 
-	product, err := svc.CreateProduct(ctx, categoryID, "Coming Soon", slug, "", "https://cdn.example.test/coming-soon.jpg", true)
+	product, err := svc.CreateProduct(ctx, categoryID, "Coming Soon", slug, "", "https://cdn.example.test/coming-soon.jpg", "", true)
 	assert.NoError(t, err)
 	assert.True(t, product.ComingSoon)
 	repo.AssertExpectations(t)
@@ -238,7 +238,7 @@ func TestAdminProductService_UpdateProduct_PointerFields(t *testing.T) {
 
 	newImage := "new.jpg"
 	comingSoon := true
-	product, err := svc.UpdateProduct(ctx, id, "", "", "", "", &newImage, nil, &comingSoon)
+	product, err := svc.UpdateProduct(ctx, id, "", "", "", "", &newImage, nil, nil, &comingSoon)
 	assert.NoError(t, err)
 	assert.Equal(t, "new.jpg", product.ImageURL)
 	assert.True(t, product.ComingSoon)
@@ -264,7 +264,7 @@ func TestAdminProductService_UpdateProduct_ClearsImageAndPreservesOmittedFields(
 	})
 
 	empty := ""
-	product, err := svc.UpdateProduct(ctx, id, "", "", "", "", &empty, nil, nil)
+	product, err := svc.UpdateProduct(ctx, id, "", "", "", "", &empty, nil, nil, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, "", product.ImageURL)
 	assert.True(t, product.ComingSoon)
@@ -310,12 +310,99 @@ func TestAdminProductService_UpdateProduct_RejectsComingSoonOnInactiveProduct(t 
 			existing.CategoryID = uuid.NewString()
 			repo.On("GetProductByID", ctx, id).Return(&existing, nil)
 
-			_, err := svc.UpdateProduct(ctx, id, "", "", "", "", nil, testCase.active, testCase.comingSoon)
+			_, err := svc.UpdateProduct(ctx, id, "", "", "", "", nil, nil, testCase.active, testCase.comingSoon)
 			assert.ErrorIs(t, err, ErrInvalidInput)
 			repo.AssertNotCalled(t, "UpdateProduct", mock.Anything, mock.Anything)
 			repo.AssertExpectations(t)
 		})
 	}
+}
+
+func TestAdminProductService_CreateProduct_IconURL(t *testing.T) {
+	ctx := context.Background()
+	repo := new(mockAdminProductRepository)
+	svc := NewAdminProductService(repo)
+
+	categoryID := uuid.NewString()
+	slug := "netflix-premium"
+	repo.On("GetProductBySlug", ctx, slug).Return(nil, ErrNotFound)
+	repo.On("CreateProduct", ctx, mock.AnythingOfType("*domain.Product")).Return(nil).Run(func(args mock.Arguments) {
+		product := args.Get(1).(*domain.Product)
+		assert.Equal(t, "/design-assets/logo-netflix.png", product.IconURL)
+	})
+
+	product, err := svc.CreateProduct(ctx, categoryID, "Netflix Premium", slug, "", "", "  /design-assets/logo-netflix.png  ", false)
+	assert.NoError(t, err)
+	assert.Equal(t, "/design-assets/logo-netflix.png", product.IconURL)
+	repo.AssertExpectations(t)
+}
+
+func TestAdminProductService_RejectsInvalidIconURL(t *testing.T) {
+	cases := []string{
+		"javascript:alert(1)",
+		"data:image/png;base64,AAAA",
+		"ftp://cdn.example.test/logo.png",
+		"design-assets/logo-netflix.png",
+		"//cdn.example.test/logo-netflix.png",
+		"https://",
+	}
+	for _, icon := range cases {
+		t.Run(icon, func(t *testing.T) {
+			ctx := context.Background()
+			repo := new(mockAdminProductRepository)
+			svc := NewAdminProductService(repo)
+
+			_, err := svc.CreateProduct(ctx, uuid.NewString(), "Name", "new-product", "", "", icon, false)
+			assert.ErrorIs(t, err, ErrInvalidInput)
+			repo.AssertNotCalled(t, "CreateProduct", mock.Anything, mock.Anything)
+
+			id := uuid.NewString()
+			existing := &domain.Product{ID: id, Slug: "existing", CategoryID: uuid.NewString(), Active: true}
+			repo.On("GetProductByID", ctx, id).Return(existing, nil)
+			_, err = svc.UpdateProduct(ctx, id, "", "", "", "", nil, &icon, nil, nil)
+			assert.ErrorIs(t, err, ErrInvalidInput)
+			repo.AssertNotCalled(t, "UpdateProduct", mock.Anything, mock.Anything)
+		})
+	}
+}
+
+func TestAdminProductService_UpdateProduct_IconURLPointerSemantics(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("omitted preserves the stored icon", func(t *testing.T) {
+		repo := new(mockAdminProductRepository)
+		svc := NewAdminProductService(repo)
+
+		id := uuid.NewString()
+		existing := &domain.Product{ID: id, Slug: "existing", CategoryID: uuid.NewString(), Active: true, IconURL: "/design-assets/logo-netflix.png"}
+		repo.On("GetProductByID", ctx, id).Return(existing, nil)
+		repo.On("UpdateProduct", ctx, mock.AnythingOfType("*domain.Product")).Return(nil).Run(func(args mock.Arguments) {
+			assert.Equal(t, "/design-assets/logo-netflix.png", args.Get(1).(*domain.Product).IconURL)
+		})
+
+		product, err := svc.UpdateProduct(ctx, id, "", "", "", "", nil, nil, nil, nil)
+		assert.NoError(t, err)
+		assert.Equal(t, "/design-assets/logo-netflix.png", product.IconURL)
+		repo.AssertExpectations(t)
+	})
+
+	t.Run("empty string clears the icon", func(t *testing.T) {
+		repo := new(mockAdminProductRepository)
+		svc := NewAdminProductService(repo)
+
+		id := uuid.NewString()
+		existing := &domain.Product{ID: id, Slug: "existing", CategoryID: uuid.NewString(), Active: true, IconURL: "/design-assets/logo-netflix.png"}
+		repo.On("GetProductByID", ctx, id).Return(existing, nil)
+		repo.On("UpdateProduct", ctx, mock.AnythingOfType("*domain.Product")).Return(nil).Run(func(args mock.Arguments) {
+			assert.Equal(t, "", args.Get(1).(*domain.Product).IconURL)
+		})
+
+		empty := "   "
+		product, err := svc.UpdateProduct(ctx, id, "", "", "", "", nil, &empty, nil, nil)
+		assert.NoError(t, err)
+		assert.Equal(t, "", product.IconURL)
+		repo.AssertExpectations(t)
+	})
 }
 
 func boolPtr(value bool) *bool { return &value }

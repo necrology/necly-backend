@@ -93,7 +93,10 @@ type Product struct {
 	Slug        string    `json:"slug" gorm:"uniqueIndex;not null"`
 	Description string    `json:"description"`
 	ImageURL    string    `json:"image_url"`
-	Active      bool      `json:"active" gorm:"not null;default:true;index"`
+	// IconURL is the public brand icon shown next to the product. It is a
+	// separate field from the catalog photo so the two can change independently.
+	IconURL string `json:"icon_url"`
+	Active  bool   `json:"active" gorm:"not null;default:true;index"`
 	// ComingSoon marks a product that is visible in the catalog but cannot be
 	// purchased yet. It is stored separately from Active: an inactive product
 	// stays hidden, while an active coming-soon product is shown with the flag
