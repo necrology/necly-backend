@@ -382,10 +382,19 @@ func (c *deadlineConn) SetWriteDeadline(value time.Time) error {
 }
 
 // sessionError preserves the caller-visible cancellation reason instead of
-// surfacing a transport error caused by the socket watchdog.
+// surfacing a transport error caused by the socket watchdog. When the socket
+// deadline fires before the context timer is observed, net.Error.Timeout() is
+// already true while ctx.Err() is still nil; normalize that race to the
+// caller's deadline so callers and tests see one stable timeout reason.
 func sessionError(ctx context.Context, err error) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		if _, ok := ctx.Deadline(); ok {
+			return context.DeadlineExceeded
+		}
 	}
 	return err
 }

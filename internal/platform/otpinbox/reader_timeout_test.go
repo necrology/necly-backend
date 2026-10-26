@@ -12,6 +12,7 @@ import (
 	"errors"
 	"math/big"
 	"net"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -314,5 +315,15 @@ func TestLatestUsesReadOnlyExamineAndBoundsLogout(t *testing.T) {
 	}
 	if !foundExamine {
 		t.Fatalf("mailbox was not opened read-only, commands = %v", commands)
+	}
+}
+
+func TestSessionErrorNormalizesSocketDeadlineToContextDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
+
+	err := &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}
+	if got := sessionError(ctx, err); !errors.Is(got, context.DeadlineExceeded) {
+		t.Fatalf("sessionError = %v, want context.DeadlineExceeded", got)
 	}
 }
