@@ -425,3 +425,31 @@ func TestUpdateAccountAndCreateSlotsKeepSharingLimitInvariant(t *testing.T) {
 		}
 	}
 }
+
+func TestGetAccountByEmailIsCaseInsensitiveAndReturnsMailboxSecrets(t *testing.T) {
+	fixture := newCheckoutFixture(t)
+	account := newInventoryAccount(t, fixture, fixture.product, 2, "active", nil)
+	account.AccountEmail = "Family@Example.test"
+	account.MailboxAppPasswordEncrypted = []byte("sealed-app-password")
+	if err := fixture.db.Save(account).Error; err != nil {
+		t.Fatalf("save account email: %v", err)
+	}
+
+	found, err := fixture.store.GetAccountByEmail(context.Background(), " family@example.TEST ")
+	if err != nil {
+		t.Fatalf("GetAccountByEmail: %v", err)
+	}
+	if found.ID != account.ID {
+		t.Fatalf("found account = %s, want %s", found.ID, account.ID)
+	}
+	if string(found.MailboxAppPasswordEncrypted) != "sealed-app-password" {
+		t.Fatalf("app password = %q", found.MailboxAppPasswordEncrypted)
+	}
+	if len(found.EncryptedCredentials) == 0 {
+		t.Fatal("credential ciphertext was not returned for the update/OTP path")
+	}
+
+	if _, err := fixture.store.GetAccountByEmail(context.Background(), "missing@example.test"); !errors.Is(err, service.ErrNotFound) {
+		t.Fatalf("missing email error = %v, want ErrNotFound", err)
+	}
+}

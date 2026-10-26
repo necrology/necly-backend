@@ -200,3 +200,148 @@ func TestLookupReportsUnavailableAndMissingMailbox(t *testing.T) {
 		t.Fatalf("no store error = %v, want ErrOTPUnavailable", err)
 	}
 }
+
+type fakeAccountResolver struct {
+	account *domain.InventoryAccount
+	err     error
+}
+
+func (r *fakeAccountResolver) GetAccountByEmail(context.Context, string) (*domain.InventoryAccount, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.account, nil
+}
+
+type fakeAccountReaderFactory struct {
+	reader      otpinbox.Reader
+	appPassword string
+	host        string
+	email       string
+	calls       int
+}
+
+func (f *fakeAccountReaderFactory) NewReader(email, appPassword, imapHost string) otpinbox.Reader {
+	f.calls++
+	f.email = email
+	f.appPassword = appPassword
+	f.host = imapHost
+	return f.reader
+}
+
+func storeOTPAccessCode(t *testing.T, store *fakeAccessStore, email string) string {
+	t.Helper()
+	payload, err := json.Marshal(AccessCodePayload{
+		Emails: []string{email}, ExpiresAt: time.Now().Add(10 * time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := "ABCD234567"
+	if err := store.Store(context.Background(), HashAccessCode(code), payload, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	return code
+}
+
+func TestAccountOTPLookupUsesDirectMailboxWhenAppPasswordExists(t *testing.T) {
+	cipher := accountOTPTestCipher(t)
+	sealed, err := cipher.Encrypt([]byte("gmail-app-password"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := newFakeAccessStore()
+	code := storeOTPAccessCode(t, store, "family@example.test")
+	direct := &fakeOTPInbox{enabled: true, message: &otpinbox.Message{Code: "111222"}}
+	central := &fakeOTPInbox{enabled: true, message: &otpinbox.Message{Code: "999888"}}
+	factory := &fakeAccountReaderFactory{reader: direct}
+	svc := NewAccountOTPService(store, central, time.Minute)
+	svc.SetPerAccountInbox(&fakeAccountResolver{account: &domain.InventoryAccount{
+		AccountEmail: "family@example.test", MailboxAppPasswordEncrypted: sealed, MailboxIMAPHost: "imap.gmail.com:993",
+	}}, cipher, factory)
+
+	message, err := svc.Lookup(context.Background(), "family@example.test", code)
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if message.Code != "111222" {
+		t.Fatalf("otp = %q, want the direct mailbox code", message.Code)
+	}
+	if factory.calls != 1 || factory.appPassword != "gmail-app-password" || factory.host != "imap.gmail.com:993" || factory.email != "family@example.test" {
+		t.Fatalf("factory call = %+v", factory)
+	}
+}
+
+func TestAccountOTPLookupFallsBackToCentralMailbox(t *testing.T) {
+	cipher := accountOTPTestCipher(t)
+	store := newFakeAccessStore()
+	code := storeOTPAccessCode(t, store, "family@example.test")
+	central := &fakeOTPInbox{enabled: true, message: &otpinbox.Message{Code: "333444"}}
+
+	t.Run("no app password on account", func(t *testing.T) {
+		factory := &fakeAccountReaderFactory{reader: &fakeOTPInbox{enabled: true}}
+		svc := NewAccountOTPService(store, central, time.Minute)
+		svc.SetPerAccountInbox(&fakeAccountResolver{account: &domain.InventoryAccount{AccountEmail: "family@example.test"}}, cipher, factory)
+		message, err := svc.Lookup(context.Background(), "family@example.test", code)
+		if err != nil || message.Code != "333444" {
+			t.Fatalf("message=%+v err=%v", message, err)
+		}
+		if factory.calls != 0 {
+			t.Fatal("direct reader was built without an app password")
+		}
+	})
+
+	t.Run("direct reader returns an error", func(t *testing.T) {
+		sealed, err := cipher.Encrypt([]byte("gmail-app-password"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		factory := &fakeAccountReaderFactory{reader: &fakeOTPInbox{enabled: true, err: errors.New("imap login failed")}}
+		svc := NewAccountOTPService(store, central, time.Minute)
+		svc.SetPerAccountInbox(&fakeAccountResolver{account: &domain.InventoryAccount{
+			AccountEmail: "family@example.test", MailboxAppPasswordEncrypted: sealed,
+		}}, cipher, factory)
+		message, err := svc.Lookup(context.Background(), "family@example.test", code)
+		if err != nil || message.Code != "333444" {
+			t.Fatalf("message=%+v err=%v", message, err)
+		}
+		if factory.calls != 1 {
+			t.Fatal("direct reader was not attempted")
+		}
+	})
+
+	t.Run("account lookup is not found", func(t *testing.T) {
+		factory := &fakeAccountReaderFactory{reader: &fakeOTPInbox{enabled: true}}
+		svc := NewAccountOTPService(store, central, time.Minute)
+		svc.SetPerAccountInbox(&fakeAccountResolver{err: ErrNotFound}, cipher, factory)
+		message, err := svc.Lookup(context.Background(), "family@example.test", code)
+		if err != nil || message.Code != "333444" {
+			t.Fatalf("message=%+v err=%v", message, err)
+		}
+		if factory.calls != 0 {
+			t.Fatalf("factory called %d times for a missing account", factory.calls)
+		}
+	})
+}
+
+func TestAccountOTPLookupFailsClosedWithoutAnyMailbox(t *testing.T) {
+	store := newFakeAccessStore()
+	code := storeOTPAccessCode(t, store, "family@example.test")
+	svc := NewAccountOTPService(store, &fakeOTPInbox{enabled: false}, time.Minute)
+	svc.SetPerAccountInbox(&fakeAccountResolver{err: ErrNotFound}, accountOTPTestCipher(t), &fakeAccountReaderFactory{})
+
+	if _, err := svc.Lookup(context.Background(), "family@example.test", code); !errors.Is(err, ErrOTPUnavailable) {
+		t.Fatalf("error = %v, want ErrOTPUnavailable", err)
+	}
+}
+
+func TestAccountOTPLookupWrongCodeStaysInvalidEvenWithDirectMailbox(t *testing.T) {
+	store := newFakeAccessStore()
+	_ = storeOTPAccessCode(t, store, "family@example.test")
+	svc := NewAccountOTPService(store, &fakeOTPInbox{enabled: true}, time.Minute)
+	svc.SetPerAccountInbox(&fakeAccountResolver{err: ErrNotFound}, accountOTPTestCipher(t), &fakeAccountReaderFactory{})
+
+	if _, err := svc.Lookup(context.Background(), "family@example.test", "WRONGCODE1"); !errors.Is(err, ErrOTPAccessInvalid) {
+		t.Fatalf("error = %v, want ErrOTPAccessInvalid", err)
+	}
+}

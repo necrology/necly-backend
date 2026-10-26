@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -340,7 +342,10 @@ func TestAdminProductService_CreateProduct_IconURL(t *testing.T) {
 func TestAdminProductService_RejectsInvalidIconURL(t *testing.T) {
 	cases := []string{
 		"javascript:alert(1)",
-		"data:image/png;base64,AAAA",
+		"data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=",
+		"data:text/html;base64,PGgxPmhpPC9oMT4=",
+		"data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==",
+		"data:image/png;base64,not-base64!",
 		"ftp://cdn.example.test/logo.png",
 		"design-assets/logo-netflix.png",
 		"//cdn.example.test/logo-netflix.png",
@@ -403,6 +408,51 @@ func TestAdminProductService_UpdateProduct_IconURLPointerSemantics(t *testing.T)
 		assert.Equal(t, "", product.IconURL)
 		repo.AssertExpectations(t)
 	})
+}
+
+func TestAdminProductService_AcceptsRasterIconDataURL(t *testing.T) {
+	cases := []struct {
+		name string
+		icon string
+	}{
+		{"webp", "data:image/webp;base64,UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEAAUAmJaQAA3AA/vuUAAA="},
+		{"png", "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lYQ5SAAAAABJRU5ErkJggg=="},
+		{" jpeg with spaces ", "  data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABBQJ//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPyF//9oADAMBAAIAAwAAABD/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAEDAQE/EH//xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAECAQE/EH//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAE/EH//2Q==  "},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			repo := new(mockAdminProductRepository)
+			svc := NewAdminProductService(repo)
+			slug := "icon-data-url"
+			repo.On("GetProductBySlug", context.Background(), slug).Return(nil, ErrNotFound)
+			repo.On("CreateProduct", context.Background(), mock.AnythingOfType("*domain.Product")).Return(nil).Run(func(args mock.Arguments) {
+				assert.Equal(t, strings.TrimSpace(testCase.icon), args.Get(1).(*domain.Product).IconURL)
+			})
+
+			product, err := svc.CreateProduct(context.Background(), uuid.NewString(), "Name", slug, "", "", testCase.icon, false)
+			assert.NoError(t, err)
+			assert.Equal(t, strings.TrimSpace(testCase.icon), product.IconURL)
+			repo.AssertExpectations(t)
+		})
+	}
+}
+
+func TestAdminProductService_IconDataURLHas512KiBLimit(t *testing.T) {
+	prefix := "data:image/png;base64,"
+	// Keep the complete data URL at or below the limit. The payload length is
+	// a multiple of four so the base64 decoder accepts it.
+	under := prefix + strings.Repeat("A", maxProductIconDataURLLength-len(prefix)-2)
+	if len(under) > maxProductIconDataURLLength {
+		t.Fatalf("valid fixture is %d bytes, limit is %d", len(under), maxProductIconDataURLLength)
+	}
+	over := prefix + strings.Repeat("A", maxProductIconDataURLLength-len(prefix)+4)
+
+	if _, err := normalizeProductIconURL(under); err != nil {
+		t.Fatalf("data URL under the limit was rejected: %v", err)
+	}
+	if _, err := normalizeProductIconURL(over); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("data URL over the limit yielded %v, want ErrInvalidInput", err)
+	}
 }
 
 func boolPtr(value bool) *bool { return &value }

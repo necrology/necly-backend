@@ -83,9 +83,56 @@ Kesalahan:
 - `503 otp_lookup_failed` — mailbox tidak dapat dibaca; tidak ada detail
   internal yang dibocorkan.
 
+## Sumber mailbox: hybrid per akun + fallback pusat
+
+Sejak NEC-121, lookup OTP mencoba dua sumber secara berurutan:
+
+1. **Mailbox akun sendiri (`direct`).** Bila manajemen akun menyimpan
+   `account_email` dan `mailbox_app_password`, service membuka mailbox akun itu
+   lewat IMAP TLS read-only dan hanya menerima pesan yang dialamatkan ke email
+   tersebut. Koneksi langsung dibatasi 18 detik.
+2. **Mailbox pusat (`central`).** Bila akun tidak ditemukan, app password kosong,
+   dekripsi gagal, atau pembacaan langsung gagal, service memakai mailbox
+   `OTP_IMAP_*` yang sudah ada.
+
+Sumber yang dipakai tidak dibocorkan ke response publik. `GET
+/api/v1/admin/inventory` menampilkan `otp_inbox_source` (`direct`, `central`,
+atau `none`) dan `otp_inbox_configured` agar operator tahu kesiapan tiap akun.
+Tidak ada background poller; mailbox dibaca saat pembeli meminta OTP.
+
+Kegagalan tetap fail-closed:
+
+- Tidak ada app password dan mailbox pusat tidak dikonfigurasi →
+  `503 otp_unavailable`.
+- Mailbox terbaca tetapi belum ada pesan OTP baru → `404 otp_not_found`.
+- Kode akses salah/kedaluwarsa tetap `otp_access_invalid`; pencarian mailbox
+  tidak pernah dijalankan sebelum kode akses diverifikasi.
+
+## Membuat Gmail app password
+
+Untuk akun Gmail yang dipakai membaca OTP:
+
+1. Aktifkan verifikasi dua langkah (2FA) pada akun Google tersebut. Google
+   tidak menampilkan menu app password tanpa 2FA.
+2. Buka **Google Account → Security → App passwords**, buat password khusus
+   untuk aplikasi Mail/IMAP.
+3. Simpan password 16 karakter itu di field `mailbox_app_password` pada
+   manajemen akun. Password login akun tetap disimpan terpisah di
+   `account_password`.
+4. Pastikan IMAP aktif untuk akun tersebut. Field `mailbox_imap_host` hanya
+   menerima `imap.gmail.com` atau `imap.googlemail.com` (opsional `:993`);
+   host/port lain ditolak `400 invalid_input` dan reader menolak dial ke tujuan
+   di luar allowlist tersebut.
+
+Jika Google Workspace organisasi melarang app password, akun tersebut tidak
+bisa memakai sumber `direct`. Jangan memaksa password utama akun ke kolom app
+password: gunakan fallback mailbox pusat atau minta administrator Workspace
+mengizinkan app password. App password adalah kredensial sensitif dan tidak
+pernah dikembalikan API, ditulis ke log, atau masuk audit.
+
 ## Konfigurasi operator
 
-Isi variabel berikut pada deployment backend:
+Variabel `OTP_IMAP_*` tetap dipertahankan sebagai mailbox pusat/fallback:
 
 ```
 OTP_IMAP_ADDR=imap.gmail.com:993
@@ -97,11 +144,10 @@ OTP_IMAP_LOOKBACK=15m
 OTP_IMAP_TIMEOUT=20s
 ```
 
-Semua email OTP untuk akun yang dijual harus masuk ke mailbox ini. Bila memakai
-forwarding, pertahankan alamat asli pada header `Delivered-To`,
-`X-Original-To`, atau `To`. Tanpa header tersebut pesan sengaja diabaikan agar
-satu pembeli tidak bisa membaca OTP pembeli lain. Redis wajib aktif karena kode
-akses disimpan di sana dengan TTL.
+Bila memakai forwarding ke mailbox pusat, pertahankan alamat asli pada header
+`Delivered-To`, `X-Original-To`, atau `To`. Tanpa header tersebut pesan sengaja
+diabaikan agar satu pembeli tidak bisa membaca OTP pembeli lain. Redis wajib
+aktif karena kode akses disimpan di sana dengan TTL.
 
 ## Batas keamanan
 
@@ -110,6 +156,19 @@ akses disimpan di sana dengan TTL.
   kode hanya untuk pemilik pesanan.
 - Email, kode akses, dan OTP tidak pernah ditulis ke log, audit, atau pesan
   error.
-- Mailbox hanya dibaca (IMAP `EXAMINE`) dan koneksi wajib TLS.
+- Mailbox (pusat maupun per akun) hanya dibaca (IMAP `EXAMINE`) dan koneksi
+  wajib TLS minimal 1.2 dengan verifikasi hostname. App password mailbox
+  disimpan terenkripsi dengan `CredentialCipher` dan didekripsi hanya di memori
+  saat lookup.
+- Mailbox per akun dibatasi fail-closed ke allowlist Gmail
+  (`imap.gmail.com`/`imap.googlemail.com`, port 993). Nilai host dari record
+  admin divalidasi ulang oleh factory reader; host lain tidak pernah didial.
+- Penerima OTP dibandingkan sebagai alamat email hasil parse `net/mail`, exact
+  case-insensitive. Display name, komentar, dan substring pada header mentah
+  tidak pernah dianggap cocok. Header envelope yang malformed atau berisi lebih
+  dari satu alamat diabaikan.
+- Deadline absolut dipasang pada socket setelah dial; pembatalan context
+  menutup koneksi sehingga `LOGIN`/`EXAMINE`/`SEARCH`/`FETCH`/`LOGOUT` tidak
+  menggantung setelah timeout.
 - OTP yang ditampilkan adalah kode terbaru yang dialamatkan ke email akun dan
   masuk dalam lookback window; tidak ada pembacaan seluruh isi mailbox ke klien.

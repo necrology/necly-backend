@@ -177,6 +177,12 @@ func main() {
 	}
 	orderDeliverySvc.SetAccessCodeSupport(otpAccessCodes, cfg.AppFrontendURL)
 	accountOTPSvc := service.NewAccountOTPService(otpAccessCodes, otpInbox, cfg.OTPInbox.Lookback)
+	// Hybrid lookup: use the account's own mailbox when it has a stored app
+	// password, otherwise fall back to the central OTP_IMAP_* mailbox.
+	accountOTPSvc.SetPerAccountInbox(store, cipher, otpinbox.AccountReaderFactory{
+		Mailbox: cfg.OTPInbox.Mailbox, Timeout: cfg.OTPInbox.Timeout,
+	})
+	adminInventorySvc.SetCentralOTPInbox(otpInbox.Enabled())
 	orderExpirySvc := service.NewOrderExpiryService(store)
 
 	app := fiber.New(fiber.Config{
