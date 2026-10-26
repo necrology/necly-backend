@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -49,10 +50,12 @@ func (s *Store) ListAccounts(ctx context.Context, page, perPage int, productID, 
 	if err := s.attachSlotCounts(ctx, accounts); err != nil {
 		return nil, 0, err
 	}
-	// Never return encrypted credentials or the encrypted OTP seed.
+	// Never return encrypted credentials, the encrypted OTP seed, or the
+	// mailbox app password.
 	for i := range accounts {
 		accounts[i].EncryptedCredentials = nil
 		accounts[i].OTPSecretEncrypted = nil
+		accounts[i].MailboxAppPasswordEncrypted = nil
 	}
 	return accounts, total, nil
 }
@@ -117,6 +120,7 @@ func applyAccountDerived(account *domain.InventoryAccount, total, available, ass
 	account.Sellable = account.Status == "active" && (account.ExpiresAt == nil || account.ExpiresAt.After(now))
 	account.NeedsReview = account.SharingLimit > service.MaxSharingLimit || account.TotalSlots > service.MaxSharingLimit
 	account.OTPConfigured = len(account.OTPSecretEncrypted) > 0
+	account.HasMailboxAppPassword = len(account.MailboxAppPasswordEncrypted) > 0
 	account.DaysRemaining = domain.DaysRemaining(account.ExpiresAt, now)
 }
 
@@ -146,6 +150,7 @@ func (s *Store) GetAccount(ctx context.Context, id string) (*domain.InventoryAcc
 		return nil, err
 	}
 	a.OTPSecretEncrypted = nil
+	a.MailboxAppPasswordEncrypted = nil
 	return &a, nil
 }
 
@@ -178,7 +183,56 @@ func (s *Store) GetAccountByProductID(ctx context.Context, productID string) (*d
 		return nil, err
 	}
 	a.OTPSecretEncrypted = nil
+	a.MailboxAppPasswordEncrypted = nil
 	return &a, nil
+}
+
+// GetAccountByEmail resolves the subscription account that owns one login
+// address. It is used by the OTP lookup and deliberately returns the encrypted
+// mailbox app password + host; the caller must decrypt in memory and must not
+// serialize them. The comparison uses lower(account_email), matching the unique
+// index created by migration 020.
+func (s *Store) GetAccountByEmail(ctx context.Context, email string) (*domain.InventoryAccount, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return nil, service.ErrNotFound
+	}
+	var a domain.InventoryAccount
+	err := s.db.WithContext(ctx).Where("lower(account_email) = ?", email).First(&a).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, service.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get inventory account by email: %w", err)
+	}
+	return &a, nil
+}
+
+// BackfillAccountEmail fills the dedicated email column for a legacy account.
+// It is intentionally a single-column update so a best-effort migration at read
+// time cannot overwrite credentials or trip the sharing-limit transaction.
+func (s *Store) BackfillAccountEmail(ctx context.Context, id, email string) error {
+	email = strings.TrimSpace(email)
+	if id == "" || email == "" {
+		return nil
+	}
+	return s.db.WithContext(ctx).Model(&domain.InventoryAccount{}).
+		Where("id = ? AND (account_email IS NULL OR btrim(account_email) = '')", id).
+		Update("account_email", email).Error
+}
+
+// GetAccountEncryptedCredentials loads only the credential ciphertext for the
+// read-time email backfill. GetAccount keeps its historical contract of never
+// returning secrets, so the admin service asks for this one column explicitly
+// and only for legacy rows whose account_email is still empty.
+func (s *Store) GetAccountEncryptedCredentials(ctx context.Context, id string) ([]byte, error) {
+	var ciphertext []byte
+	if err := s.db.WithContext(ctx).Raw(
+		"SELECT encrypted_credentials FROM inventory_accounts WHERE id = ?", id,
+	).Scan(&ciphertext).Error; err != nil {
+		return nil, fmt.Errorf("load account credentials: %w", err)
+	}
+	return ciphertext, nil
 }
 
 func (s *Store) CreateAccount(ctx context.Context, a *domain.InventoryAccount) error {

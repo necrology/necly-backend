@@ -156,6 +156,20 @@ type InventoryAccount struct {
 	// be created against the account; one slot is one sellable seat.
 	Label                string `json:"label" gorm:"size:120;not null;default:''"`
 	EncryptedCredentials []byte `json:"-" gorm:"not null"`
+	// AccountEmail is the login address of the subscription account. It is
+	// stored separately so the OTP lookup can find the mailbox without
+	// decrypting every credential row. It is read-only from the API.
+	AccountEmail string `json:"account_email" gorm:"column:account_email;not null;default:''"`
+	// MailboxAppPasswordEncrypted is the Gmail app password used to read the
+	// account's own mailbox. It is write-only and always cleared on response.
+	MailboxAppPasswordEncrypted []byte `json:"-" gorm:"column:mailbox_app_password_encrypted"`
+	// HasMailboxAppPassword is a non-secret marker set by the repository before
+	// it clears the ciphertext. It lets the response describe the OTP source
+	// without ever carrying the app password into the service layer.
+	HasMailboxAppPassword bool `json:"-" gorm:"-"`
+	// MailboxIMAPHost is the hostname (optionally host:port) of the account
+	// mailbox. It is not a secret and is shown to the administrator.
+	MailboxIMAPHost string `json:"mailbox_imap_host" gorm:"column:mailbox_imap_host;not null;default:'imap.gmail.com'"`
 	// OTPSecretEncrypted is the TOTP seed sealed by CredentialCipher. It is
 	// write-only: every read path clears it and only OTPConfigured is exposed.
 	OTPSecretEncrypted []byte     `json:"-" gorm:"column:otp_secret_encrypted"`
@@ -178,6 +192,11 @@ type InventoryAccount struct {
 	// distinguish "unlimited" from "expires today" (zero).
 	DaysRemaining *int `json:"days_remaining" gorm:"-"`
 	OTPConfigured bool `json:"otp_configured" gorm:"-"`
+	// OTPInboxConfigured/source describe where an OTP lookup will read mail:
+	// the account's own mailbox when an app password is stored ("direct"), the
+	// central OTP_IMAP_* mailbox ("central"), or nowhere ("none").
+	OTPInboxConfigured bool   `json:"otp_inbox_configured" gorm:"-"`
+	OTPInboxSource     string `json:"otp_inbox_source" gorm:"-"`
 	// NeedsReview marks a legacy account above the five-user sharing limit. Its
 	// existing slots stay usable, but no new slot may be provisioned until an
 	// administrator lowers the limit to five or less.

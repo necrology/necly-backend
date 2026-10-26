@@ -199,4 +199,66 @@ func TestW15AdminInventoryUpdateContractExercisesTheRealStore(t *testing.T) {
 	if fetched.TotalSlots != 3 || fetched.RemainingSlots != 1 || !fetched.Sellable {
 		t.Fatalf("GET derived counters = %+v, want total=3 remaining=1 sellable=true", fetched)
 	}
+
+	// NEC-121: the PATCH route binds the separate login and mailbox fields. The
+	// existing account has a non-decryptable placeholder, so create a second one
+	// with a real encrypted credential and update only the email.
+	legacyCredential, err := cipher.Encrypt([]byte(`{"username":"old@example.test","password":"old-pass","instructions":"profil 2"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondID := uuid.NewString()
+	if err := db.Create(&domain.InventoryAccount{
+		ID: secondID, ProductID: productID, Label: "Akun kedua", AccountEmail: "old@example.test",
+		EncryptedCredentials: legacyCredential, Status: "active", SharingLimit: 5, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed second account: %v", err)
+	}
+	emailPatch := httptest.NewRequest(http.MethodPatch, "/api/v1/admin/inventory/"+secondID, bytes.NewBufferString(
+		`{"account_email":"family@example.test","mailbox_app_password":"gmail-app-password","mailbox_imap_host":"imap.gmail.com:993"}`,
+	))
+	emailPatch.Header.Set("Authorization", "Bearer "+access)
+	emailPatch.Header.Set("Content-Type", "application/json")
+	emailResp, err := app.Test(emailPatch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	emailPayload, _ := io.ReadAll(emailResp.Body)
+	if emailResp.StatusCode != fiber.StatusOK {
+		t.Fatalf("email PATCH = %d %s, want 200", emailResp.StatusCode, emailPayload)
+	}
+	var updatedAccount struct {
+		AccountEmail       string `json:"account_email"`
+		MailboxIMAPHost    string `json:"mailbox_imap_host"`
+		OTPInboxConfigured bool   `json:"otp_inbox_configured"`
+		OTPInboxSource     string `json:"otp_inbox_source"`
+	}
+	if err := json.Unmarshal(emailPayload, &updatedAccount); err != nil {
+		t.Fatal(err)
+	}
+	if updatedAccount.AccountEmail != "family@example.test" || updatedAccount.MailboxIMAPHost != "imap.gmail.com:993" {
+		t.Fatalf("email response = %+v", updatedAccount)
+	}
+	if !updatedAccount.OTPInboxConfigured || updatedAccount.OTPInboxSource != "direct" {
+		t.Fatalf("otp inbox response = %+v, want direct/true", updatedAccount)
+	}
+	for _, secret := range []string{"old-pass", "gmail-app-password", "mailbox_app_password", "account_password", "encrypted_credentials"} {
+		if bytes.Contains(emailPayload, []byte(secret)) {
+			t.Fatalf("email PATCH response leaked %q: %s", secret, emailPayload)
+		}
+	}
+	var stored domain.InventoryAccount
+	if err := db.Where("id = ?", secondID).First(&stored).Error; err != nil {
+		t.Fatalf("reload second account: %v", err)
+	}
+	plain, err := cipher.Decrypt(stored.EncryptedCredentials)
+	if err != nil {
+		t.Fatalf("decrypt merged credential: %v", err)
+	}
+	if !bytes.Contains(plain, []byte(`"username":"family@example.test"`)) || !bytes.Contains(plain, []byte(`"password":"old-pass"`)) {
+		t.Fatalf("merged credential = %s", plain)
+	}
+	if len(stored.MailboxAppPasswordEncrypted) == 0 {
+		t.Fatal("mailbox app password was not stored")
+	}
 }

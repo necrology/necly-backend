@@ -327,31 +327,74 @@ func NormalizeAccessCode(code string) string {
 	return strings.ToUpper(replacer.Replace(strings.TrimSpace(code)))
 }
 
-// AccountOTPService resolves a code+email pair into the newest OTP in the
-// shared mailbox. It never logs the email, code or OTP.
+// AccountOTPAccountResolver finds the inventory account that owns a login
+// email. The repository returns the encrypted mailbox app password; the OTP
+// service decrypts it in memory and never exposes it.
+type AccountOTPAccountResolver interface {
+	GetAccountByEmail(ctx context.Context, email string) (*domain.InventoryAccount, error)
+}
+
+// AccountOTPReaderFactory builds a read-only TLS reader for one account's own
+// mailbox. It is an interface so tests can inject an in-memory reader.
+type AccountOTPReaderFactory interface {
+	NewReader(accountEmail, appPassword, imapHost string) otpinbox.Reader
+}
+
+const perAccountOTPTimeout = 18 * time.Second
+
+// AccountOTPService resolves a code+email pair into the newest OTP. It first
+// tries the account's own mailbox when an app password is stored, then falls
+// back to the shared mailbox. It never logs the email, code or OTP.
 type AccountOTPService struct {
 	codes    AccessCodeStore
 	inbox    otpinbox.Reader
 	lookback time.Duration
 	now      func() time.Time
+
+	resolver      AccountOTPAccountResolver
+	factory       AccountOTPReaderFactory
+	cipher        *CredentialCipher
+	directTimeout time.Duration
 }
 
 func NewAccountOTPService(codes AccessCodeStore, inbox otpinbox.Reader, lookback time.Duration) *AccountOTPService {
 	if lookback <= 0 {
 		lookback = 15 * time.Minute
 	}
-	return &AccountOTPService{codes: codes, inbox: inbox, lookback: lookback, now: func() time.Time { return time.Now().UTC() }}
+	return &AccountOTPService{
+		codes: codes, inbox: inbox, lookback: lookback,
+		now: func() time.Time { return time.Now().UTC() }, directTimeout: perAccountOTPTimeout,
+	}
 }
 
-// InboxReady tells the UI whether OTP retrieval can work at all.
+// SetPerAccountInbox wires the hybrid direct-mailbox lookup. A nil resolver,
+// factory or cipher leaves the service on the central mailbox only.
+func (s *AccountOTPService) SetPerAccountInbox(resolver AccountOTPAccountResolver, cipher *CredentialCipher, factory AccountOTPReaderFactory) {
+	if s == nil {
+		return
+	}
+	s.resolver = resolver
+	s.cipher = cipher
+	s.factory = factory
+}
+
+// InboxReady tells the UI whether OTP retrieval can work at all. Direct
+// mailboxes are account-specific, so a configured resolver/factory counts as
+// ready even when the central fallback is disabled.
 func (s *AccountOTPService) InboxReady() bool {
-	return s != nil && s.codes != nil && s.inbox != nil && s.inbox.Enabled()
+	if s == nil || s.codes == nil {
+		return false
+	}
+	if s.inbox != nil && s.inbox.Enabled() {
+		return true
+	}
+	return s.resolver != nil && s.cipher != nil && s.factory != nil
 }
 
 // Lookup verifies the bearer code and returns the newest OTP addressed to the
 // supplied account email. Errors are intentionally coarse.
 func (s *AccountOTPService) Lookup(ctx context.Context, email, code string) (*otpinbox.Message, error) {
-	if s == nil || s.codes == nil || s.inbox == nil || !s.inbox.Enabled() {
+	if s == nil || s.codes == nil {
 		return nil, ErrOTPUnavailable
 	}
 	email = strings.ToLower(strings.TrimSpace(email))
@@ -384,16 +427,75 @@ func (s *AccountOTPService) Lookup(ctx context.Context, email, code string) (*ot
 		return nil, ErrOTPAccessInvalid
 	}
 
-	message, err := s.inbox.Latest(ctx, email, s.now().Add(-s.lookback))
-	if errors.Is(err, otpinbox.ErrNotFound) {
-		return nil, ErrOTPNotFound
+	return s.lookupMailbox(ctx, email)
+}
+
+// lookupMailbox tries the account's own mailbox first, then the central one.
+// Direct-read failures are deliberately swallowed: the caller must not learn
+// whether the account exists, has an app password, or whether Gmail rejected
+// it. The isolation boundary stays inside otpinbox, which only returns a
+// message addressed to the requested email.
+func (s *AccountOTPService) lookupMailbox(ctx context.Context, email string) (*otpinbox.Message, error) {
+	since := s.now().Add(-s.lookback)
+	centralReady := s.inbox != nil && s.inbox.Enabled()
+	directAttempted := false
+	var directErr error
+
+	if s.resolver != nil && s.cipher != nil && s.factory != nil {
+		account, err := s.resolver.GetAccountByEmail(ctx, email)
+		if err == nil && account != nil && len(account.MailboxAppPasswordEncrypted) > 0 {
+			directAttempted = true
+			appPassword, decryptErr := s.cipher.Decrypt(account.MailboxAppPasswordEncrypted)
+			if decryptErr == nil {
+				host := strings.TrimSpace(account.MailboxIMAPHost)
+				if host == "" {
+					host = "imap.gmail.com"
+				}
+				reader := s.factory.NewReader(email, string(appPassword), host)
+				if reader != nil && reader.Enabled() {
+					timeout := s.directTimeout
+					if timeout <= 0 {
+						timeout = perAccountOTPTimeout
+					}
+					readCtx, cancel := context.WithTimeout(ctx, timeout)
+					message, readErr := reader.Latest(readCtx, email, since)
+					cancel()
+					if readErr == nil {
+						return message, nil
+					}
+					directErr = readErr
+				}
+			}
+		}
 	}
-	if errors.Is(err, otpinbox.ErrNotConfigured) {
+
+	if centralReady {
+		message, err := s.inbox.Latest(ctx, email, since)
+		switch {
+		case err == nil:
+			return message, nil
+		case errors.Is(err, otpinbox.ErrNotFound):
+			// The fallback mailbox was readable and simply has no recent code.
+			return nil, ErrOTPNotFound
+		case errors.Is(err, otpinbox.ErrNotConfigured):
+			return nil, ErrOTPUnavailable
+		default:
+			// Transport errors must not leak mailbox details to the public page.
+			return nil, fmt.Errorf("read otp inbox: %w", err)
+		}
+	}
+
+	if !directAttempted {
 		return nil, ErrOTPUnavailable
 	}
-	if err != nil {
-		// Transport errors must not leak mailbox details to the public page.
-		return nil, fmt.Errorf("read otp inbox: %w", err)
+	if directErr != nil {
+		if errors.Is(directErr, otpinbox.ErrNotFound) {
+			return nil, ErrOTPNotFound
+		}
+		if errors.Is(directErr, otpinbox.ErrNotConfigured) {
+			return nil, ErrOTPUnavailable
+		}
+		return nil, fmt.Errorf("read account otp inbox: %w", directErr)
 	}
-	return message, nil
+	return nil, ErrOTPNotFound
 }

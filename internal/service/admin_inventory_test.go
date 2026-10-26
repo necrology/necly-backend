@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,6 +52,10 @@ type stubInventoryRepo struct {
 	assignments []domain.InventorySlotAssignment
 	assignTotal int64
 	assignErr   error
+
+	legacyCredentials []byte
+	backfilledID      string
+	backfilledEmail   string
 }
 
 func (s *stubInventoryRepo) GetPriceProductID(context.Context, string) (string, error) {
@@ -102,6 +107,16 @@ func (s *stubInventoryRepo) UpdateAccount(_ context.Context, a *domain.Inventory
 	copied.EncryptedCredentials = append([]byte(nil), a.EncryptedCredentials...)
 	copied.OTPSecretEncrypted = append([]byte(nil), a.OTPSecretEncrypted...)
 	s.updatedAccount = &copied
+	return nil
+}
+
+func (s *stubInventoryRepo) GetAccountEncryptedCredentials(context.Context, string) ([]byte, error) {
+	return s.legacyCredentials, nil
+}
+
+func (s *stubInventoryRepo) BackfillAccountEmail(_ context.Context, id, email string) error {
+	s.backfilledID = id
+	s.backfilledEmail = email
 	return nil
 }
 
@@ -495,6 +510,51 @@ func TestUpdateInventoryAccountRejectsSharingLimitAboveFive(t *testing.T) {
 	}
 }
 
+func TestGetInventoryAccountBackfillsLegacyAccountEmail(t *testing.T) {
+	cipher := testCipher(t)
+	sealed, err := cipher.Encrypt([]byte(`{"username":"legacy@example.test","password":"secret"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := uuid.NewString()
+	repo := &stubInventoryRepo{
+		account:           &domain.InventoryAccount{ID: id, SharingLimit: 1},
+		legacyCredentials: sealed,
+	}
+	svc := NewAdminInventoryService(repo, cipher)
+
+	account, err := svc.GetInventoryAccount(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetInventoryAccount: %v", err)
+	}
+	if account.AccountEmail != "legacy@example.test" {
+		t.Fatalf("account_email = %q", account.AccountEmail)
+	}
+	if repo.backfilledID != id || repo.backfilledEmail != "legacy@example.test" {
+		t.Fatalf("backfill = %q/%q", repo.backfilledID, repo.backfilledEmail)
+	}
+	if account.EncryptedCredentials != nil {
+		t.Fatal("response kept the credential ciphertext")
+	}
+}
+
+func TestGetInventoryAccountIgnoresBrokenLegacyCredential(t *testing.T) {
+	id := uuid.NewString()
+	repo := &stubInventoryRepo{
+		account:           &domain.InventoryAccount{ID: id, SharingLimit: 1},
+		legacyCredentials: []byte("not-a-valid-ciphertext"),
+	}
+	svc := NewAdminInventoryService(repo, testCipher(t))
+
+	account, err := svc.GetInventoryAccount(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetInventoryAccount: %v", err)
+	}
+	if account.AccountEmail != "" || repo.backfilledID != "" {
+		t.Fatalf("broken row was backfilled: email=%q id=%q", account.AccountEmail, repo.backfilledID)
+	}
+}
+
 func TestPresentAccountFlagsLegacyLimitAndStripsOTPSecret(t *testing.T) {
 	cipher := testCipher(t)
 	sealed, err := cipher.Encrypt([]byte("JBSWY3DPEHPK3PXP"))
@@ -659,6 +719,202 @@ func TestUpdateInventoryAccountRejectsMalformedOTPSecret(t *testing.T) {
 	if _, err := svc.UpdateInventoryAccount(context.Background(), id, UpdateInventoryAccountInput{OTPSecret: &bad}); !errors.Is(err, ErrOTPSecretInvalid) {
 		t.Fatalf("error = %v, want ErrOTPSecretInvalid", err)
 	}
+}
+
+func TestCreateInventoryAccountAcceptsSeparateLoginAndMailboxSecrets(t *testing.T) {
+	productID := uuid.NewString()
+	repo := &stubInventoryRepo{productExists: true}
+	cipher := testCipher(t)
+	svc := NewAdminInventoryService(repo, cipher)
+	appPassword := "abcd efgh ijkl mnop"
+
+	account, err := svc.CreateInventoryAccount(context.Background(), CreateInventoryAccountInput{
+		ProductID:          productID,
+		AccountEmail:       "Family@Example.test ",
+		AccountPassword:    "login-secret",
+		MailboxAppPassword: &appPassword,
+		MailboxIMAPHost:    "imap.gmail.com:993",
+	})
+	if err != nil {
+		t.Fatalf("CreateInventoryAccount: %v", err)
+	}
+	if repo.createdAccount == nil {
+		t.Fatal("account was not persisted")
+	}
+	if repo.createdAccount.AccountEmail != "Family@Example.test" {
+		t.Fatalf("account_email = %q", repo.createdAccount.AccountEmail)
+	}
+	username, password, _, ok := decryptInventoryCredential(t, cipher, repo.createdAccount.EncryptedCredentials)
+	if !ok || username != "Family@Example.test" || password != "login-secret" {
+		t.Fatalf("stored login = %q/%q ok=%t", username, password, ok)
+	}
+	if len(repo.createdAccount.MailboxAppPasswordEncrypted) == 0 {
+		t.Fatal("mailbox app password was not encrypted")
+	}
+	plainApp, err := cipher.Decrypt(repo.createdAccount.MailboxAppPasswordEncrypted)
+	if err != nil || string(plainApp) != appPassword {
+		t.Fatalf("stored app password = %q, err=%v", plainApp, err)
+	}
+	if account.OTPInboxSource != "direct" || !account.OTPInboxConfigured {
+		t.Fatalf("otp inbox = %s/%t, want direct/true", account.OTPInboxSource, account.OTPInboxConfigured)
+	}
+	if account.MailboxIMAPHost != "imap.gmail.com:993" {
+		t.Fatalf("mailbox host = %q", account.MailboxIMAPHost)
+	}
+	payload := string(mustJSON(t, account))
+	for _, secret := range []string{"login-secret", appPassword, "mailbox_app_password", "account_password", "encrypted_credentials"} {
+		if bytes.Contains([]byte(payload), []byte(secret)) {
+			t.Fatalf("response leaked %q: %s", secret, payload)
+		}
+	}
+}
+
+func TestCreateInventoryAccountWithoutMailboxUsesCentralSource(t *testing.T) {
+	repo := &stubInventoryRepo{productExists: true}
+	svc := NewAdminInventoryService(repo, testCipher(t))
+	svc.SetCentralOTPInbox(true)
+
+	account, err := svc.CreateInventoryAccount(context.Background(), CreateInventoryAccountInput{
+		ProductID:       uuid.NewString(),
+		AccountEmail:    "family@example.test",
+		AccountPassword: "secret",
+	})
+	if err != nil {
+		t.Fatalf("CreateInventoryAccount: %v", err)
+	}
+	if account.MailboxIMAPHost != DefaultMailboxIMAPHost {
+		t.Fatalf("mailbox host = %q, want default", account.MailboxIMAPHost)
+	}
+	if !account.OTPInboxConfigured || account.OTPInboxSource != "central" {
+		t.Fatalf("otp inbox = %s/%t, want central/true", account.OTPInboxSource, account.OTPInboxConfigured)
+	}
+}
+
+func TestUpdateInventoryAccountMergesLoginFieldsIndependently(t *testing.T) {
+	cipher := testCipher(t)
+	old := inventoryLoginPayload{Username: "old@example.test", Password: "old-pass", Instructions: "Pakai profil 2"}
+	oldEncrypted, err := cipher.Encrypt(mustJSON(t, old))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("email only keeps password and instructions", func(t *testing.T) {
+		repo := &stubInventoryRepo{accountWithCredentials: &domain.InventoryAccount{
+			ID: uuid.NewString(), SharingLimit: 5, AccountEmail: old.Username,
+			EncryptedCredentials: oldEncrypted,
+		}}
+		svc := NewAdminInventoryService(repo, cipher)
+		email := "new@example.test"
+		if _, err := svc.UpdateInventoryAccount(context.Background(), repo.accountWithCredentials.ID, UpdateInventoryAccountInput{AccountEmail: &email}); err != nil {
+			t.Fatalf("update email: %v", err)
+		}
+		username, password, instructions, ok := decryptInventoryCredential(t, cipher, repo.updatedAccount.EncryptedCredentials)
+		if !ok || username != email || password != old.Password || instructions != old.Instructions {
+			t.Fatalf("merged login = %q/%q/%q ok=%t", username, password, instructions, ok)
+		}
+		if repo.updatedAccount.AccountEmail != email {
+			t.Fatalf("account_email = %q", repo.updatedAccount.AccountEmail)
+		}
+	})
+
+	t.Run("password only keeps email and instructions", func(t *testing.T) {
+		repo := &stubInventoryRepo{accountWithCredentials: &domain.InventoryAccount{
+			ID: uuid.NewString(), SharingLimit: 5, AccountEmail: old.Username,
+			EncryptedCredentials: oldEncrypted,
+		}}
+		svc := NewAdminInventoryService(repo, cipher)
+		password := "new-pass"
+		if _, err := svc.UpdateInventoryAccount(context.Background(), repo.accountWithCredentials.ID, UpdateInventoryAccountInput{AccountPassword: &password}); err != nil {
+			t.Fatalf("update password: %v", err)
+		}
+		username, storedPassword, instructions, ok := decryptInventoryCredential(t, cipher, repo.updatedAccount.EncryptedCredentials)
+		if !ok || username != old.Username || storedPassword != password || instructions != old.Instructions {
+			t.Fatalf("merged login = %q/%q/%q ok=%t", username, storedPassword, instructions, ok)
+		}
+		if repo.updatedAccount.AccountEmail != old.Username {
+			t.Fatalf("account_email = %q", repo.updatedAccount.AccountEmail)
+		}
+	})
+
+	t.Run("both fields replace login and empty app password returns to central", func(t *testing.T) {
+		sealedApp, err := cipher.Encrypt([]byte("old-app-password"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		repo := &stubInventoryRepo{accountWithCredentials: &domain.InventoryAccount{
+			ID: uuid.NewString(), SharingLimit: 5, AccountEmail: old.Username,
+			EncryptedCredentials: oldEncrypted, MailboxAppPasswordEncrypted: sealedApp,
+			MailboxIMAPHost: "imap.gmail.com",
+		}}
+		svc := NewAdminInventoryService(repo, cipher)
+		svc.SetCentralOTPInbox(true)
+		email := "both@example.test"
+		password := "both-pass"
+		empty := ""
+		account, err := svc.UpdateInventoryAccount(context.Background(), repo.accountWithCredentials.ID, UpdateInventoryAccountInput{
+			AccountEmail: &email, AccountPassword: &password, MailboxAppPassword: &empty,
+		})
+		if err != nil {
+			t.Fatalf("update both: %v", err)
+		}
+		username, storedPassword, _, ok := decryptInventoryCredential(t, cipher, repo.updatedAccount.EncryptedCredentials)
+		if !ok || username != email || storedPassword != password {
+			t.Fatalf("merged login = %q/%q ok=%t", username, storedPassword, ok)
+		}
+		if repo.updatedAccount.MailboxAppPasswordEncrypted != nil {
+			t.Fatal("explicit empty app password did not clear the stored value")
+		}
+		if account.OTPInboxSource != "central" || !account.OTPInboxConfigured {
+			t.Fatalf("otp inbox = %s/%t, want central/true", account.OTPInboxSource, account.OTPInboxConfigured)
+		}
+	})
+
+	t.Run("omitted app password is preserved", func(t *testing.T) {
+		sealedApp, err := cipher.Encrypt([]byte("keep-app-password"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		repo := &stubInventoryRepo{accountWithCredentials: &domain.InventoryAccount{
+			ID: uuid.NewString(), SharingLimit: 5, AccountEmail: old.Username,
+			EncryptedCredentials: oldEncrypted, MailboxAppPasswordEncrypted: sealedApp,
+		}}
+		svc := NewAdminInventoryService(repo, cipher)
+		label := "Baru"
+		if _, err := svc.UpdateInventoryAccount(context.Background(), repo.accountWithCredentials.ID, UpdateInventoryAccountInput{Label: &label}); err != nil {
+			t.Fatalf("update label: %v", err)
+		}
+		if string(repo.updatedAccount.MailboxAppPasswordEncrypted) != string(sealedApp) {
+			t.Fatal("omitting mailbox_app_password changed the stored value")
+		}
+	})
+}
+
+func TestInventoryAccountRejectsInvalidEmailPasswordAndHost(t *testing.T) {
+	cipher := testCipher(t)
+	productID := uuid.NewString()
+	cases := []CreateInventoryAccountInput{
+		{ProductID: productID, AccountEmail: "not-an-email", AccountPassword: "pass"},
+		{ProductID: productID, AccountEmail: "family@example.test", AccountPassword: "   "},
+		{ProductID: productID, AccountEmail: "family@example.test", AccountPassword: "pass", MailboxIMAPHost: "https://imap.gmail.com"},
+		{ProductID: productID, AccountEmail: "family@example.test", AccountPassword: "pass", MailboxIMAPHost: "imap.gmail.com:notaport"},
+		{ProductID: productID, AccountEmail: "family@example.test", AccountPassword: "pass", MailboxIMAPHost: strings.Repeat("a", maxMailboxIMAPHostLength+1)},
+	}
+	for _, input := range cases {
+		repo := &stubInventoryRepo{productExists: true}
+		svc := NewAdminInventoryService(repo, cipher)
+		if _, err := svc.CreateInventoryAccount(context.Background(), input); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("input %+v yielded %v, want ErrInvalidInput", input, err)
+		}
+	}
+}
+
+func decryptInventoryCredential(t *testing.T, cipher *CredentialCipher, sealed []byte) (string, string, string, bool) {
+	t.Helper()
+	plain, err := cipher.Decrypt(sealed)
+	if err != nil {
+		t.Fatalf("decrypt credential: %v", err)
+	}
+	return parseInventoryCredential(plain)
 }
 
 func mustJSON(t *testing.T, value any) []byte {

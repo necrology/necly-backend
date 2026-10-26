@@ -58,7 +58,7 @@ type actualSchema struct {
 	constraints map[string]bool
 }
 
-var indexColumnsPattern = regexp.MustCompile(`\(([^()]*)\)\s*$`)
+var indexColumnsPattern = regexp.MustCompile(`(?s) USING \w+ \((.*?)\)(?: WHERE |$)`)
 
 // verifyBaseline checks only the objects that exist after the baseline chain
 // (001, 003–008). Migration 009 is applied by the runner after adoption.

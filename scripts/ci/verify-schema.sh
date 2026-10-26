@@ -14,7 +14,7 @@ cd "$ROOT"
 echo "verifying W0 migration checksums"
 (cd migrations && sha256sum -c ../deploy/validation/migration-checksums.sha256)
 
-FILES="001_initial_schema.sql 003_localize_catalog_copy.sql 004_issue_reports.sql 005_password_reset_tokens.sql 006_product_labels.sql 007_device_count.sql 008_add_users_active.sql 009_order_compatibility.sql 010_checkout_idempotency.sql 011_order_expiry_index.sql 012_inventory_account_sharing.sql 013_inventory_account_label_backfill.sql 014_order_deliveries.sql 015_product_coming_soon.sql 016_clean_product_names.sql 017_delivery_replacements.sql 018_inventory_account_otp_access.sql 019_product_icon_url.sql"
+FILES="001_initial_schema.sql 003_localize_catalog_copy.sql 004_issue_reports.sql 005_password_reset_tokens.sql 006_product_labels.sql 007_device_count.sql 008_add_users_active.sql 009_order_compatibility.sql 010_checkout_idempotency.sql 011_order_expiry_index.sql 012_inventory_account_sharing.sql 013_inventory_account_label_backfill.sql 014_order_deliveries.sql 015_product_coming_soon.sql 016_clean_product_names.sql 017_delivery_replacements.sql 018_inventory_account_otp_access.sql 019_product_icon_url.sql 020_inventory_account_mailbox.sql"
 
 for pass in 1 2; do
   echo "schema pass $pass"
@@ -82,10 +82,20 @@ SLOT_ACCESS_INDEX=$(psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM pg_indexe
 PRODUCT_ICON=$(psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='products' AND column_name='icon_url' AND data_type='text' AND is_nullable='YES'")
 [ "$PRODUCT_ICON" = "1" ] || { echo "FAIL: products.icon_url column missing or wrong shape"; exit 1; }
 
+# Migration 020 stores the login email and the encrypted per-account mailbox
+# app password. The unique lower(email) index lets OTP lookup stay a single
+# indexed read, and blank legacy emails do not collide.
+MAILBOX_COLUMNS=$(psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='inventory_accounts' AND ((column_name='account_email' AND data_type='text' AND is_nullable='NO' AND column_default IS NOT NULL) OR (column_name='mailbox_app_password_encrypted' AND data_type='bytea' AND is_nullable='YES') OR (column_name='mailbox_imap_host' AND data_type='text' AND is_nullable='NO' AND column_default IS NOT NULL))")
+[ "$MAILBOX_COLUMNS" = "3" ] || { echo "FAIL: expected 3 inventory mailbox columns, got $MAILBOX_COLUMNS"; exit 1; }
+MAILBOX_HOST_DEFAULT=$(psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='inventory_accounts' AND column_name='mailbox_imap_host' AND column_default LIKE '%imap.gmail.com%'")
+[ "$MAILBOX_HOST_DEFAULT" = "1" ] || { echo "FAIL: mailbox_imap_host default is not imap.gmail.com"; exit 1; }
+MAILBOX_INDEX=$(psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND indexname='idx_inventory_accounts_account_email'")
+[ "$MAILBOX_INDEX" = "1" ] || { echo "FAIL: inventory account email index missing"; exit 1; }
+
 # Migration 017 records account replacements and must survive the second pass.
 REPLACEMENT_TABLE=$(psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='delivery_replacements'")
 REPLACEMENT_COLUMNS=$(psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='delivery_replacements' AND column_name IN ('replacement_of','old_slot_ids','new_slot_ids','complaint_approved','email_sent_at')")
 [ "$REPLACEMENT_TABLE" = "1" ] || { echo "FAIL: delivery_replacements table missing"; exit 1; }
 [ "$REPLACEMENT_COLUMNS" = "5" ] || { echo "FAIL: expected 5 delivery replacement columns, got $REPLACEMENT_COLUMNS"; exit 1; }
 
-echo "PASS: schema applied twice; tables=$TABLES; no development seed rows; compatibility columns=$COLUMNS; checkout_attempts=$ATTEMPT_TABLE; inventory sharing columns=$SHARING; order_deliveries=$DELIVERY_TABLE; coming_soon=$COMING_SOON; otp_access_columns=$OTP_ACCESS_COLUMNS; delivery_replacements=$REPLACEMENT_TABLE; products.icon_url=$PRODUCT_ICON"
+echo "PASS: schema applied twice; tables=$TABLES; no development seed rows; compatibility columns=$COLUMNS; checkout_attempts=$ATTEMPT_TABLE; inventory sharing columns=$SHARING; order_deliveries=$DELIVERY_TABLE; coming_soon=$COMING_SOON; otp_access_columns=$OTP_ACCESS_COLUMNS; delivery_replacements=$REPLACEMENT_TABLE; products.icon_url=$PRODUCT_ICON; inventory mailbox columns=$MAILBOX_COLUMNS"

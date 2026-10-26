@@ -80,6 +80,38 @@ func New(cfg Config) Reader {
 	return &imapReader{cfg: cfg}
 }
 
+// AccountReaderFactory builds a TLS reader for a single inventory account's
+// own mailbox. The caller supplies the login email and the decrypted Gmail app
+// password; the factory never persists either value. Host may be a hostname or
+// hostname:port and defaults to Gmail's IMAPS port when no port is given.
+type AccountReaderFactory struct {
+	Mailbox string
+	Timeout time.Duration
+}
+
+func (f AccountReaderFactory) NewReader(accountEmail, appPassword, imapHost string) Reader {
+	host := strings.TrimSpace(imapHost)
+	if host == "" {
+		host = "imap.gmail.com"
+	}
+	addr := host
+	if _, _, err := net.SplitHostPort(addr); err != nil {
+		addr = net.JoinHostPort(host, "993")
+	}
+	mailbox := f.Mailbox
+	if mailbox == "" {
+		mailbox = "INBOX"
+	}
+	timeout := f.Timeout
+	if timeout <= 0 {
+		timeout = 20 * time.Second
+	}
+	return New(Config{
+		Addr: addr, User: strings.TrimSpace(accountEmail), Password: appPassword,
+		Mailbox: mailbox, UseTLS: true, Timeout: timeout,
+	})
+}
+
 type disabledReader struct{}
 
 func (disabledReader) Enabled() bool { return false }

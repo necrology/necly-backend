@@ -32,17 +32,25 @@ update mengembalikan field turunan berikut:
 | `remaining_slots` | sisa kapasitas terhadap `sharing_limit` (tidak pernah negatif) |
 | `days_remaining` | sisa hari sampai `expires_at`; `null` berarti tanpa batas, `0` berarti sudah kedaluwarsa |
 | `otp_configured` | apakah secret TOTP tersimpan |
+| `account_email` | email login akun langganan (read-only, boleh kosong pada akun lama) |
+| `mailbox_imap_host` | host mailbox akun, default `imap.gmail.com` |
+| `otp_inbox_configured` | apakah ada mailbox yang bisa dibaca untuk akun ini |
+| `otp_inbox_source` | `direct` bila app password akun tersimpan, `central` bila hanya mailbox pusat `OTP_IMAP_*`, `none` bila keduanya tidak tersedia |
 | `needs_review` | akun lama di atas limit lima pengguna |
 | `sellable` | status aktif dan belum kedaluwarsa |
 
-`encrypted_credentials` dan `otp_secret_encrypted` tidak pernah muncul di JSON.
+`encrypted_credentials`, `otp_secret_encrypted`, `mailbox_app_password_encrypted`,
+`account_password`, dan `mailbox_app_password` tidak pernah muncul di JSON.
 
 ## Create dan update
 
 ```json
 {
   "product_id": "uuid",
-  "credentials": "username:password",
+  "account_email": "akun@gmail.com",
+  "account_password": "password-login",
+  "mailbox_app_password": "app-password-gmail",
+  "mailbox_imap_host": "imap.gmail.com",
   "label": "Akun utama",
   "sharing_limit": 5,
   "expires_at": "2026-12-31T23:59:59Z",
@@ -50,11 +58,34 @@ update mengembalikan field turunan berikut:
 }
 ```
 
+- `account_email` + `account_password` adalah field login terpisah. Keduanya
+  disimpan sebagai JSON terenkripsi yang sudah dipahami alur pengiriman akun.
+  `account_email` divalidasi dengan `net/mail` (maksimal 254 karakter) dan
+  `account_password` minimal satu karakter bila dikirim.
+- `credentials` lama tetap diterima. Bila hanya `credentials` yang dikirim,
+  perilakunya sama seperti sebelumnya (nilai dienkripsi apa adanya), lalu email
+  diisi dari username bila username itu alamat email yang valid.
+- `mailbox_app_password` hanya untuk ditulis (write-only). Nilai dienkripsi
+  dengan `CredentialCipher` dan dipakai untuk membaca mailbox akun sendiri.
+  String kosong eksplisit menghapus app password (kembali ke mailbox pusat);
+  field yang tidak dikirim mempertahankan nilai lama.
+- `mailbox_imap_host` menerima hostname atau `hostname:port`, maksimal 255
+  karakter. Skema URL, path, dan port tidak valid ditolak `400 invalid_input`.
+  Nilai kosong memakai default `imap.gmail.com`.
 - `otp_secret` hanya untuk ditulis (write-only). Secret base32 divalidasi;
   spasi, huruf kecil, dan padding `=` diterima lalu dinormalisasi.
-- Pada `PATCH`, field `otp_secret` yang **tidak dikirim** mempertahankan secret
-  lama. `otp_secret: ""` menghapus secret.
+- Pada `PATCH`, field yang **tidak dikirim** mempertahankan nilai lama. Update
+  email saja mempertahankan password dan instructions; update password saja
+  mempertahankan email dan instructions. Mengirim `credentials` tetap
+  mengganti seluruh blob login seperti kontrak lama.
+- `otp_secret: ""` menghapus secret TOTP. `mailbox_app_password: ""` menghapus
+  app password mailbox.
 - `sharing_limit` di atas 5 ditolak `400 invalid_input`.
+
+Akun lama yang belum punya `account_email` diisi otomatis di memori saat
+respons admin dibaca, dengan best effort menyimpan hasilnya ke kolom. Bila satu
+baris lama rusak, daftar akun tetap tampil dan baris tersebut dibiarkan kosong.
+Email, password, app password, dan ciphertext tidak ditulis ke log atau audit.
 
 ## OTP
 

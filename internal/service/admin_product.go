@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/url"
@@ -238,24 +239,69 @@ func (s *AdminProductService) DeleteProductPrice(ctx context.Context, id string)
 	return s.repo.DeleteProductPrice(ctx, id)
 }
 
-// normalizeProductIconURL trims the value and accepts either an absolute
-// storefront path or an http(s) URL. Any other scheme (data:, javascript:, a
-// relative path, a protocol-relative //host) is rejected so the field cannot
-// smuggle a value the frontend would not render as an image.
+// maxProductIconDataURLLength is the hard cap for an uploaded icon. The
+// frontend compresses the image before sending it, so a larger payload is
+// rejected instead of being written to a text column.
+const maxProductIconDataURLLength = 512 * 1024
+
+var productIconDataURLPrefixes = []string{
+	"data:image/jpeg;base64,",
+	"data:image/png;base64,",
+	"data:image/webp;base64,",
+}
+
+// normalizeProductIconURL trims the value and accepts an absolute storefront
+// path, an http(s) URL, or a base64 data URL for a raster image. Other data
+// URLs (notably SVG and text/html) and other schemes (javascript:, a relative
+// path, a protocol-relative //host) are rejected so the field cannot smuggle a
+// value the frontend would not render as a safe image.
 func normalizeProductIconURL(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return "", nil
 	}
+	lower := strings.ToLower(value)
+	if strings.HasPrefix(lower, "data:") {
+		return normalizeProductIconDataURL(value, lower)
+	}
 	if strings.HasPrefix(value, "/") {
 		if strings.HasPrefix(value, "//") {
-			return "", fmt.Errorf("%w: icon_url harus path absolut atau URL http/https", ErrInvalidInput)
+			return "", fmt.Errorf("%w: icon_url harus path absolut, URL http/https, atau data URL gambar", ErrInvalidInput)
 		}
 		return value, nil
 	}
 	parsed, err := url.Parse(value)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return "", fmt.Errorf("%w: icon_url harus path absolut atau URL http/https", ErrInvalidInput)
+		return "", fmt.Errorf("%w: icon_url harus path absolut, URL http/https, atau data URL gambar", ErrInvalidInput)
+	}
+	return value, nil
+}
+
+func normalizeProductIconDataURL(value, lower string) (string, error) {
+	if len(value) > maxProductIconDataURLLength {
+		return "", fmt.Errorf("%w: icon_url melebihi batas 512 KB", ErrInvalidInput)
+	}
+	var matched string
+	for _, prefix := range productIconDataURLPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			matched = prefix
+			break
+		}
+	}
+	if matched == "" {
+		return "", fmt.Errorf("%w: data URL icon harus JPEG, PNG, atau WebP base64", ErrInvalidInput)
+	}
+	payload := value[len(matched):]
+	if payload == "" {
+		return "", fmt.Errorf("%w: data URL icon tidak berisi data", ErrInvalidInput)
+	}
+	// Accept padded and unpadded base64. The decoded bytes are not inspected
+	// here: the MIME type comes from the prefix, and the browser renders it as
+	// an <img> source, never as executable markup.
+	if _, err := base64.StdEncoding.DecodeString(payload); err != nil {
+		if _, rawErr := base64.RawStdEncoding.DecodeString(payload); rawErr != nil {
+			return "", fmt.Errorf("%w: data URL icon bukan base64 yang valid", ErrInvalidInput)
+		}
 	}
 	return value, nil
 }
