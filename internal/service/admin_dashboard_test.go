@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -53,6 +55,46 @@ func (m *mockAdminDashboardRepository) GetTopProducts(ctx context.Context, limit
 		return nil, args.Error(1)
 	}
 	return args.Get(0).([]TopProduct), args.Error(1)
+}
+
+func (m *mockAdminDashboardRepository) GetDailyRevenue(ctx context.Context, from, to time.Time) ([]RevenuePoint, error) {
+	args := m.Called(ctx, from, to)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]RevenuePoint), args.Error(1)
+}
+
+func (m *mockAdminDashboardRepository) GetDailyOrderCounts(ctx context.Context, from, to time.Time) ([]OrderCountPoint, error) {
+	args := m.Called(ctx, from, to)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]OrderCountPoint), args.Error(1)
+}
+
+func (m *mockAdminDashboardRepository) GetStatusBreakdown(ctx context.Context, from, to time.Time) ([]StatusCountPoint, error) {
+	args := m.Called(ctx, from, to)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]StatusCountPoint), args.Error(1)
+}
+
+func (m *mockAdminDashboardRepository) GetTopProductsInRange(ctx context.Context, from, to time.Time, limit int) ([]TopProduct, error) {
+	args := m.Called(ctx, from, to, limit)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]TopProduct), args.Error(1)
+}
+
+func (m *mockAdminDashboardRepository) GetCategoryBreakdown(ctx context.Context, from, to time.Time) ([]CategoryBreakdownPoint, error) {
+	args := m.Called(ctx, from, to)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]CategoryBreakdownPoint), args.Error(1)
 }
 
 func (m *mockAdminDashboardRepository) GetRecentOrders(ctx context.Context, limit int) ([]domain.Order, error) {
@@ -227,4 +269,135 @@ func TestAdminDashboardService_GetRecentOrders(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Len(t, orders, 2)
 	repo.AssertExpectations(t)
+}
+
+func TestAdminDashboardService_GetAnalytics_RejectsInvalidDays(t *testing.T) {
+	ctx := context.Background()
+	for _, days := range []int{0, 1, 6, 8, 14, 31, 89, 91, -7} {
+		t.Run(fmt.Sprintf("days_%d", days), func(t *testing.T) {
+			repo := new(mockAdminDashboardRepository)
+			svc := NewAdminDashboardService(repo)
+			svc.now = func() time.Time { return time.Date(2026, 10, 27, 15, 4, 5, 0, time.UTC) }
+
+			analytics, err := svc.GetAnalytics(ctx, days)
+			assert.Nil(t, analytics)
+			assert.ErrorIs(t, err, ErrInvalidInput)
+			repo.AssertNotCalled(t, "GetDailyRevenue", mock.Anything, mock.Anything, mock.Anything)
+		})
+	}
+}
+
+func TestAdminDashboardService_GetAnalytics_UsesInclusiveUTCWindow(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		days int
+		from time.Time
+		to   time.Time
+	}{
+		{7, time.Date(2026, 10, 21, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC)},
+		{30, time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC)},
+		{90, time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC)},
+	}
+
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("days_%d", tc.days), func(t *testing.T) {
+			repo := new(mockAdminDashboardRepository)
+			svc := NewAdminDashboardService(repo)
+			// A non-midnight clock proves the window snaps to the UTC day.
+			svc.now = func() time.Time { return time.Date(2026, 10, 27, 23, 59, 59, 0, time.UTC) }
+			repo.On("GetDailyRevenue", ctx, tc.from, tc.to).Return([]RevenuePoint{}, nil)
+			repo.On("GetDailyOrderCounts", ctx, tc.from, tc.to).Return([]OrderCountPoint{}, nil)
+			repo.On("GetStatusBreakdown", ctx, tc.from, tc.to).Return([]StatusCountPoint{}, nil)
+			repo.On("GetTopProductsInRange", ctx, tc.from, tc.to, 5).Return([]TopProduct{}, nil)
+			repo.On("GetCategoryBreakdown", ctx, tc.from, tc.to).Return([]CategoryBreakdownPoint{}, nil)
+
+			analytics, err := svc.GetAnalytics(ctx, tc.days)
+			assert.NoError(t, err)
+			assert.Equal(t, tc.days, analytics.RangeDays)
+			assert.Equal(t, tc.from.Format("2006-01-02"), analytics.From)
+			assert.Equal(t, "2026-10-27", analytics.To)
+			assert.Len(t, analytics.RevenueSeries, tc.days)
+			assert.Len(t, analytics.OrdersSeries, tc.days)
+			repo.AssertExpectations(t)
+		})
+	}
+}
+
+func TestAdminDashboardService_GetAnalytics_ZeroFillsMissingDays(t *testing.T) {
+	ctx := context.Background()
+	repo := new(mockAdminDashboardRepository)
+	svc := NewAdminDashboardService(repo)
+	svc.now = func() time.Time { return time.Date(2026, 10, 27, 9, 30, 0, 0, time.UTC) }
+
+	from := time.Date(2026, 10, 21, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC)
+
+	revenue := []RevenuePoint{
+		{Date: "2026-10-21", Amount: 100000},
+		{Date: "2026-10-27", Amount: 250000},
+	}
+	orders := []OrderCountPoint{
+		{Date: "2026-10-26", Orders: 3},
+	}
+	statuses := []StatusCountPoint{
+		{Status: "paid", Count: 2},
+		{Status: "pending_payment", Count: 1},
+	}
+	top := []TopProduct{
+		{ProductID: "price-1", ProductName: "Netflix", SalesCount: 4, Revenue: 744000},
+	}
+	categories := []CategoryBreakdownPoint{
+		{CategoryID: "cat-1", CategoryName: "Streaming Video", Orders: 3, Revenue: 744000},
+	}
+
+	repo.On("GetDailyRevenue", ctx, from, to).Return(revenue, nil)
+	repo.On("GetDailyOrderCounts", ctx, from, to).Return(orders, nil)
+	repo.On("GetStatusBreakdown", ctx, from, to).Return(statuses, nil)
+	repo.On("GetTopProductsInRange", ctx, from, to, 5).Return(top, nil)
+	repo.On("GetCategoryBreakdown", ctx, from, to).Return(categories, nil)
+
+	analytics, err := svc.GetAnalytics(ctx, 7)
+	assert.NoError(t, err)
+	assert.Equal(t, 7, analytics.RangeDays)
+	assert.Equal(t, "2026-10-21", analytics.From)
+	assert.Equal(t, "2026-10-27", analytics.To)
+
+	assert.Equal(t, []RevenuePoint{
+		{Date: "2026-10-21", Amount: 100000},
+		{Date: "2026-10-22", Amount: 0},
+		{Date: "2026-10-23", Amount: 0},
+		{Date: "2026-10-24", Amount: 0},
+		{Date: "2026-10-25", Amount: 0},
+		{Date: "2026-10-26", Amount: 0},
+		{Date: "2026-10-27", Amount: 250000},
+	}, analytics.RevenueSeries)
+	assert.Equal(t, []OrderCountPoint{
+		{Date: "2026-10-21", Orders: 0},
+		{Date: "2026-10-22", Orders: 0},
+		{Date: "2026-10-23", Orders: 0},
+		{Date: "2026-10-24", Orders: 0},
+		{Date: "2026-10-25", Orders: 0},
+		{Date: "2026-10-26", Orders: 3},
+		{Date: "2026-10-27", Orders: 0},
+	}, analytics.OrdersSeries)
+	assert.Equal(t, statuses, analytics.StatusBreakdown)
+	assert.Equal(t, top, analytics.TopProducts)
+	assert.Equal(t, categories, analytics.CategoryBreakdown)
+	repo.AssertExpectations(t)
+}
+
+func TestAdminDashboardService_GetAnalytics_PropagatesRepositoryError(t *testing.T) {
+	ctx := context.Background()
+	repo := new(mockAdminDashboardRepository)
+	svc := NewAdminDashboardService(repo)
+	svc.now = func() time.Time { return time.Date(2026, 10, 27, 9, 30, 0, 0, time.UTC) }
+
+	from := time.Date(2026, 10, 21, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC)
+	repo.On("GetDailyRevenue", ctx, from, to).Return(nil, errors.New("query failed"))
+
+	analytics, err := svc.GetAnalytics(ctx, 7)
+	assert.Nil(t, analytics)
+	assert.EqualError(t, err, "query failed")
+	repo.AssertNotCalled(t, "GetDailyOrderCounts", mock.Anything, mock.Anything, mock.Anything)
 }

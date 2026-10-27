@@ -253,6 +253,9 @@ func (r *Router) registerProtected(api fiber.Router) {
 func (r *Router) registerAdmin(api fiber.Router) {
 	admin := api.Group("/admin", r.authMiddleware(), r.requireRole(domain.RoleAdmin))
 	admin.Get("/dashboard", r.dashboard)
+	// Chart data for the Ringkasan dashboard. Kept next to the legacy summary
+	// route so the existing endpoint keeps returning exactly what it did.
+	admin.Get("/dashboard/analytics", r.dashboardAnalytics)
 	admin.Get("/users", r.listUsers)
 	admin.Get("/users/:id", r.getUser)
 	admin.Patch("/users/:id", r.updateUser)
@@ -1362,6 +1365,30 @@ func (r *Router) dashboard(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(stats)
+}
+
+func (r *Router) dashboardAnalytics(c *fiber.Ctx) error {
+	days := 7
+	if raw := c.Query("days"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			return authError(c, fiber.StatusBadRequest, "Parameter days harus 7, 30, atau 90", "invalid_input")
+		}
+		days = parsed
+	}
+
+	ctx, cancel := context.WithTimeout(c.Context(), 10*time.Second)
+	defer cancel()
+
+	analytics, err := r.adminSvc.GetAnalytics(ctx, days)
+	if err != nil {
+		if errors.Is(err, service.ErrInvalidInput) {
+			return authError(c, fiber.StatusBadRequest, "Parameter days harus 7, 30, atau 90", "invalid_input")
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil analitik dashboard"})
+	}
+
+	return c.JSON(analytics)
 }
 
 func (r *Router) listUsers(c *fiber.Ctx) error {

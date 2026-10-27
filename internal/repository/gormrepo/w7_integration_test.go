@@ -14,6 +14,7 @@ import (
 	"github.com/necly/services/internal/platform/testdb"
 	"github.com/necly/services/internal/service"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func openW7DB(t *testing.T) *gorm.DB {
@@ -63,7 +64,7 @@ func newW7CatalogFixture(t *testing.T) *w7CatalogFixture {
 		{ID: productivity, Name: "Produktivitas Bersama", Slug: "productivity-suites", Active: true, CreatedAt: now, UpdatedAt: now},
 		{ID: cloud, Name: "Penyimpanan Awan", Slug: "cloud-storage", Active: true, CreatedAt: now, UpdatedAt: now},
 	}
-	if err := db.Create(&categories).Error; err != nil {
+	if err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&categories).Error; err != nil {
 		t.Fatalf("seed categories: %v", err)
 	}
 
@@ -481,7 +482,7 @@ func newW7DashboardFixture(t *testing.T) *w7DashboardFixture {
 	productID := "0192f0a3-0000-0000-0000-000000000001"
 	durationID := "0192f0a1-0000-0000-0000-000000000001"
 	priceID := "0192f0a4-0000-0000-0000-000000000001"
-	if err := db.Create(&domain.Category{ID: categoryID, Name: "Streaming Video", Slug: "video-streaming", Active: true, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+	if err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&domain.Category{ID: categoryID, Name: "Streaming Video", Slug: "video-streaming", Active: true, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&domain.Product{ID: productID, CategoryID: categoryID, Name: "Netflix Premium", Slug: "netflix-premium", Active: true, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
