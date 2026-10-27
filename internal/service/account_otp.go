@@ -386,6 +386,23 @@ type AccountOTPService struct {
 	factory       AccountOTPReaderFactory
 	cipher        *CredentialCipher
 	directTimeout time.Duration
+	validator     AccessCodeValidator
+}
+
+// AccessCodeValidator re-checks the live order state when a previously issued
+// access code is used. It prevents a code from surviving cancellation, refund,
+// slot revocation or access expiry.
+type AccessCodeValidator interface {
+	ValidateAccessCode(ctx context.Context, orderID, orderItemID, userID string, now time.Time) (bool, error)
+}
+
+// SetAccessValidator wires the live-state check. Without it the service keeps
+// the legacy behaviour used by unit tests; production always sets it.
+func (s *AccountOTPService) SetAccessValidator(validator AccessCodeValidator) {
+	if s == nil {
+		return
+	}
+	s.validator = validator
 }
 
 func NewAccountOTPService(codes AccessCodeStore, inbox otpinbox.Reader, lookback time.Duration) *AccountOTPService {
@@ -456,6 +473,17 @@ func (s *AccountOTPService) Lookup(ctx context.Context, email, code string) (*ot
 	}
 	if !matched {
 		return nil, ErrOTPAccessInvalid
+	}
+	if s.validator != nil {
+		valid, err := s.validator.ValidateAccessCode(ctx, payload.OrderID, payload.OrderItemID, payload.UserID, s.now())
+		if err != nil {
+			return nil, fmt.Errorf("validate access code state: %w", err)
+		}
+		if !valid {
+			// Use the same generic error as a wrong code so cancellation state is
+			// not disclosed to the public page.
+			return nil, ErrOTPAccessInvalid
+		}
 	}
 
 	return s.lookupMailbox(ctx, email)

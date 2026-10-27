@@ -50,6 +50,10 @@ const (
 	AuditOrderDeliveryRetried  = "admin.order.delivery_retried"
 	AuditOrderAccountAssigned  = "admin.order.delivery_account_assigned"
 	AuditOrderDeliveryReplaced = "admin.order.delivery_replaced"
+	// AuditOrderAccessRevoked records a subscription cancellation that removed
+	// the buyer's access and rotated the provider password. Credentials and
+	// passwords never appear in metadata.
+	AuditOrderAccessRevoked = "admin.order.access_revoked"
 )
 
 // record is deliberately fire-and-forget: an audit write must never turn a

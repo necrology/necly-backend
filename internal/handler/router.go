@@ -289,6 +289,8 @@ func (r *Router) registerAdmin(api fiber.Router) {
 	admin.Get("/orders/:id/delivery-options", r.adminOrderDeliveryOptions)
 	admin.Post("/orders/:id/deliveries/:deliveryId/assign", r.adminAssignDeliveryAccount)
 	admin.Post("/orders/:id/deliveries/:deliveryId/replace", r.adminReplaceDeliveryAccount)
+	admin.Get("/orders/:id/revocation-impact", r.adminOrderRevocationImpact)
+	admin.Post("/orders/:id/revoke-access", r.adminRevokeOrderAccess)
 	admin.Get("/audit-logs", r.adminListAuditLogs)
 	// Voucher management
 	admin.Get("/vouchers", r.adminListVouchers)
@@ -1945,6 +1947,9 @@ func (r *Router) adminUpdateOrderStatus(c *fiber.Ctx) error {
 		if errors.Is(err, service.ErrInvalidTransition) {
 			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "invalid_transition"})
 		}
+		if errors.Is(err, service.ErrProviderRotationRequired) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "provider_rotation_required"})
+		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui status pesanan"})
 	}
 
@@ -2090,6 +2095,75 @@ func (r *Router) adminReplaceDeliveryAccount(c *fiber.Ctx) error {
 		return orderDeliveryError(c, err)
 	}
 	return c.JSON(fiber.Map{"delivery": delivery})
+}
+
+func (r *Router) adminOrderRevocationImpact(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if _, err := uuid.Parse(id); err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pesanan tidak ditemukan", "code": "not_found"})
+	}
+	ctx, cancel := context.WithTimeout(c.Context(), 8*time.Second)
+	defer cancel()
+	accounts, err := r.adminOrderSvc.RevocationImpact(ctx, id)
+	if err != nil {
+		if errors.Is(err, service.ErrNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pesanan tidak ditemukan", "code": "not_found"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memuat dampak pencabutan akses", "code": "internal_error"})
+	}
+	return c.JSON(fiber.Map{"accounts": accounts})
+}
+
+func (r *Router) adminRevokeOrderAccess(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if _, err := uuid.Parse(id); err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pesanan tidak ditemukan", "code": "not_found"})
+	}
+	var input struct {
+		Status                    string            `json:"status"`
+		Reason                    string            `json:"reason"`
+		ProviderRotationConfirmed bool              `json:"provider_rotation_confirmed"`
+		SharedImpactAcknowledged  bool              `json:"shared_impact_acknowledged"`
+		NewPasswords              map[string]string `json:"new_passwords"`
+	}
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid", "code": "invalid_input"})
+	}
+	ctx, cancel := context.WithTimeout(c.Context(), 30*time.Second)
+	defer cancel()
+	actor := service.AdminActor{UserID: localUserID(c), IPAddress: c.IP()}
+	result, err := r.adminOrderSvc.RevokeAccess(ctx, actor, id, service.RevokeAccessInput{
+		Status:                    domain.OrderStatus(input.Status),
+		Reason:                    input.Reason,
+		ProviderRotationConfirmed: input.ProviderRotationConfirmed,
+		SharedImpactAcknowledged:  input.SharedImpactAcknowledged,
+		NewPasswords:              input.NewPasswords,
+	})
+	if err != nil {
+		accounts := []service.RevocationAccountImpact{}
+		if result != nil {
+			accounts = result.Accounts
+		}
+		switch {
+		case errors.Is(err, service.ErrNotFound):
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pesanan tidak ditemukan", "code": "not_found"})
+		case errors.Is(err, service.ErrInvalidInput):
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error(), "code": "invalid_input"})
+		case errors.Is(err, service.ErrInvalidTransition):
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "invalid_transition"})
+		case errors.Is(err, service.ErrProviderRotationRequired):
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "provider_rotation_required", "accounts": accounts})
+		case errors.Is(err, service.ErrSharedAccessImpact):
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "shared_access_impact", "accounts": accounts})
+		case errors.Is(err, service.ErrNewPasswordRequired):
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error(), "code": "new_password_required", "accounts": accounts})
+		case errors.Is(err, service.ErrCredentialRotationUnavailable):
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error(), "code": "credential_rotation_unavailable", "accounts": accounts})
+		default:
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mencabut akses pesanan", "code": "internal_error"})
+		}
+	}
+	return c.JSON(result)
 }
 
 func orderDeliveryError(c *fiber.Ctx, err error) error {

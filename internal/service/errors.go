@@ -102,4 +102,19 @@ var (
 	// not be sent. The new account assignment is kept and the audit row records
 	// the failure for operator follow-up.
 	ErrDeliveryReplacementFailed = errors.New("Email akun pengganti gagal dikirim")
+	// ErrProviderRotationRequired protects a delivered order from being
+	// cancelled without rotating the provider password. Removing our slot is not
+	// enough: the buyer already knows the old credentials.
+	ErrProviderRotationRequired = errors.New("Ganti dulu kata sandi akun di platform dan konfirmasi rotasi sebelum mencabut akses")
+	// ErrSharedAccessImpact means the account still has other active buyers. A
+	// password rotation would sign them out too, so the operator must explicitly
+	// acknowledge the impact before the cancellation proceeds.
+	ErrSharedAccessImpact = errors.New("Akun masih dipakai pelanggan lain; konfirmasi dampak sebelum mengganti kata sandi")
+	// ErrNewPasswordRequired means the request did not include the new provider
+	// password for every delivered account. The password is written to the
+	// encrypted inventory payload so the seat cannot be resold with the old one.
+	ErrNewPasswordRequired = errors.New("Kata sandi baru wajib diisi untuk setiap akun yang sudah dikirim")
+	// ErrCredentialRotationUnavailable means the service cannot persist the new
+	// provider password. Access is left untouched rather than half-revoked.
+	ErrCredentialRotationUnavailable = errors.New("Rotasi kata sandi akun belum tersedia")
 )

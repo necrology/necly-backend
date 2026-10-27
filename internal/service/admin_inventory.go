@@ -366,6 +366,41 @@ func (s *AdminInventoryService) GetInventoryAccount(ctx context.Context, id stri
 	return account, nil
 }
 
+// RotateAccountPassword replaces the provider login password after an operator
+// has changed it on the platform. It is used by the cancellation flow so a
+// revoked seat can never be resold with the old password. The value is written
+// through the same encrypted credential path as a dashboard edit and is never
+// returned or logged.
+func (s *AdminInventoryService) RotateAccountPassword(ctx context.Context, id, newPassword string) error {
+	if _, err := uuid.Parse(id); err != nil {
+		return ErrNotFound
+	}
+	password := strings.TrimSpace(newPassword)
+	if password == "" {
+		return ErrInvalidInput
+	}
+	account, err := s.repo.GetAccountWithCredentials(ctx, id)
+	if err != nil {
+		return err
+	}
+	if s.cipher != nil && len(account.EncryptedCredentials) > 0 {
+		if plain, decryptErr := s.cipher.Decrypt(account.EncryptedCredentials); decryptErr == nil {
+			if _, oldPassword, _, ok := parseInventoryCredential(plain); ok && oldPassword == password {
+				return fmt.Errorf("%w: kata sandi baru harus berbeda dari kata sandi lama", ErrInvalidInput)
+			}
+		}
+	}
+	input := UpdateInventoryAccountInput{AccountPassword: &password}
+	if _, err := s.mergeUpdateCredential(account, input); err != nil {
+		return err
+	}
+	account.UpdatedAt = time.Now().UTC()
+	if err := s.repo.UpdateAccount(ctx, account); err != nil {
+		return fmt.Errorf("rotate inventory password: %w", err)
+	}
+	return nil
+}
+
 func (s *AdminInventoryService) DeleteInventoryAccount(ctx context.Context, id string) error {
 	if _, err := uuid.Parse(id); err != nil {
 		return ErrNotFound

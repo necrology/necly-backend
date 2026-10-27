@@ -60,6 +60,14 @@ func (r *deliveryFakeRepo) TransitionOrderStatus(_ context.Context, orderID stri
 
 func (r *deliveryFakeRepo) UpdateOrder(context.Context, *domain.Order) error { return nil }
 
+func (r *deliveryFakeRepo) RevocationImpact(context.Context, string) ([]RevocationAccountImpact, error) {
+	return nil, nil
+}
+
+func (r *deliveryFakeRepo) ReleaseOrderSlots(context.Context, string, time.Time) (int, error) {
+	return 0, nil
+}
+
 func (r *deliveryFakeRepo) EnsureOrderDeliveries(_ context.Context, orderID string, now time.Time) ([]domain.OrderDelivery, error) {
 	for _, item := range r.order.Items {
 		found := false

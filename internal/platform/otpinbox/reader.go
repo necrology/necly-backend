@@ -412,6 +412,23 @@ var (
 	otpWords  = regexp.MustCompile(`(?i)\b(otp|kode|code|verification|verifikasi|passcode|one[- ]time|login|masuk)\b`)
 	htmlTag   = regexp.MustCompile(`(?s)<[^>]*>`)
 	yearValue = regexp.MustCompile(`^20\d{2}$`)
+
+	// passwordChangeMail matches mail that asks the reader to reset or change a
+	// password. Those messages often carry a numeric code as well, but the code
+	// unlocks a password change instead of a login, so it must never be returned
+	// as the account's login OTP. The patterns are deliberately phrase-based so
+	// ordinary login mail that merely warns "never share your password" or
+	// mentions a password policy is still accepted.
+	passwordChangeMail = regexp.MustCompile(`(?i)(?:` +
+		`\b(?:reset|change[ds]?|update[ds]?|set(?:\s+up)?|create|choose)\s+(?:(?:a|your|the|my|account)\s+)?(?:new\s+)?password\b` +
+		`|\bpassword\s+(?:reset|change[ds]?|update[ds]?|recovery|assistance)\b` +
+		`|\bpassword\s+(?:was|were|is|has\s+been|have\s+been)\s+(?:successfully\s+)?(?:changed|reset|updated)\b` +
+		`|\b(?:forgot|forgotten|recover)\s+(?:(?:your|the)\s+)?password\b` +
+		`|\bnew\s+password\b` +
+		`|\b(?:atur\s+ulang|reset|ubah|mengubah|ganti|mengganti|perbarui|memperbarui)\s+(?:kata\s+sandi|sandi|password)\b` +
+		`|\b(?:kata\s+sandi|sandi|password)\s+(?:anda\s+)?(?:yang\s+)?baru\b` +
+		`|\b(?:kata\s+sandi|sandi|password)\b.{0,40}?\bdi(?:ubah|ganti|perbarui|reset)\b` +
+		`|\b(?:lupa|pemulihan|memulihkan|pulihkan)\s+(?:kata\s+sandi|sandi|password)\b)`)
 )
 
 // parseMessage is exported to tests through parseMessageForTest. It returns ok
@@ -434,6 +451,12 @@ func parseMessage(raw []byte, recipient string, since time.Time) (*Message, bool
 	body := extractText(msg.Header.Get("Content-Type"), msg.Body)
 	if len(body) > 200_000 {
 		body = body[:200_000]
+	}
+	// Skip password reset/change mail entirely. Its code is a password-change
+	// credential, not a login OTP, so an older valid login code may still win
+	// the lookup in fetchLatest.
+	if passwordChangeMail.MatchString(strings.Join(strings.Fields(subject+" "+body), " ")) {
+		return nil, false
 	}
 
 	code, ok := extractCode(subject, body)
