@@ -101,6 +101,161 @@ func (s *Store) GetRevenueData(ctx context.Context, from, to time.Time) ([]servi
 	return points, nil
 }
 
+// analyticsRevenueStatuses are the order states whose value counts as
+// realised revenue. Pending/cancelled/expired orders never contribute.
+var analyticsRevenueStatuses = []string{"paid", "fulfilling", "completed"}
+
+// analyticsDateExpr groups timestamps by the UTC calendar day explicitly.
+// DATE(created_at) would follow the database session timezone, which can shift
+// an order into the neighbouring day for a non-UTC server.
+const analyticsDateExpr = "TO_CHAR(orders.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD')"
+
+// GetDailyRevenue returns only the days that have revenue. The service fills
+// the missing days with zero.
+func (s *Store) GetDailyRevenue(ctx context.Context, from, to time.Time) ([]service.RevenuePoint, error) {
+	type result struct {
+		Date   string
+		Amount int64
+	}
+	var results []result
+	err := s.db.WithContext(ctx).Model(&domain.Order{}).
+		Where("orders.created_at >= ? AND orders.created_at < ? AND orders.status IN ?", from, to, analyticsRevenueStatuses).
+		Select(analyticsDateExpr + " AS date, COALESCE(SUM(orders.total), 0) AS amount").
+		Group(analyticsDateExpr).
+		Order(analyticsDateExpr + " ASC").
+		Scan(&results).Error
+	if err != nil {
+		return nil, fmt.Errorf("get daily revenue: %w", err)
+	}
+
+	points := make([]service.RevenuePoint, len(results))
+	for i, r := range results {
+		points[i] = service.RevenuePoint{Date: r.Date, Amount: r.Amount}
+	}
+	return points, nil
+}
+
+// GetDailyOrderCounts counts every order, regardless of status, per UTC day.
+func (s *Store) GetDailyOrderCounts(ctx context.Context, from, to time.Time) ([]service.OrderCountPoint, error) {
+	type result struct {
+		Date   string
+		Orders int64
+	}
+	var results []result
+	err := s.db.WithContext(ctx).Model(&domain.Order{}).
+		Where("orders.created_at >= ? AND orders.created_at < ?", from, to).
+		Select(analyticsDateExpr + " AS date, COUNT(*) AS orders").
+		Group(analyticsDateExpr).
+		Order(analyticsDateExpr + " ASC").
+		Scan(&results).Error
+	if err != nil {
+		return nil, fmt.Errorf("get daily order counts: %w", err)
+	}
+
+	points := make([]service.OrderCountPoint, len(results))
+	for i, r := range results {
+		points[i] = service.OrderCountPoint{Date: r.Date, Orders: r.Orders}
+	}
+	return points, nil
+}
+
+// GetStatusBreakdown returns the raw status distribution in the range. Unknown
+// statuses are kept so a new order state becomes visible without a code change.
+func (s *Store) GetStatusBreakdown(ctx context.Context, from, to time.Time) ([]service.StatusCountPoint, error) {
+	type result struct {
+		Status string
+		Count  int64
+	}
+	var results []result
+	err := s.db.WithContext(ctx).Model(&domain.Order{}).
+		Where("orders.created_at >= ? AND orders.created_at < ?", from, to).
+		Select("orders.status AS status, COUNT(*) AS count").
+		Group("orders.status").
+		Order("count DESC, orders.status ASC").
+		Scan(&results).Error
+	if err != nil {
+		return nil, fmt.Errorf("get status breakdown: %w", err)
+	}
+
+	points := make([]service.StatusCountPoint, len(results))
+	for i, r := range results {
+		points[i] = service.StatusCountPoint{Status: r.Status, Count: r.Count}
+	}
+	return points, nil
+}
+
+// GetTopProductsInRange is the ranged counterpart of GetTopProducts. It keeps
+// the existing product_price_id projection so dashboard consumers see the same
+// product identity in both endpoints.
+func (s *Store) GetTopProductsInRange(ctx context.Context, from, to time.Time, limit int) ([]service.TopProduct, error) {
+	type result struct {
+		ProductID   string
+		ProductName string
+		SalesCount  int64
+		Revenue     int64
+	}
+	var results []result
+	err := s.db.WithContext(ctx).Model(&domain.OrderItem{}).
+		Joins("JOIN orders ON order_items.order_id = orders.id").
+		Where("orders.created_at >= ? AND orders.created_at < ? AND orders.status IN ?", from, to, analyticsRevenueStatuses).
+		Select("order_items.product_price_id AS product_id, order_items.product_name AS product_name, COALESCE(SUM(order_items.quantity), 0) AS sales_count, COALESCE(SUM(order_items.line_total), 0) AS revenue").
+		Group("order_items.product_price_id, order_items.product_name").
+		Order("revenue DESC, sales_count DESC, product_id ASC").
+		Limit(limit).
+		Scan(&results).Error
+	if err != nil {
+		return nil, fmt.Errorf("get top products in range: %w", err)
+	}
+
+	products := make([]service.TopProduct, len(results))
+	for i, r := range results {
+		products[i] = service.TopProduct{
+			ProductID:   r.ProductID,
+			ProductName: r.ProductName,
+			SalesCount:  r.SalesCount,
+			Revenue:     r.Revenue,
+		}
+	}
+	return products, nil
+}
+
+// GetCategoryBreakdown aggregates realised revenue per category through the
+// order item -> price -> product -> category chain. COUNT(DISTINCT orders.id)
+// keeps an order with several items in the same category counted once.
+func (s *Store) GetCategoryBreakdown(ctx context.Context, from, to time.Time) ([]service.CategoryBreakdownPoint, error) {
+	type result struct {
+		CategoryID   string
+		CategoryName string
+		Orders       int64
+		Revenue      int64
+	}
+	var results []result
+	err := s.db.WithContext(ctx).Model(&domain.OrderItem{}).
+		Joins("JOIN orders ON orders.id = order_items.order_id").
+		Joins("JOIN product_prices ON product_prices.id = order_items.product_price_id").
+		Joins("JOIN products ON products.id = product_prices.product_id").
+		Joins("JOIN categories ON categories.id = products.category_id").
+		Where("orders.created_at >= ? AND orders.created_at < ? AND orders.status IN ?", from, to, analyticsRevenueStatuses).
+		Select("categories.id AS category_id, categories.name AS category_name, COUNT(DISTINCT orders.id) AS orders, COALESCE(SUM(order_items.line_total), 0) AS revenue").
+		Group("categories.id, categories.name").
+		Order("revenue DESC, category_name ASC").
+		Scan(&results).Error
+	if err != nil {
+		return nil, fmt.Errorf("get category breakdown: %w", err)
+	}
+
+	categories := make([]service.CategoryBreakdownPoint, len(results))
+	for i, r := range results {
+		categories[i] = service.CategoryBreakdownPoint{
+			CategoryID:   r.CategoryID,
+			CategoryName: r.CategoryName,
+			Orders:       r.Orders,
+			Revenue:      r.Revenue,
+		}
+	}
+	return categories, nil
+}
+
 func (s *Store) GetOrderStats(ctx context.Context, from, to time.Time) (*service.OrderStats, error) {
 	var stats service.OrderStats
 

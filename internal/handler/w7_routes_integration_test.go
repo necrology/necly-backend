@@ -19,6 +19,7 @@ import (
 	"github.com/necly/services/internal/platform/testdb"
 	"github.com/necly/services/internal/repository/gormrepo"
 	"github.com/necly/services/internal/service"
+	"gorm.io/gorm/clause"
 )
 
 // TestW7AdminCatalogRoutesExerciseTheRealStore proves the HTTP status contract
@@ -59,7 +60,7 @@ func TestW7AdminCatalogRoutesExerciseTheRealStore(t *testing.T) {
 	}
 
 	categoryID := "0192f0a2-0000-0000-0000-000000000001"
-	if err := db.Create(&domain.Category{
+	if err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&domain.Category{
 		ID: categoryID, Name: "Streaming Video", Slug: "video-streaming", Active: true, CreatedAt: now, UpdatedAt: now,
 	}).Error; err != nil {
 		t.Fatalf("seed category: %v", err)

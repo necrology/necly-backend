@@ -19,6 +19,7 @@ import (
 	"github.com/necly/services/internal/platform/testdb"
 	"github.com/necly/services/internal/repository/gormrepo"
 	"github.com/necly/services/internal/service"
+	"gorm.io/gorm/clause"
 )
 
 // TestW8AdminOrderDetailContractExercisesTheRealStore covers the C19 read path:
@@ -59,7 +60,7 @@ func TestW8AdminOrderDetailContractExercisesTheRealStore(t *testing.T) {
 	productID := "0192f0a3-0000-0000-0000-000000000001"
 	durationID := "0192f0a1-0000-0000-0000-000000000001"
 	priceID := "0192f0a4-0000-0000-0000-000000000001"
-	if err := db.Create(&domain.Category{
+	if err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&domain.Category{
 		ID: categoryID, Name: "Streaming Video", Slug: "video-streaming", Active: true, CreatedAt: now, UpdatedAt: now,
 	}).Error; err != nil {
 		t.Fatalf("seed category: %v", err)

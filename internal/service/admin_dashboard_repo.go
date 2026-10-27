@@ -22,6 +22,15 @@ type AdminDashboardRepository interface {
 	GetOrderStats(ctx context.Context, from, to time.Time) (*OrderStats, error)
 	GetUserStats(ctx context.Context, from, to time.Time) (*UserStats, error)
 	GetTopProducts(ctx context.Context, limit int) ([]TopProduct, error)
+	// GetDailyRevenue, GetDailyOrderCounts, GetStatusBreakdown,
+	// GetTopProductsInRange and GetCategoryBreakdown back the dashboard
+	// analytics endpoint. The range is [from, to) in UTC so a day boundary is
+	// counted exactly once even when the database stores timestamps.
+	GetDailyRevenue(ctx context.Context, from, to time.Time) ([]RevenuePoint, error)
+	GetDailyOrderCounts(ctx context.Context, from, to time.Time) ([]OrderCountPoint, error)
+	GetStatusBreakdown(ctx context.Context, from, to time.Time) ([]StatusCountPoint, error)
+	GetTopProductsInRange(ctx context.Context, from, to time.Time, limit int) ([]TopProduct, error)
+	GetCategoryBreakdown(ctx context.Context, from, to time.Time) ([]CategoryBreakdownPoint, error)
 	GetRecentOrders(ctx context.Context, limit int) ([]domain.Order, error)
 	ListAuditLogs(ctx context.Context, filter AuditLogFilter, page, perPage int) ([]domain.AuditLog, int64, error)
 	PingDatabase(ctx context.Context) error
@@ -47,6 +56,42 @@ type AdminDashboardStats struct {
 type RevenuePoint struct {
 	Date   string `json:"date"`
 	Amount int64  `json:"amount"`
+}
+
+// OrderCountPoint is one zero-filled day of the dashboard order chart.
+type OrderCountPoint struct {
+	Date   string `json:"date"`
+	Orders int64  `json:"orders"`
+}
+
+// StatusCountPoint is a raw order status count. The frontend owns the label
+// copy, so an unknown future status is still returned instead of dropped.
+type StatusCountPoint struct {
+	Status string `json:"status"`
+	Count  int64  `json:"count"`
+}
+
+// CategoryBreakdownPoint aggregates revenue-counting orders per category. Only
+// categories with sales appear; the frontend can show an empty state otherwise.
+type CategoryBreakdownPoint struct {
+	CategoryID   string `json:"category_id"`
+	CategoryName string `json:"category_name"`
+	Orders       int64  `json:"orders"`
+	Revenue      int64  `json:"revenue"`
+}
+
+// DashboardAnalytics is the complete chart payload for GET
+// /api/v1/admin/dashboard/analytics. Every daily series covers each date in
+// the requested range, including days without orders.
+type DashboardAnalytics struct {
+	RangeDays         int                      `json:"range_days"`
+	From              string                   `json:"from"`
+	To                string                   `json:"to"`
+	RevenueSeries     []RevenuePoint           `json:"revenue_series"`
+	OrdersSeries      []OrderCountPoint        `json:"orders_series"`
+	StatusBreakdown   []StatusCountPoint       `json:"status_breakdown"`
+	TopProducts       []TopProduct             `json:"top_products"`
+	CategoryBreakdown []CategoryBreakdownPoint `json:"category_breakdown"`
 }
 
 type OrderStats struct {

@@ -58,7 +58,7 @@ func TestFreshRunIsRepeatableAndSeedFree(t *testing.T) {
 	if first.Adopted {
 		t.Fatal("fresh database must not be reported as adopted")
 	}
-	if got, want := first.Applied, []string{"001", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013", "014", "015", "016", "017", "018", "019", "020"}; !reflect.DeepEqual(got, want) {
+	if got, want := first.Applied, []string{"001", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013", "014", "015", "016", "017", "018", "019", "020", "021"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("applied = %v, want %v", got, want)
 	}
 
@@ -66,8 +66,13 @@ func TestFreshRunIsRepeatableAndSeedFree(t *testing.T) {
 	db.Table("users").Count(&users)
 	db.Table("categories").Count(&categories)
 	db.Table("products").Count(&products)
-	if users+categories+products != 0 {
-		t.Fatalf("production chain inserted seed rows: users=%d categories=%d products=%d", users, categories, products)
+	if users != 0 || products != 0 {
+		t.Fatalf("production chain inserted seed rows: users=%d products=%d", users, products)
+	}
+	// Migration 021 intentionally seeds only the four master categories. Their
+	// presence is part of the production baseline, not a development seed.
+	if categories != 4 {
+		t.Fatalf("master category baseline = %d rows, want 4", categories)
 	}
 
 	for _, item := range [][2]string{{"orders", "shipping_address"}, {"orders", "notes"}, {"categories", "image_url"}} {
@@ -109,8 +114,8 @@ func TestAdoptedSchemaConvergesWithFreshSchema(t *testing.T) {
 	if !result.Adopted {
 		t.Fatal("existing baseline schema was not adopted")
 	}
-	if !reflect.DeepEqual(result.Applied, []string{"009", "010", "011", "012", "013", "014", "015", "016", "017", "018", "019", "020"}) {
-		t.Fatalf("adoption should apply 009 through 020, got %v", result.Applied)
+	if !reflect.DeepEqual(result.Applied, []string{"009", "010", "011", "012", "013", "014", "015", "016", "017", "018", "019", "020", "021"}) {
+		t.Fatalf("adoption should apply 009 through 021, got %v", result.Applied)
 	}
 
 	type ledgerRow struct {
@@ -121,8 +126,8 @@ func TestAdoptedSchemaConvergesWithFreshSchema(t *testing.T) {
 	if err := adopted.Raw("SELECT version, mode FROM schema_migrations ORDER BY version").Scan(&rows).Error; err != nil {
 		t.Fatalf("read ledger: %v", err)
 	}
-	if len(rows) != 19 {
-		t.Fatalf("expected 19 ledger rows, got %d: %#v", len(rows), rows)
+	if len(rows) != 20 {
+		t.Fatalf("expected 20 ledger rows, got %d: %#v", len(rows), rows)
 	}
 	for _, row := range rows {
 		want := "adopted"

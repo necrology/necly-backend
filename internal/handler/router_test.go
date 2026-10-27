@@ -98,6 +98,10 @@ func (m *dummyAuthRepo) ConsumePasswordResetToken(ctx context.Context, hash, pas
 }
 
 func setupTestApp(t *testing.T) (*fiber.App, *service.TokenManager, *dummyAuthRepo) {
+	return setupTestAppWithAdmin(t, nil)
+}
+
+func setupTestAppWithAdmin(t *testing.T, adminSvc *service.AdminDashboardService) (*fiber.App, *service.TokenManager, *dummyAuthRepo) {
 	app := fiber.New()
 	// Without this a handler reached with a nil service would panic the test
 	// process instead of answering, which hides whether the role gate let it past.
@@ -115,7 +119,7 @@ func setupTestApp(t *testing.T) (*fiber.App, *service.TokenManager, *dummyAuthRe
 		nil,
 		nil,
 		nil,
-		nil,
+		adminSvc,
 		nil,
 		nil,
 		nil,
@@ -510,4 +514,104 @@ func TestListProductsPassesDocumentedFiltersToTheRepository(t *testing.T) {
 	if !captured.InStock {
 		t.Fatal("in_stock=true was not passed to the repository")
 	}
+}
+
+// stubAnalyticsRepository embeds the interface so it satisfies the full
+// contract while only overriding the dashboard methods the analytics route
+// actually calls. Embedded methods are nil and would panic if an unexpected
+// query ran, which makes the test surface a contract change instead of hiding it.
+type stubAnalyticsRepository struct {
+	service.AdminDashboardRepository
+}
+
+func (stubAnalyticsRepository) GetStats(context.Context) (*service.AdminDashboardStats, error) {
+	return &service.AdminDashboardStats{TotalUsers: 4, TotalOrders: 2, TotalRevenue: 300000}, nil
+}
+
+func (stubAnalyticsRepository) GetDailyRevenue(context.Context, time.Time, time.Time) ([]service.RevenuePoint, error) {
+	return nil, nil
+}
+
+func (stubAnalyticsRepository) GetDailyOrderCounts(context.Context, time.Time, time.Time) ([]service.OrderCountPoint, error) {
+	return nil, nil
+}
+
+func (stubAnalyticsRepository) GetStatusBreakdown(context.Context, time.Time, time.Time) ([]service.StatusCountPoint, error) {
+	return []service.StatusCountPoint{{Status: "paid", Count: 2}}, nil
+}
+
+func (stubAnalyticsRepository) GetTopProductsInRange(context.Context, time.Time, time.Time, int) ([]service.TopProduct, error) {
+	return []service.TopProduct{{ProductID: "price-1", ProductName: "Netflix", SalesCount: 2, Revenue: 300000}}, nil
+}
+
+func (stubAnalyticsRepository) GetCategoryBreakdown(context.Context, time.Time, time.Time) ([]service.CategoryBreakdownPoint, error) {
+	return []service.CategoryBreakdownPoint{{CategoryID: "cat-1", CategoryName: "Streaming Video", Orders: 2, Revenue: 300000}}, nil
+}
+
+func adminToken(t *testing.T, tokens *service.TokenManager, authRepo *dummyAuthRepo) string {
+	t.Helper()
+	expectActiveSession(authRepo, "admin-analytics", "session-admin-analytics", domain.RoleAdmin)
+	token, err := tokens.IssueAccess("admin-analytics", string(domain.RoleAdmin), "session-admin-analytics")
+	assert.NoError(t, err)
+	return token
+}
+
+func TestDashboardAnalytics_RejectsInvalidDays(t *testing.T) {
+	adminSvc := service.NewAdminDashboardService(stubAnalyticsRepository{})
+	app, tokens, authRepo := setupTestAppWithAdmin(t, adminSvc)
+	token := adminToken(t, tokens, authRepo)
+
+	for _, query := range []string{"?days=0", "?days=8", "?days=abc", "?days=-7"} {
+		t.Run(query, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/dashboard/analytics"+query, nil)
+			req.Header.Set("Authorization", "Bearer "+token)
+			resp, err := app.Test(req)
+			assert.NoError(t, err)
+			assert.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
+
+			body, err := io.ReadAll(resp.Body)
+			assert.NoError(t, err)
+			var payload map[string]string
+			assert.NoError(t, json.Unmarshal(body, &payload))
+			assert.Equal(t, "invalid_input", payload["code"])
+		})
+	}
+}
+
+func TestDashboardAnalytics_ReturnsZeroFilledContractAndKeepsLegacyEndpoint(t *testing.T) {
+	adminSvc := service.NewAdminDashboardService(stubAnalyticsRepository{})
+	app, tokens, authRepo := setupTestAppWithAdmin(t, adminSvc)
+	token := adminToken(t, tokens, authRepo)
+
+	todayBefore := time.Now().UTC().Format("2006-01-02")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/dashboard/analytics", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := app.Test(req)
+	assert.NoError(t, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+	todayAfter := time.Now().UTC().Format("2006-01-02")
+
+	body, err := io.ReadAll(resp.Body)
+	assert.NoError(t, err)
+	var analytics service.DashboardAnalytics
+	assert.NoError(t, json.Unmarshal(body, &analytics))
+	assert.Equal(t, 7, analytics.RangeDays)
+	assert.Contains(t, []string{todayBefore, todayAfter}, analytics.To)
+	assert.Len(t, analytics.RevenueSeries, 7)
+	assert.Len(t, analytics.OrdersSeries, 7)
+	for _, point := range analytics.RevenueSeries {
+		assert.Equal(t, int64(0), point.Amount)
+	}
+	for _, point := range analytics.OrdersSeries {
+		assert.Equal(t, int64(0), point.Orders)
+	}
+	assert.Equal(t, []service.StatusCountPoint{{Status: "paid", Count: 2}}, analytics.StatusBreakdown)
+	assert.Len(t, analytics.TopProducts, 1)
+	assert.Len(t, analytics.CategoryBreakdown, 1)
+
+	legacy := httptest.NewRequest(http.MethodGet, "/api/v1/admin/dashboard", nil)
+	legacy.Header.Set("Authorization", "Bearer "+token)
+	legacyResp, err := app.Test(legacy)
+	assert.NoError(t, err)
+	assert.Equal(t, fiber.StatusOK, legacyResp.StatusCode)
 }
