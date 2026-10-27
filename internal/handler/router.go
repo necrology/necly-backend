@@ -300,6 +300,12 @@ func (r *Router) registerAdmin(api fiber.Router) {
 	admin.Get("/inventory/:id/slots", r.adminListInventorySlots)
 	// Kode TOTP aktif untuk satu akun. Hanya admin, tanpa secret di response.
 	admin.Post("/inventory/:id/otp", r.adminGenerateInventoryOTP)
+	// Aksi masa aktif eksplisit: perpanjang/nonaktifkan akun dan slot. Setiap
+	// perubahan dicatat di audit_logs oleh service inventory.
+	admin.Post("/inventory/:id/extend", r.adminExtendInventoryAccount)
+	admin.Post("/inventory/:id/deactivate", r.adminDeactivateInventoryAccount)
+	admin.Post("/inventory/slots/:slotId/extend", r.adminExtendInventorySlot)
+	admin.Post("/inventory/slots/:slotId/deactivate", r.adminDeactivateInventorySlot)
 	admin.Patch("/inventory/:id", r.adminUpdateInventoryAccount)
 	admin.Delete("/inventory/:id", r.adminDeleteInventoryAccount)
 	// Payment list for dashboard
@@ -2299,6 +2305,8 @@ func (r *Router) adminCreateInventorySlots(c *fiber.Ctx) error {
 			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "needs_review"})
 		case errors.Is(err, service.ErrInventoryAccountUnavailable):
 			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "inventory_account_unavailable"})
+		case errors.Is(err, service.ErrSlotExceedsAccountExpiry):
+			return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": err.Error(), "code": "slot_exceeds_account_expiry"})
 		case errors.Is(err, service.ErrInventoryAccountMismatch):
 			return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": err.Error(), "code": "inventory_account_mismatch"})
 		case errors.Is(err, service.ErrNotFound):
@@ -2368,7 +2376,7 @@ func (r *Router) adminUpdateInventoryAccount(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
 	defer cancel()
 
-	account, err := r.adminInventorySvc.UpdateInventoryAccount(ctx, id, input)
+	account, err := r.adminInventorySvc.UpdateInventoryAccountAs(ctx, service.AdminActor{UserID: localUserID(c), IPAddress: c.IP()}, id, input)
 	if err != nil {
 		if errors.Is(err, service.ErrNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Akun inventaris tidak ditemukan"})
@@ -2387,6 +2395,102 @@ func (r *Router) adminUpdateInventoryAccount(c *fiber.Ctx) error {
 	account.EncryptedCredentials = nil
 	account.OTPSecretEncrypted = nil
 	return c.JSON(account)
+}
+
+// adminExtendInventoryAccount implements "Perpanjang akun". Either a duration
+// in days or an explicit new expiry is accepted; both move the window forward.
+func (r *Router) adminExtendInventoryAccount(c *fiber.Ctx) error {
+	id := c.Params("id")
+	var input service.ExtendInventoryAccountInput
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid", "code": "invalid_input"})
+	}
+	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+	defer cancel()
+
+	actor := service.AdminActor{UserID: localUserID(c), IPAddress: c.IP()}
+	account, err := r.adminInventorySvc.ExtendInventoryAccount(ctx, actor, id, input)
+	if err != nil {
+		return writeInventoryLifecycleError(c, err, "Akun inventaris tidak ditemukan", "Gagal memperpanjang akun inventaris")
+	}
+	account.EncryptedCredentials = nil
+	account.OTPSecretEncrypted = nil
+	return c.JSON(account)
+}
+
+// adminDeactivateInventoryAccount is the explicit nonaktifkan action. It keeps
+// the account row and every historical order/slot link intact.
+func (r *Router) adminDeactivateInventoryAccount(c *fiber.Ctx) error {
+	id := c.Params("id")
+	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+	defer cancel()
+
+	actor := service.AdminActor{UserID: localUserID(c), IPAddress: c.IP()}
+	account, err := r.adminInventorySvc.DeactivateInventoryAccount(ctx, actor, id)
+	if err != nil {
+		return writeInventoryLifecycleError(c, err, "Akun inventaris tidak ditemukan", "Gagal menonaktifkan akun inventaris")
+	}
+	account.EncryptedCredentials = nil
+	account.OTPSecretEncrypted = nil
+	return c.JSON(account)
+}
+
+// adminExtendInventorySlot applies max(now, expiry lama) + duration_days and
+// rejects a window that would outlive the parent account.
+func (r *Router) adminExtendInventorySlot(c *fiber.Ctx) error {
+	slotID := c.Params("slotId")
+	var input service.ExtendInventorySlotInput
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid", "code": "invalid_input"})
+	}
+	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+	defer cancel()
+
+	actor := service.AdminActor{UserID: localUserID(c), IPAddress: c.IP()}
+	slot, err := r.adminInventorySvc.ExtendInventorySlot(ctx, actor, slotID, input)
+	if err != nil {
+		return writeInventoryLifecycleError(c, err, "Slot inventaris tidak ditemukan", "Gagal memperpanjang slot inventaris")
+	}
+	return c.JSON(slot)
+}
+
+// adminDeactivateInventorySlot removes one seat from sale without deleting its
+// order history.
+func (r *Router) adminDeactivateInventorySlot(c *fiber.Ctx) error {
+	slotID := c.Params("slotId")
+	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+	defer cancel()
+
+	actor := service.AdminActor{UserID: localUserID(c), IPAddress: c.IP()}
+	slot, err := r.adminInventorySvc.DeactivateInventorySlot(ctx, actor, slotID)
+	if err != nil {
+		return writeInventoryLifecycleError(c, err, "Slot inventaris tidak ditemukan", "Gagal menonaktifkan slot inventaris")
+	}
+	return c.JSON(slot)
+}
+
+// writeInventoryLifecycleError keeps the admin expiry actions on the same
+// error vocabulary as the rest of the inventory routes. Validation failures
+// are 400/422 instead of surfacing as a generic 500.
+func writeInventoryLifecycleError(c *fiber.Ctx, err error, notFoundMessage, fallbackMessage string) error {
+	switch {
+	case errors.Is(err, service.ErrNotFound):
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": notFoundMessage})
+	case errors.Is(err, service.ErrInvalidInput):
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Durasi perpanjangan harus antara 1 dan 3650 hari, atau isi expires_at", "code": "invalid_input"})
+	case errors.Is(err, service.ErrAccountExpiryNotExtended):
+		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": err.Error(), "code": "account_expiry_not_extended"})
+	case errors.Is(err, service.ErrSlotExceedsAccountExpiry):
+		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": err.Error(), "code": "slot_exceeds_account_expiry"})
+	case errors.Is(err, service.ErrInventoryAccountUnavailable):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "inventory_account_unavailable"})
+	case errors.Is(err, service.ErrInventorySlotUnavailable):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "inventory_slot_unavailable"})
+	case errors.Is(err, service.ErrSharingLimitExceeded):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "sharing_limit_exceeded"})
+	default:
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": fallbackMessage})
+	}
 }
 
 // adminGenerateInventoryOTP returns the currently valid RFC 6238 code. The

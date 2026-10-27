@@ -164,6 +164,8 @@ func main() {
 	adminOrderSvc := service.NewAdminOrderService(store)
 	adminVoucherSvc := service.NewAdminVoucherService(store)
 	adminInventorySvc := service.NewAdminInventoryService(store, cipher)
+	adminInventorySvc.SetAuditWriter(store)
+	inventoryLifecycleSvc := service.NewInventoryLifecycleService(store, store)
 	orderDeliverySvc := service.NewOrderDeliveryService(store, store, cipher, mail, store)
 	otpInbox := otpinbox.New(otpinbox.Config{
 		Addr: cfg.OTPInbox.Addr, User: cfg.OTPInbox.User, Password: cfg.OTPInbox.Password,
@@ -265,6 +267,10 @@ func main() {
 	// application. Every transition and stock release is transactional.
 	expiryCtx, expiryCancel := context.WithCancel(context.Background())
 	go orderExpirySvc.Run(expiryCtx)
+	// Daily inventory lifecycle: expire lapsed slots/accounts and emit H-7/H-1
+	// reminders. Runs once at startup, then every 24 hours. Every transition
+	// and reminder is idempotent, so restarts are safe.
+	go inventoryLifecycleSvc.Run(expiryCtx)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

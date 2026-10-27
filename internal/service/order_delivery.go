@@ -25,6 +25,10 @@ const (
 	DeliveryErrorCipherUnavailable  = "credential_cipher_unavailable"
 	DeliveryErrorInventoryMissing   = "inventory_unavailable"
 	DeliveryErrorAccountUnavailable = "inventory_account_unavailable"
+	// DeliveryErrorAccountExpiryTooShort means the purchased duration would
+	// outlive the provider account. Sending credentials for a window the
+	// account cannot cover would sell access the store cannot honour.
+	DeliveryErrorAccountExpiryTooShort = "inventory_account_expiry_too_short"
 	DeliveryErrorCredentialInvalid  = "credential_invalid"
 	DeliveryErrorEmailFailed        = "email_failed"
 	DeliveryErrorPersistenceFailed  = "persistence_failed"
@@ -433,6 +437,12 @@ func (s *OrderDeliveryService) deliverOne(ctx context.Context, actor AdminActor,
 	}
 
 	accessExpiresAt := now.AddDate(0, 0, material.DurationDays)
+	for _, slot := range material.Slots {
+		if slot.AccountExpiresAt != nil && accessExpiresAt.After(slot.AccountExpiresAt.UTC()) {
+			s.fail(ctx, actor, order, delivery, DeliveryErrorAccountExpiryTooShort, isRetry)
+			return
+		}
+	}
 	msg := s.buildMessage(order, item, accounts, accessExpiresAt)
 	sendCtx, cancel := context.WithTimeout(ctx, deliverySendTimeout)
 	defer cancel()

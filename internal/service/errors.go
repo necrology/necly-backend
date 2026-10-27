@@ -41,6 +41,16 @@ var (
 	// sharing_limit is above the five-user rule keeps its sold slots, but no
 	// new slot may be added until an administrator lowers the limit.
 	ErrInventoryAccountNeedsReview = errors.New("Akun inventaris melebihi batas 5 pengguna dan perlu ditinjau sebelum menambah slot")
+	// ErrSlotExceedsAccountExpiry menolak perpanjangan atau aktivasi slot yang
+	// akan melewati masa aktif akun induk. Sisa waktu akun adalah batas keras:
+	// slot tidak boleh dijual atau diperpanjang melewatinya.
+	ErrSlotExceedsAccountExpiry = errors.New("Masa aktif slot tidak boleh melewati masa aktif akun inventaris")
+	// ErrInventorySlotUnavailable menolak aksi admin pada slot yang sudah
+	// dilepas atau tidak lagi dapat diperpanjang.
+	ErrInventorySlotUnavailable = errors.New("Slot inventaris tidak tersedia atau sudah dilepas")
+	// ErrAccountExpiryNotExtended memastikan aksi "perpanjang" benar-benar
+	// memindahkan masa aktif ke depan, bukan memendekkannya tanpa sengaja.
+	ErrAccountExpiryNotExtended = errors.New("Tanggal perpanjangan harus setelah masa aktif akun saat ini")
 	// ErrOTPNotConfigured means the account has no TOTP secret yet. It is a
 	// conflict, not a server error: the admin can set the secret first.
 	ErrOTPNotConfigured = errors.New("OTP belum dikonfigurasi untuk akun inventaris ini")

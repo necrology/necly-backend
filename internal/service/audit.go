@@ -50,6 +50,18 @@ const (
 	AuditOrderDeliveryRetried  = "admin.order.delivery_retried"
 	AuditOrderAccountAssigned  = "admin.order.delivery_account_assigned"
 	AuditOrderDeliveryReplaced = "admin.order.delivery_replaced"
+
+	// Action names emitted by inventory lifecycle management. Every change to an
+	// account or slot expiry is recorded with the previous and new timestamps so
+	// an operator can reconstruct why a buyer's access window moved.
+	AuditInventoryAccountExtended    = "admin.inventory.account_extended"
+	AuditInventoryAccountExpiry      = "admin.inventory.account_expiry_changed"
+	AuditInventoryAccountStatus      = "admin.inventory.account_status_changed"
+	AuditInventoryAccountDeactivated = "admin.inventory.account_deactivated"
+	AuditInventorySlotExtended       = "admin.inventory.slot_extended"
+	AuditInventorySlotDeactivated    = "admin.inventory.slot_deactivated"
+	AuditInventoryAccountExpired     = "inventory.account.expired"
+	AuditInventorySlotExpired        = "inventory.slot.expired"
 )
 
 // record is deliberately fire-and-forget: an audit write must never turn a

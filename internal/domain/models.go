@@ -465,11 +465,14 @@ type VoucherRedemption struct {
 }
 
 type Notification struct {
-	ID        string     `json:"id" gorm:"type:uuid;primaryKey"`
-	UserID    string     `json:"user_id" gorm:"type:uuid;not null;index"`
-	Type      string     `json:"type" gorm:"size:32;not null"`
-	Title     string     `json:"title" gorm:"not null"`
-	Body      string     `json:"body" gorm:"not null"`
+	ID     string `json:"id" gorm:"type:uuid;primaryKey"`
+	UserID string `json:"user_id" gorm:"type:uuid;not null;index"`
+	Type   string `json:"type" gorm:"size:32;not null"`
+	Title  string `json:"title" gorm:"not null"`
+	Body   string `json:"body" gorm:"not null"`
+	// DedupeKey makes scheduled reminders idempotent. It is nullable for
+	// notifications written by other flows and never serialized to clients.
+	DedupeKey *string    `json:"-" gorm:"size:160;uniqueIndex"`
 	ReadAt    *time.Time `json:"read_at,omitempty"`
 	CreatedAt time.Time  `json:"created_at"`
 }

@@ -56,6 +56,25 @@ type stubInventoryRepo struct {
 	legacyCredentials []byte
 	backfilledID      string
 	backfilledEmail   string
+
+	slot          *domain.InventorySlot
+	slotErr       error
+	extended      *domain.InventorySlot
+	extendErr     error
+	extendSlot    []string
+	extendDays    []int
+	deactivated   *domain.InventorySlot
+	deactivateErr error
+
+	expiry               InventoryExpiryResult
+	expiryErr            error
+	slotReminders        map[int][]InventoryExpiryReminder
+	accountReminders     map[int][]InventoryExpiryReminder
+	adminIDs             []string
+	adminErr             error
+	createdNotifications []domain.Notification
+	notificationKeys     map[string]bool
+	notificationErr      error
 }
 
 func (s *stubInventoryRepo) GetPriceProductID(context.Context, string) (string, error) {
@@ -118,6 +137,75 @@ func (s *stubInventoryRepo) BackfillAccountEmail(_ context.Context, id, email st
 	s.backfilledID = id
 	s.backfilledEmail = email
 	return nil
+}
+
+func (s *stubInventoryRepo) GetSlot(context.Context, string) (*domain.InventorySlot, error) {
+	if s.slotErr != nil {
+		return nil, s.slotErr
+	}
+	return s.slot, nil
+}
+
+func (s *stubInventoryRepo) ExtendSlotAccess(_ context.Context, slotID string, _ time.Time, durationDays int) (*domain.InventorySlot, error) {
+	s.extendSlot = append(s.extendSlot, slotID)
+	s.extendDays = append(s.extendDays, durationDays)
+	if s.extendErr != nil {
+		return nil, s.extendErr
+	}
+	return s.extended, nil
+}
+
+func (s *stubInventoryRepo) DeactivateSlot(context.Context, string, time.Time) (*domain.InventorySlot, error) {
+	if s.deactivateErr != nil {
+		return nil, s.deactivateErr
+	}
+	return s.deactivated, nil
+}
+
+func (s *stubInventoryRepo) ExpireInventory(context.Context, time.Time, int) (InventoryExpiryResult, error) {
+	if s.expiryErr != nil {
+		return InventoryExpiryResult{}, s.expiryErr
+	}
+	result := s.expiry
+	// A fake batch is consumed once; subsequent runs observe an empty table.
+	s.expiry = InventoryExpiryResult{}
+	return result, nil
+}
+
+func (s *stubInventoryRepo) ListSlotExpiryReminders(_ context.Context, _ time.Time, windowDays int) ([]InventoryExpiryReminder, error) {
+	return s.slotReminders[windowDays], nil
+}
+
+func (s *stubInventoryRepo) ListAccountExpiryReminders(_ context.Context, _ time.Time, windowDays int) ([]InventoryExpiryReminder, error) {
+	return s.accountReminders[windowDays], nil
+}
+
+func (s *stubInventoryRepo) ListActiveAdminIDs(context.Context) ([]string, error) {
+	if s.adminErr != nil {
+		return nil, s.adminErr
+	}
+	return s.adminIDs, nil
+}
+
+func (s *stubInventoryRepo) CreateNotifications(_ context.Context, notifications []domain.Notification) (int, error) {
+	if s.notificationErr != nil {
+		return 0, s.notificationErr
+	}
+	if s.notificationKeys == nil {
+		s.notificationKeys = map[string]bool{}
+	}
+	created := 0
+	for _, notification := range notifications {
+		if notification.DedupeKey != nil {
+			if s.notificationKeys[*notification.DedupeKey] {
+				continue
+			}
+			s.notificationKeys[*notification.DedupeKey] = true
+		}
+		s.createdNotifications = append(s.createdNotifications, notification)
+		created++
+	}
+	return created, nil
 }
 
 func (s *stubInventoryRepo) GetAccount(context.Context, string) (*domain.InventoryAccount, error) {

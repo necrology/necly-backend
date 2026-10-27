@@ -39,11 +39,16 @@ const (
 	// maxMailboxIMAPHostLength keeps the host column bounded and rejects
 	// accidental pasted URLs.
 	maxMailboxIMAPHostLength = 255
+	// MaxInventoryExtensionDays bounds an admin renewal. Ten years is well past
+	// any realistic provider subscription while still rejecting typo-sized
+	// values that would overflow the date arithmetic.
+	MaxInventoryExtensionDays = 3650
 )
 
 type AdminInventoryService struct {
 	repo   InventoryRepository
 	cipher *CredentialCipher
+	audit  AuditWriter
 	now    func() time.Time
 	otp    *otpRateLimiter
 	// centralOTP is true when the shared OTP_IMAP_* mailbox is configured. It
@@ -54,6 +59,12 @@ type AdminInventoryService struct {
 func NewAdminInventoryService(repo InventoryRepository, cipher *CredentialCipher) *AdminInventoryService {
 	now := func() time.Time { return time.Now().UTC() }
 	return &AdminInventoryService{repo: repo, cipher: cipher, now: now, otp: newOTPRateLimiter(now)}
+}
+
+// SetAuditWriter wires the inventory lifecycle audit trail. It is optional so
+// the many read-only tests can keep constructing the service without a store.
+func (s *AdminInventoryService) SetAuditWriter(audit AuditWriter) {
+	s.audit = audit
 }
 
 // SetCentralOTPInbox tells the admin API whether the shared OTP_IMAP_* mailbox
@@ -104,12 +115,31 @@ type UpdateInventoryAccountInput struct {
 	OTPSecret          *string    `json:"otp_secret"`
 }
 
+// ExtendInventoryAccountInput is the admin renewal contract. Exactly one of
+// DurationDays and ExpiresAt must be provided:
+//   - duration_days extends from max(now, current expiry)
+//   - expires_at sets an explicit new expiry and must move forward
+type ExtendInventoryAccountInput struct {
+	DurationDays int        `json:"duration_days"`
+	ExpiresAt    *time.Time `json:"expires_at"`
+}
+
+// ExtendInventorySlotInput always uses the additive formula required by the
+// sharing-account plan: max(now, expiry lama) + duration_days.
+type ExtendInventorySlotInput struct {
+	DurationDays int `json:"duration_days"`
+}
+
 type CreateSlotsInput struct {
 	ProductPriceID string `json:"product_price_id"`
 	// InventoryAccountID is optional. When omitted an eligible active account
 	// with spare capacity is selected automatically.
 	InventoryAccountID string `json:"inventory_account_id"`
 	Quantity           int    `json:"quantity"`
+	// AccessExpiresAt is optional and only for provisioning a seat whose buyer
+	// window is already known. It is validated against the account expiry; a
+	// slot may never outlive the provider account.
+	AccessExpiresAt *time.Time `json:"access_expires_at"`
 }
 
 // CreateSlotsResult reports where new capacity landed. The account id lets the
@@ -137,8 +167,9 @@ func (s *AdminInventoryService) CreateSlots(ctx context.Context, input CreateSlo
 	slots := make([]domain.InventorySlot, 0, input.Quantity)
 	for i := 0; i < input.Quantity; i++ {
 		slots = append(slots, domain.InventorySlot{
-			ProductPriceID: input.ProductPriceID,
-			Status:         "available",
+			ProductPriceID:  input.ProductPriceID,
+			Status:          "available",
+			AccessExpiresAt: cloneTime(input.AccessExpiresAt),
 		})
 	}
 
@@ -265,6 +296,13 @@ func (s *AdminInventoryService) CreateInventoryAccount(ctx context.Context, inpu
 }
 
 func (s *AdminInventoryService) UpdateInventoryAccount(ctx context.Context, id string, input UpdateInventoryAccountInput) (*domain.InventoryAccount, error) {
+	return s.UpdateInventoryAccountAs(ctx, AdminActor{}, id, input)
+}
+
+// UpdateInventoryAccountAs is the audited form used by the admin route. The
+// actor may be empty in tests, but every expiry or status change still becomes
+// an audit row so the history is never silently lost.
+func (s *AdminInventoryService) UpdateInventoryAccountAs(ctx context.Context, actor AdminActor, id string, input UpdateInventoryAccountInput) (*domain.InventoryAccount, error) {
 	if _, err := uuid.Parse(id); err != nil {
 		return nil, ErrNotFound
 	}
@@ -275,6 +313,8 @@ func (s *AdminInventoryService) UpdateInventoryAccount(ctx context.Context, id s
 	if err != nil {
 		return nil, err
 	}
+	previousStatus := account.Status
+	previousExpiry := cloneTime(account.ExpiresAt)
 
 	if _, err := s.mergeUpdateCredential(account, input); err != nil {
 		return nil, err
@@ -349,8 +389,172 @@ func (s *AdminInventoryService) UpdateInventoryAccount(ctx context.Context, id s
 	if err := s.repo.UpdateAccount(ctx, account); err != nil {
 		return nil, err
 	}
+	s.recordAccountUpdateAudit(ctx, actor, account, previousStatus, previousExpiry)
 	s.presentAccount(account)
 	return account, nil
+}
+
+// ExtendInventoryAccount implements the admin renewal action. It uses the same
+// additive rule as slots when duration_days is supplied, and an explicit
+// expires_at may only move the window forward.
+func (s *AdminInventoryService) ExtendInventoryAccount(ctx context.Context, actor AdminActor, id string, input ExtendInventoryAccountInput) (*domain.InventoryAccount, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return nil, ErrNotFound
+	}
+	if input.DurationDays < 0 || input.DurationDays > MaxInventoryExtensionDays {
+		return nil, ErrInvalidInput
+	}
+	if (input.DurationDays == 0) == (input.ExpiresAt == nil) {
+		// Both or neither would make the intent ambiguous.
+		return nil, ErrInvalidInput
+	}
+
+	account, err := s.repo.GetAccountWithCredentials(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	now := s.now()
+	previousStatus := account.Status
+	previousExpiry := cloneTime(account.ExpiresAt)
+
+	var target time.Time
+	if input.DurationDays > 0 {
+		target = NextAccountExpiry(account.ExpiresAt, now, input.DurationDays)
+	} else {
+		target = input.ExpiresAt.UTC()
+		if err := ValidateAccountExtensionTarget(account.ExpiresAt, target, now); err != nil {
+			return nil, err
+		}
+	}
+	account.ExpiresAt = &target
+	// Renewing an account that the daily job already marked expired puts it
+	// back on sale. Inactive stays inactive: an operator deliberately hid it.
+	if account.Status == InventoryStatusExpired {
+		account.Status = InventoryStatusActive
+	}
+	if err := s.repo.UpdateAccount(ctx, account); err != nil {
+		return nil, err
+	}
+
+	s.recordInventoryAudit(ctx, actor, AuditInventoryAccountExtended, "inventory_account", account.ID, map[string]any{
+		"previous_status": previousStatus,
+		"new_status":      account.Status,
+		"previous_expiry": formatOptionalTime(previousExpiry),
+		"new_expiry":      target.Format(time.RFC3339),
+	})
+	s.presentAccount(account)
+	return account, nil
+}
+
+// DeactivateInventoryAccount is the explicit nonaktifkan action. It keeps the
+// row and every order history entry intact and is idempotent for an account
+// that is already inactive.
+func (s *AdminInventoryService) DeactivateInventoryAccount(ctx context.Context, actor AdminActor, id string) (*domain.InventoryAccount, error) {
+	status := InventoryStatusInactive
+	return s.UpdateInventoryAccountAs(ctx, actor, id, UpdateInventoryAccountInput{Status: &status})
+}
+
+// ExtendInventorySlot applies max(now, expiry lama) + duration_days and rejects
+// any result beyond the parent account's expiry.
+func (s *AdminInventoryService) ExtendInventorySlot(ctx context.Context, actor AdminActor, slotID string, input ExtendInventorySlotInput) (*domain.InventorySlot, error) {
+	if _, err := uuid.Parse(slotID); err != nil {
+		return nil, ErrNotFound
+	}
+	if input.DurationDays < 1 || input.DurationDays > MaxInventoryExtensionDays {
+		return nil, ErrInvalidInput
+	}
+	before, err := s.repo.GetSlot(ctx, slotID)
+	if err != nil {
+		return nil, err
+	}
+	previousExpiry := cloneTime(before.AccessExpiresAt)
+	previousStatus := before.Status
+
+	slot, err := s.repo.ExtendSlotAccess(ctx, slotID, s.now(), input.DurationDays)
+	if err != nil {
+		return nil, err
+	}
+
+	s.recordInventoryAudit(ctx, actor, AuditInventorySlotExtended, "inventory_slot", slot.ID, map[string]any{
+		"inventory_account_id": slot.InventoryAccountID,
+		"previous_status":      previousStatus,
+		"new_status":           slot.Status,
+		"previous_expiry":      formatOptionalTime(previousExpiry),
+		"new_expiry":           formatOptionalTime(slot.AccessExpiresAt),
+	})
+	return slot, nil
+}
+
+// DeactivateInventorySlot removes one seat from sale without deleting its slot
+// row or its historical order linkage.
+func (s *AdminInventoryService) DeactivateInventorySlot(ctx context.Context, actor AdminActor, slotID string) (*domain.InventorySlot, error) {
+	if _, err := uuid.Parse(slotID); err != nil {
+		return nil, ErrNotFound
+	}
+	slot, err := s.repo.DeactivateSlot(ctx, slotID, s.now())
+	if err != nil {
+		return nil, err
+	}
+	s.recordInventoryAudit(ctx, actor, AuditInventorySlotDeactivated, "inventory_slot", slot.ID, map[string]any{
+		"inventory_account_id": slot.InventoryAccountID,
+		"new_status":           slot.Status,
+	})
+	return slot, nil
+}
+
+func (s *AdminInventoryService) recordAccountUpdateAudit(ctx context.Context, actor AdminActor, account *domain.InventoryAccount, previousStatus string, previousExpiry *time.Time) {
+	if previousStatus != account.Status {
+		action := AuditInventoryAccountStatus
+		if account.Status == InventoryStatusInactive {
+			action = AuditInventoryAccountDeactivated
+		}
+		s.recordInventoryAudit(ctx, actor, action, "inventory_account", account.ID, map[string]any{
+			"previous_status": previousStatus,
+			"new_status":      account.Status,
+		})
+	}
+	if !sameOptionalTime(previousExpiry, account.ExpiresAt) {
+		s.recordInventoryAudit(ctx, actor, AuditInventoryAccountExpiry, "inventory_account", account.ID, map[string]any{
+			"previous_expiry": formatOptionalTime(previousExpiry),
+			"new_expiry":      formatOptionalTime(account.ExpiresAt),
+		})
+	}
+}
+
+func (s *AdminInventoryService) recordInventoryAudit(ctx context.Context, actor AdminActor, action, resource, resourceID string, metadata map[string]any) {
+	if s.audit == nil {
+		return
+	}
+	s.audit.Record(ctx, AuditEntry{
+		ActorUserID: actor.UserID,
+		Action:      action,
+		Resource:    resource,
+		ResourceID:  resourceID,
+		IPAddress:   actor.IPAddress,
+		Metadata:    metadata,
+	})
+}
+
+func cloneTime(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	copied := value.UTC()
+	return &copied
+}
+
+func sameOptionalTime(left, right *time.Time) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.Equal(*right)
+}
+
+func formatOptionalTime(value *time.Time) string {
+	if value == nil {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339)
 }
 
 func (s *AdminInventoryService) GetInventoryAccount(ctx context.Context, id string) (*domain.InventoryAccount, error) {

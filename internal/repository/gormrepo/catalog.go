@@ -94,7 +94,19 @@ func applyProductFilters(query *gorm.DB, filter service.ProductFilter) *gorm.DB 
 		query = query.Where(predicate, args...)
 	}
 	if filter.InStock {
-		query = query.Where("EXISTS (SELECT 1 FROM inventory_slots s JOIN product_prices pp ON pp.id = s.product_price_id WHERE pp.product_id = products.id AND pp.active = TRUE AND s.status = 'available')")
+		// A slot only counts as stock while its parent account is active and
+		// its remaining provider lifetime covers the sold duration. Filtering
+		// here makes an expired account stop selling immediately, even before
+		// the daily lifecycle job has flipped its status column.
+		query = query.Where(`EXISTS (
+			SELECT 1 FROM inventory_slots s
+			JOIN product_prices pp ON pp.id = s.product_price_id
+			JOIN product_durations pd ON pd.id = pp.duration_id
+			JOIN inventory_accounts a ON a.id = s.inventory_account_id
+			WHERE pp.product_id = products.id AND pp.active = TRUE AND s.status = 'available'
+				AND a.status = 'active'
+				AND (a.expires_at IS NULL OR a.expires_at > NOW() + make_interval(days => pd.days))
+		)`)
 	}
 	return query
 }
@@ -464,10 +476,15 @@ func (s *Store) ListProductsWithStock(ctx context.Context, filter service.Produc
 			Count          int
 		}
 		var slotCounts []slotCount
-		if err := s.db.WithContext(ctx).Model(&domain.InventorySlot{}).
-			Select("product_price_id, COUNT(*) as count").
-			Where("product_price_id IN ? AND status = ?", priceIDs, "available").
-			Group("product_price_id").
+		if err := s.db.WithContext(ctx).Table("inventory_slots AS s").
+			Select("s.product_price_id, COUNT(*) as count").
+			Joins("JOIN product_prices pp ON pp.id = s.product_price_id").
+			Joins("JOIN product_durations pd ON pd.id = pp.duration_id").
+			Joins(`JOIN inventory_accounts a ON a.id = s.inventory_account_id
+				AND a.status = 'active'
+				AND (a.expires_at IS NULL OR a.expires_at > NOW() + make_interval(days => pd.days))`).
+			Where("s.product_price_id IN ? AND s.status = ?", priceIDs, "available").
+			Group("s.product_price_id").
 			Scan(&slotCounts).Error; err != nil {
 			return nil, 0, fmt.Errorf("count available slots: %w", err)
 		}
@@ -549,10 +566,15 @@ func (s *Store) productWithStock(ctx context.Context, p domain.Product) (*domain
 			Count          int
 		}
 		var slotCounts []slotCount
-		if err := s.db.WithContext(ctx).Model(&domain.InventorySlot{}).
-			Select("product_price_id, COUNT(*) as count").
-			Where("product_price_id IN ? AND status = ?", priceIDs, "available").
-			Group("product_price_id").
+		if err := s.db.WithContext(ctx).Table("inventory_slots AS s").
+			Select("s.product_price_id, COUNT(*) as count").
+			Joins("JOIN product_prices pp ON pp.id = s.product_price_id").
+			Joins("JOIN product_durations pd ON pd.id = pp.duration_id").
+			Joins(`JOIN inventory_accounts a ON a.id = s.inventory_account_id
+				AND a.status = 'active'
+				AND (a.expires_at IS NULL OR a.expires_at > NOW() + make_interval(days => pd.days))`).
+			Where("s.product_price_id IN ? AND s.status = ?", priceIDs, "available").
+			Group("s.product_price_id").
 			Scan(&slotCounts).Error; err != nil {
 			return nil, fmt.Errorf("count available slots: %w", err)
 		}

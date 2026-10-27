@@ -108,6 +108,7 @@ func (s *Store) BeginCheckout(ctx context.Context, cmd service.CheckoutCommand) 
 			domain.ProductPrice
 			ProductName  string
 			DurationName string
+			DurationDays int
 			SlotCount    int64
 		}
 		var prices []priceInfo
@@ -119,13 +120,16 @@ func (s *Store) BeginCheckout(ctx context.Context, cmd service.CheckoutCommand) 
 		// the query never parsed, so every checkout failed with SQLSTATE 42601
 		// before any order could be reserved.
 		if err := tx.Table("product_prices pp").
-			Select("pp.*, p.name as product_name, pd.name as duration_name, count(sl.id) as slot_count").
+			Select("pp.*, p.name as product_name, pd.name as duration_name, pd.days as duration_days, count(ia.id) as slot_count").
 			Joins("JOIN products p ON p.id = pp.product_id AND p.active = true AND p.coming_soon = FALSE").
 			Joins("JOIN product_durations pd ON pd.id = pp.duration_id").
 			Joins("LEFT JOIN inventory_slots sl ON sl.product_price_id = pp.id AND sl.status = 'available'").
+			Joins(`LEFT JOIN inventory_accounts ia ON ia.id = sl.inventory_account_id
+				AND ia.status = 'active'
+				AND (ia.expires_at IS NULL OR ia.expires_at >= ?::timestamptz + make_interval(days => pd.days))`, cmd.Now).
 			Where("pp.id IN ?", priceIDs).
 			Where("pp.active = ?", true).
-			Group("pp.id, p.name, pd.name").
+			Group("pp.id, p.name, pd.name, pd.days").
 			Find(&prices).Error; err != nil {
 			return fmt.Errorf("load prices: %w", err)
 		}
@@ -210,8 +214,19 @@ func (s *Store) BeginCheckout(ctx context.Context, cmd service.CheckoutCommand) 
 				}
 			}
 			slots := make([]domain.InventorySlot, 0, item.Quantity)
+			// Lock only seats whose account is still active and whose remaining
+			// provider lifetime covers this item's duration. The aggregate above
+			// uses the same predicate, so the advertised stock and the locked
+			// rows cannot disagree.
+			requiredAccountExpiry := cmd.Now.AddDate(0, 0, price.DurationDays)
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
 				Where("product_price_id = ? AND status = ?", item.ProductPriceID, "available").
+				Where(`EXISTS (
+					SELECT 1 FROM inventory_accounts ia
+					WHERE ia.id = inventory_slots.inventory_account_id
+						AND ia.status = 'active'
+						AND (ia.expires_at IS NULL OR ia.expires_at >= ?)
+				)`, requiredAccountExpiry).
 				Limit(item.Quantity).
 				Find(&slots).Error; err != nil {
 				return fmt.Errorf("lock slots: %w", err)

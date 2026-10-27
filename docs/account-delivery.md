@@ -60,6 +60,9 @@ Satu baris `order_deliveries` per `order_item`. Status:
 - `credential_cipher_unavailable`
 - `inventory_unavailable`
 - `inventory_account_unavailable`
+- `inventory_account_expiry_too_short` — sisa masa aktif akun lebih pendek dari
+  durasi pesanan; pengiriman ditolak agar tidak menjual akses yang tidak bisa
+  dipenuhi.
 - `credential_invalid`
 - `email_failed`
 - `persistence_failed`

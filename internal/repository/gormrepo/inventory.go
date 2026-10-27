@@ -461,6 +461,9 @@ func (s *Store) CreateSlotsForAccount(ctx context.Context, accountID, productID 
 			// lower the limit first (or split capacity into another account).
 			return service.ErrInventoryAccountNeedsReview
 		}
+		if err := slotsWithinAccount(slots, account.ExpiresAt); err != nil {
+			return err
+		}
 		var count int64
 		if err := tx.Model(&domain.InventorySlot{}).
 			Where("inventory_account_id = ?", accountID).Count(&count).Error; err != nil {
@@ -497,9 +500,14 @@ func (s *Store) CreateSlotsAuto(ctx context.Context, productID string, slots []d
 			return service.ErrAccountRequired
 		}
 		sawNeedsReview := false
+		sawExpiryOverrun := false
 		for _, account := range accounts {
 			if account.SharingLimit > service.MaxSharingLimit {
 				sawNeedsReview = true
+				continue
+			}
+			if err := slotsWithinAccount(slots, account.ExpiresAt); err != nil {
+				sawExpiryOverrun = true
 				continue
 			}
 			var count int64
@@ -511,6 +519,9 @@ func (s *Store) CreateSlotsAuto(ctx context.Context, productID string, slots []d
 				chosen = account.ID
 				return insertSlots(tx, account.ID, slots, now)
 			}
+		}
+		if sawExpiryOverrun {
+			return service.ErrSlotExceedsAccountExpiry
 		}
 		if sawNeedsReview {
 			return service.ErrInventoryAccountNeedsReview
@@ -535,6 +546,21 @@ func insertSlots(tx *gorm.DB, accountID string, slots []domain.InventorySlot, no
 	}
 	if err := tx.CreateInBatches(slots, 100).Error; err != nil {
 		return fmt.Errorf("create inventory slots: %w", err)
+	}
+	return nil
+}
+
+// slotsWithinAccount rejects an explicit access window that would outlive the
+// provider account. Slots without a window are just unsold capacity and pass;
+// their buyer window is validated again at checkout/delivery time.
+func slotsWithinAccount(slots []domain.InventorySlot, accountExpiry *time.Time) error {
+	for _, slot := range slots {
+		if slot.AccessExpiresAt == nil {
+			continue
+		}
+		if err := service.ValidateSlotExpiryWithinAccount(*slot.AccessExpiresAt, accountExpiry); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -570,9 +596,25 @@ func (s *Store) UpdateSlotStatus(ctx context.Context, slotID, status string, now
 }
 
 func (s *Store) FindAvailableSlots(ctx context.Context, productPriceID string, quantity int, paymentDueAt time.Time, userID string, now time.Time) ([]domain.InventorySlot, error) {
+	var durationDays int
+	if err := s.db.WithContext(ctx).Table("product_prices pp").
+		Select("pd.days").
+		Joins("JOIN product_durations pd ON pd.id = pp.duration_id").
+		Where("pp.id = ?", productPriceID).
+		Scan(&durationDays).Error; err != nil {
+		return nil, fmt.Errorf("load price duration: %w", err)
+	}
+	requiredAccountExpiry := now.AddDate(0, 0, durationDays)
+
 	var slots []domain.InventorySlot
 	err := s.db.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
 		Where("product_price_id = ? AND status = ?", productPriceID, "available").
+		Where(`EXISTS (
+			SELECT 1 FROM inventory_accounts ia
+			WHERE ia.id = inventory_slots.inventory_account_id
+				AND ia.status = 'active'
+				AND (ia.expires_at IS NULL OR ia.expires_at >= ?)
+		)`, requiredAccountExpiry).
 		Limit(quantity).
 		Find(&slots).Error
 	if err != nil {
