@@ -18,6 +18,10 @@ func deliverOrder(t *testing.T, fixture *checkoutFixture, order *domain.Order, n
 		t.Fatalf("ensure deliveries: %v", err)
 	}
 	for _, row := range rows {
+		claimed, err := fixture.store.ClaimOrderDelivery(ctx, row.ID, now, now.Add(-5*time.Minute))
+		if err != nil || !claimed {
+			t.Fatalf("claim delivery = %t, %v; want true, nil", claimed, err)
+		}
 		if err := fixture.store.MarkOrderDeliverySent(ctx, row.ID, now); err != nil {
 			t.Fatalf("mark delivery sent: %v", err)
 		}
