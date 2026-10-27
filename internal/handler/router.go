@@ -264,6 +264,11 @@ func (r *Router) registerAdmin(api fiber.Router) {
 	admin.Post("/products", r.adminCreateProduct)
 	admin.Patch("/products/:id", r.adminUpdateProduct)
 	admin.Delete("/products/:id", r.adminDeleteProduct)
+	admin.Get("/products/:id/prices", r.adminListProductPrices)
+	admin.Post("/products/:id/prices", r.adminCreateProductPrice)
+	admin.Patch("/products/:id/prices/:priceId", r.adminUpdateProductPrice)
+	admin.Delete("/products/:id/prices/:priceId", r.adminDeleteProductPrice)
+	admin.Get("/product-durations", r.adminListProductDurations)
 	admin.Get("/categories", r.adminListCategories)
 	admin.Post("/categories", r.adminCreateCategory)
 	admin.Patch("/categories/:id", r.adminUpdateCategory)
@@ -1631,6 +1636,118 @@ func (r *Router) adminDeleteProduct(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{"message": "Produk berhasil dihapus"})
+}
+
+func (r *Router) adminListProductPrices(c *fiber.Ctx) error {
+	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+	defer cancel()
+
+	prices, err := r.adminProductSvc.ListProductPrices(ctx, c.Params("id"), true)
+	if err != nil {
+		if errors.Is(err, service.ErrNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Produk langganan tidak ditemukan", "code": "not_found"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil harga produk"})
+	}
+	return c.JSON(fiber.Map{"prices": prices})
+}
+
+func (r *Router) adminListProductDurations(c *fiber.Ctx) error {
+	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+	defer cancel()
+
+	durations, err := r.adminProductSvc.ListProductDurations(ctx)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengambil daftar durasi"})
+	}
+	return c.JSON(fiber.Map{"durations": durations})
+}
+
+func parseProductPriceInput(c *fiber.Ctx) (service.ProductPriceInput, error) {
+	var body struct {
+		DurationID    *string `json:"duration_id"`
+		Currency      *string `json:"currency"`
+		BaseAmount    *int64  `json:"base_amount"`
+		AdminFee      *int64  `json:"admin_fee"`
+		MemberSlots   *int    `json:"member_slots"`
+		AdminIncluded *bool   `json:"admin_included"`
+		Amount        *int64  `json:"amount"`
+		Active        *bool   `json:"active"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return service.ProductPriceInput{}, err
+	}
+	return service.ProductPriceInput{
+		DurationID:    body.DurationID,
+		Currency:      body.Currency,
+		BaseAmount:    body.BaseAmount,
+		AdminFee:      body.AdminFee,
+		MemberSlots:   body.MemberSlots,
+		AdminIncluded: body.AdminIncluded,
+		Amount:        body.Amount,
+		Active:        body.Active,
+	}, nil
+}
+
+func (r *Router) adminCreateProductPrice(c *fiber.Ctx) error {
+	input, err := parseProductPriceInput(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid", "code": "invalid_input"})
+	}
+
+	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+	defer cancel()
+
+	price, err := r.adminProductSvc.CreateProductPriceWithBreakdown(ctx, c.Params("id"), input)
+	if err != nil {
+		if errors.Is(err, service.ErrNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Produk langganan tidak ditemukan", "code": "not_found"})
+		}
+		if errors.Is(err, service.ErrInvalidInput) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Data harga tidak valid", "code": "invalid_input"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menambahkan harga produk"})
+	}
+	return c.Status(fiber.StatusCreated).JSON(price)
+}
+
+func (r *Router) adminUpdateProductPrice(c *fiber.Ctx) error {
+	input, err := parseProductPriceInput(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Format data permintaan tidak valid", "code": "invalid_input"})
+	}
+
+	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+	defer cancel()
+
+	price, err := r.adminProductSvc.UpdateProductPriceWithBreakdown(ctx, c.Params("id"), c.Params("priceId"), input)
+	if err != nil {
+		if errors.Is(err, service.ErrNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Harga produk tidak ditemukan", "code": "not_found"})
+		}
+		if errors.Is(err, service.ErrInvalidInput) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Data harga tidak valid", "code": "invalid_input"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal memperbarui harga produk"})
+	}
+	return c.JSON(price)
+}
+
+func (r *Router) adminDeleteProductPrice(c *fiber.Ctx) error {
+	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+	defer cancel()
+
+	err := r.adminProductSvc.DeleteProductPriceForProduct(ctx, c.Params("id"), c.Params("priceId"))
+	if err != nil {
+		if errors.Is(err, service.ErrNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Harga produk tidak ditemukan", "code": "not_found"})
+		}
+		if errors.Is(err, service.ErrInvalidInput) || errors.Is(err, service.ErrConflict) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Harga sudah dipakai slot atau pesanan. Nonaktifkan harganya alih-alih menghapus.", "code": "price_in_use"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal menghapus harga produk"})
+	}
+	return c.JSON(fiber.Map{"message": "Harga produk berhasil dihapus"})
 }
 
 func (r *Router) adminListCategories(c *fiber.Ctx) error {
