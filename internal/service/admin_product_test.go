@@ -56,6 +56,22 @@ func (m *mockAdminProductRepository) DeleteProduct(ctx context.Context, id strin
 	return args.Error(0)
 }
 
+func (m *mockAdminProductRepository) ListProductPrices(ctx context.Context, productID string, activeOnly bool) ([]domain.ProductPrice, error) {
+	args := m.Called(ctx, productID, activeOnly)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]domain.ProductPrice), args.Error(1)
+}
+
+func (m *mockAdminProductRepository) ListProductDurations(ctx context.Context) ([]domain.ProductDuration, error) {
+	args := m.Called(ctx)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]domain.ProductDuration), args.Error(1)
+}
+
 func (m *mockAdminProductRepository) GetProductPriceByID(ctx context.Context, id string) (*domain.ProductPrice, error) {
 	args := m.Called(ctx, id)
 	if args.Get(0) == nil {

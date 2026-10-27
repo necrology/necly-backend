@@ -14,10 +14,12 @@ type AdminProductRepository interface {
 	CreateProduct(ctx context.Context, p *domain.Product) error
 	UpdateProduct(ctx context.Context, p *domain.Product) error
 	DeleteProduct(ctx context.Context, id string, now time.Time) error
+	ListProductPrices(ctx context.Context, productID string, activeOnly bool) ([]domain.ProductPrice, error)
 	GetProductPriceByID(ctx context.Context, id string) (*domain.ProductPrice, error)
 	CreateProductPrice(ctx context.Context, p *domain.ProductPrice) error
 	UpdateProductPrice(ctx context.Context, p *domain.ProductPrice) error
 	DeleteProductPrice(ctx context.Context, id string) error
+	ListProductDurations(ctx context.Context) ([]domain.ProductDuration, error)
 }
 
 type AdminProductFilter struct {

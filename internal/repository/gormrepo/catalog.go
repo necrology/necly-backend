@@ -397,7 +397,7 @@ func (s *Store) UpdateProductPrice(ctx context.Context, p *domain.ProductPrice) 
 	p.UpdatedAt = s.nowUTC()
 	result := s.db.WithContext(ctx).Model(&domain.ProductPrice{}).
 		Where("id = ?", p.ID).
-		Select("*").Omit("id", "created_at", "product_id", "duration_id").
+		Select("*").Omit("id", "created_at", "product_id").
 		Updates(p)
 	if result.Error != nil {
 		return translateCatalogWriteError(result.Error)
@@ -420,6 +420,14 @@ func (s *Store) DeleteProductPrice(ctx context.Context, id string) error {
 		return service.ErrNotFound
 	}
 	return nil
+}
+
+func (s *Store) ListProductDurations(ctx context.Context) ([]domain.ProductDuration, error) {
+	var durations []domain.ProductDuration
+	if err := s.db.WithContext(ctx).Order("days ASC, name ASC").Find(&durations).Error; err != nil {
+		return nil, fmt.Errorf("list product durations: %w", err)
+	}
+	return durations, nil
 }
 
 func (s *Store) ListProductsWithStock(ctx context.Context, filter service.ProductFilter, page, perPage int) ([]domain.ProductWithStock, int64, error) {

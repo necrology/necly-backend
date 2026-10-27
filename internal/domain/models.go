@@ -138,10 +138,18 @@ type ProductPrice struct {
 	DurationID string           `json:"duration_id" gorm:"type:uuid;not null;index"`
 	Duration   *ProductDuration `json:"duration,omitempty" gorm:"foreignKey:DurationID"`
 	Amount     int64            `json:"amount" gorm:"not null;check:amount >= 0"`
-	Currency   string           `json:"currency" gorm:"size:3;not null;default:IDR"`
-	Active     bool             `json:"active" gorm:"not null;default:true;index"`
-	CreatedAt  time.Time        `json:"created_at"`
-	UpdatedAt  time.Time        `json:"updated_at"`
+	// BaseAmount and AdminFee describe how Amount was derived. They are stored
+	// so the admin form and the public price scheme can show the calculation
+	// instead of a hardcoded "Biaya Admin Rp0". Amount remains the price a
+	// member pays for one slot and is what checkout charges.
+	BaseAmount    int64     `json:"base_amount" gorm:"not null;default:0"`
+	AdminFee      int64     `json:"admin_fee" gorm:"not null;default:0"`
+	MemberSlots   int       `json:"member_slots" gorm:"not null;default:5"`
+	AdminIncluded bool      `json:"admin_included" gorm:"not null;default:false"`
+	Currency      string    `json:"currency" gorm:"size:3;not null;default:IDR"`
+	Active        bool      `json:"active" gorm:"not null;default:true;index"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type InventoryAccount struct {
