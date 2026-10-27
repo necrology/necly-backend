@@ -96,6 +96,9 @@ func accessFixture(t *testing.T) (*OrderDeliveryService, *deliveryFakeRepo, *del
 	svc := NewOrderDeliveryService(repo, repo, cipher, mail, nil)
 	store := newFakeAccessStore()
 	svc.SetAccessCodeSupport(store, "https://necly.test")
+	// Most tests exercise the central-mailbox path; the readiness test turns
+	// this off to model a deployment without OTP_IMAP_*.
+	svc.SetCentralOTPInboxReady(true)
 	return svc, repo, mail, store, order
 }
 
@@ -146,6 +149,35 @@ func TestIssueAccountAccessCodeStoresHashAndEmailsTheBuyer(t *testing.T) {
 	}
 	if len(mail.sent) != 1 || !strings.Contains(mail.sent[0].Body, result.Code) {
 		t.Fatal("the buyer must receive the access code by email")
+	}
+}
+
+func TestAccountAccessReportsOTPReadinessAndBlocksUselessCodes(t *testing.T) {
+	svc, repo, _, _, order := accessFixture(t)
+	svc.SetCentralOTPInboxReady(false)
+	material := repo.material[order.Items[0].ID]
+	material.Slots[0].MailboxAppPasswordSet = false
+
+	items, err := svc.ListAccountAccess(context.Background(), order.UserID, order.ID)
+	if err != nil {
+		t.Fatalf("ListAccountAccess: %v", err)
+	}
+	if len(items) != 1 || items[0].OTPReady {
+		t.Fatalf("otp_ready = %+v, want false without any mailbox", items)
+	}
+	if _, err := svc.IssueAccountAccessCode(context.Background(), order.UserID, order.ID, order.Items[0].ID); !errors.Is(err, ErrOTPUnavailable) {
+		t.Fatalf("code without mailbox error = %v, want ErrOTPUnavailable", err)
+	}
+
+	// An account-level Gmail app password is enough even without the central
+	// fallback, so the page may offer the button again.
+	material.Slots[0].MailboxAppPasswordSet = true
+	items, err = svc.ListAccountAccess(context.Background(), order.UserID, order.ID)
+	if err != nil || len(items) != 1 || !items[0].OTPReady {
+		t.Fatalf("direct mailbox readiness = %+v, %v", items, err)
+	}
+	if _, err := svc.IssueAccountAccessCode(context.Background(), order.UserID, order.ID, order.Items[0].ID); err != nil {
+		t.Fatalf("IssueAccountAccessCode with direct mailbox: %v", err)
 	}
 }
 

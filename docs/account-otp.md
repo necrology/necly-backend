@@ -34,13 +34,17 @@ Mengembalikan akun yang sudah dikirim untuk pesanan milik pengguna.
       "product_name": "Netflix Premium",
       "duration_name": "1 Bulan",
       "account_label": "Akun utama",
-      "account_email": "family@example.test"
+      "account_email": "family@example.test",
+      "otp_ready": true
     }
   ],
   "otp_inbox_ready": true
 }
 ```
 
+- `otp_ready` per akun bernilai `false` bila akun itu tidak punya app password
+  maupun mailbox pusat. UI memakai nilai ini untuk menonaktifkan tombol kode
+  akses, sehingga pembeli tidak menerima kode yang tidak bisa ditukar.
 - Pesanan milik pengguna lain dijawab `404` (tidak membedakan "tidak ada" dan
   "bukan milik Anda").
 - Pesanan yang belum `processing` atau lebih tinggi dijawab
@@ -60,7 +64,9 @@ Membuat kode akses untuk satu item yang sudah terkirim.
 }
 ```
 
-- `503 otp_unavailable` bila Redis atau mailbox OTP belum dikonfigurasi.
+- `503 otp_unavailable` bila Redis atau mailbox OTP belum dikonfigurasi untuk
+  akun pada item tersebut. Kode tidak dibuat lebih dulu, jadi pembeli tidak
+  terjebak memegang kode yang tidak bisa dipakai.
 - `409 order_not_approved` bila akun belum dikirim.
 - `404` bila item bukan bagian dari pesanan pengguna.
 

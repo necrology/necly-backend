@@ -176,6 +176,7 @@ func main() {
 		otpAccessCodes = rediscache.NewOTPAccessCodes(redisClient, "necly:otp-access:")
 	}
 	orderDeliverySvc.SetAccessCodeSupport(otpAccessCodes, cfg.AppFrontendURL)
+	orderDeliverySvc.SetCentralOTPInboxReady(otpInbox.Enabled())
 	accountOTPSvc := service.NewAccountOTPService(otpAccessCodes, otpInbox, cfg.OTPInbox.Lookback)
 	// Hybrid lookup: use the account's own mailbox when it has a stored app
 	// password, otherwise fall back to the central OTP_IMAP_* mailbox.
