@@ -15,6 +15,9 @@ membaca OTP terbaru milik akun yang memang ia beli.
 4. Pembeli membuka `/otp`, memasukkan email akun dan kode akses.
 5. Server mencocokkan hash kode dan email, membaca email terbaru yang
    dialamatkan ke email akun tersebut, lalu menampilkan kode OTP.
+6. Hanya email kode **login** yang diproses. Email untuk mengubah atau
+   mengatur ulang kata sandi diabaikan sepenuhnya, termasuk kode angka di
+   dalamnya, karena kode tersebut bukan kredensial login.
 
 Kode akses tidak pernah disimpan dalam bentuk plaintext. Email akun hanya
 ditampilkan kepada pemilik pesanan; kata sandi akun tetap tidak pernah
@@ -172,3 +175,8 @@ aktif karena kode akses disimpan di sana dengan TTL.
   menggantung setelah timeout.
 - OTP yang ditampilkan adalah kode terbaru yang dialamatkan ke email akun dan
   masuk dalam lookback window; tidak ada pembacaan seluruh isi mailbox ke klien.
+- Email permintaan/konfirmasi ubah atau reset kata sandi (misalnya "reset your
+  password", "change password", "ubah kata sandi", "sandi baru") tidak pernah
+  diproses sebagai OTP, meskipun berisi kode angka. Reader hanya menerima kode
+  dari email login/verifikasi sehingga kode perubahan kata sandi tidak bisa
+  dipakai pembeli untuk masuk.

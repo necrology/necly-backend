@@ -80,6 +80,125 @@ func TestParseMessageRejectsMessagesWithoutOTPContext(t *testing.T) {
 	}
 }
 
+func TestParseMessageIgnoresPasswordChangeMail(t *testing.T) {
+	cases := []struct {
+		name    string
+		subject string
+		body    string
+	}{
+		{
+			name:    "english reset",
+			subject: "Reset your password",
+			body:    "Use code 551122 to reset your password. The code expires in 15 minutes.",
+		},
+		{
+			name:    "english change",
+			subject: "Change your password",
+			body:    "Your verification code is 318824.",
+		},
+		{
+			name:    "english changed notification",
+			subject: "Your password has been changed",
+			body:    "If this was not you, use code 774411 to secure your account.",
+		},
+		{
+			name:    "english new password",
+			subject: "Kode verifikasi",
+			body:    "Enter 445566 to choose a new password.",
+		},
+		{
+			name:    "indonesian subject",
+			subject: "Ubah kata sandi akun Anda",
+			body:    "Kode verifikasi: 883311.",
+		},
+		{
+			name:    "indonesian body",
+			subject: "Kode verifikasi",
+			body:    "Masukkan 660022 untuk mengubah kata sandi Anda.",
+		},
+		{
+			name:    "indonesian password replaced",
+			subject: "Sandi berhasil diubah",
+			body:    "Kata sandi akun Anda telah berhasil diubah. Kode 998877.",
+		},
+		{
+			name:    "reset password without possessive",
+			subject: "Verification code",
+			body:    "Use 230194 before you reset password.",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := strings.Join([]string{
+				"To: family@example.test",
+				"Subject: " + tc.subject,
+				"Content-Type: text/plain; charset=UTF-8",
+				"",
+				tc.body,
+			}, "\r\n")
+
+			if message, ok := parseMessage([]byte(raw), "family@example.test", time.Now().Add(-time.Hour)); ok {
+				t.Fatalf("password change mail was returned as OTP: %+v", message)
+			}
+		})
+	}
+}
+
+func TestParseMessageKeepsLoginOTPWhenPasswordIsOnlyMentioned(t *testing.T) {
+	cases := []struct {
+		name    string
+		subject string
+		body    string
+		code    string
+	}{
+		{
+			name:    "password warning",
+			subject: "Kode masuk",
+			body:    "Kode OTP Anda 472819. Jangan bagikan kata sandi Anda kepada siapa pun.",
+			code:    "472819",
+		},
+		{
+			name:    "new sign in",
+			subject: "New sign-in to your account",
+			body:    "Your login code is 731902. Never share your password.",
+			code:    "731902",
+		},
+		{
+			name:    "password policy",
+			subject: "Your verification code",
+			body:    "We updated our password policy. Your code is 551234.",
+			code:    "551234",
+		},
+		{
+			name:    "login code with password word",
+			subject: "Kode OTP login",
+			body:    "Masukkan kode 824113. Kata sandi akun tidak boleh dibagikan.",
+			code:    "824113",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := strings.Join([]string{
+				"To: family@example.test",
+				"Subject: " + tc.subject,
+				"Content-Type: text/plain; charset=UTF-8",
+				"",
+				tc.body,
+			}, "\r\n")
+
+			message, ok := parseMessage([]byte(raw), "family@example.test", time.Now().Add(-time.Hour))
+			if !ok {
+				t.Fatal("expected a login OTP to be accepted")
+			}
+			if message.Code != tc.code {
+				t.Fatalf("code = %q, want %q", message.Code, tc.code)
+			}
+		})
+	}
+}
+
 func TestDisabledReaderFailsClosed(t *testing.T) {
 	reader := New(Config{})
 	if reader.Enabled() {
