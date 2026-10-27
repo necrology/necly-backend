@@ -90,6 +90,13 @@ terisi, akun aktif) dan berisi:
 Satu email per order item. Bila beberapa slot memakai akun sharing yang sama,
 kredensial akun tersebut hanya dicantumkan sekali.
 
+## Pembatalan setelah akun dikirim
+
+Pesanan yang sudah dikirim tidak boleh dibatalkan lewat perubahan status biasa.
+Gunakan alur **Batalkan & cabut akses** yang mewajibkan rotasi kata sandi akun di
+platform, melepas slot, dan membatalkan kode OTP yang pernah dibuat. Kontrak
+lengkap ada di [access-revocation.md](access-revocation.md).
+
 ## Batas keamanan dan residual risk
 
 - Hanya `OrderDeliveryService` yang memanggil `CredentialCipher.Decrypt`, dan

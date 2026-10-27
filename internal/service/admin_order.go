@@ -10,10 +10,27 @@ import (
 
 type AdminOrderService struct {
 	repo AdminOrderRepository
+
+	// audit, credentialRotator and now are optional so existing tests can keep
+	// constructing the service with only a repository. Cancellation uses them
+	// when they are wired by the server.
+	audit             AuditWriter
+	credentialRotator AccountPasswordRotator
+	now               func() time.Time
 }
 
 func NewAdminOrderService(repo AdminOrderRepository) *AdminOrderService {
-	return &AdminOrderService{repo: repo}
+	return &AdminOrderService{repo: repo, now: func() time.Time { return time.Now().UTC() }}
+}
+
+// SetAuditWriter enables the cancellation audit trail without changing the
+// constructor used by older wiring and tests.
+func (s *AdminOrderService) SetAuditWriter(audit AuditWriter) { s.audit = audit }
+
+// SetCredentialRotator wires the inventory service that can replace the stored
+// provider password after the operator changed it on the platform.
+func (s *AdminOrderService) SetCredentialRotator(rotator AccountPasswordRotator) {
+	s.credentialRotator = rotator
 }
 
 func (s *AdminOrderService) ListOrders(ctx context.Context, filter OrderFilter, page, perPage int) ([]domain.Order, int64, error) {
@@ -65,6 +82,19 @@ func (s *AdminOrderService) UpdateOrderStatus(ctx context.Context, id string, st
 	}
 	if !validStatuses[status] {
 		return nil, ErrInvalidInput
+	}
+
+	// A delivered order has credentials in the buyer's hands. A plain status
+	// change cannot take them back, so cancellation must go through the
+	// revoke-access flow that rotates the provider password first.
+	if status == domain.OrderCancelled || status == domain.OrderRefunded {
+		impact, err := s.repo.RevocationImpact(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if len(impact) > 0 {
+			return nil, ErrProviderRotationRequired
+		}
 	}
 
 	// The repository re-reads and locks the order inside the same transaction

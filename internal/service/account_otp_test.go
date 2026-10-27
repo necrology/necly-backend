@@ -44,6 +44,17 @@ func (i *fakeOTPInbox) Latest(context.Context, string, time.Time) (*otpinbox.Mes
 	return i.message, i.err
 }
 
+type fakeAccessValidator struct {
+	valid                        bool
+	err                          error
+	orderID, orderItemID, userID string
+}
+
+func (v *fakeAccessValidator) ValidateAccessCode(_ context.Context, orderID, orderItemID, userID string, _ time.Time) (bool, error) {
+	v.orderID, v.orderItemID, v.userID = orderID, orderItemID, userID
+	return v.valid, v.err
+}
+
 func accountOTPTestCipher(t *testing.T) *CredentialCipher {
 	t.Helper()
 	cipher, err := NewCredentialCipher(base64.StdEncoding.EncodeToString(bytesOf('k', 32)))
@@ -176,6 +187,28 @@ func TestLookupRequiresMatchingEmailAndLiveCode(t *testing.T) {
 	}
 	if _, err := svc.Lookup(context.Background(), "family@example.test", "WRONGCODE1"); !errors.Is(err, ErrOTPAccessInvalid) {
 		t.Fatalf("wrong code error = %v, want ErrOTPAccessInvalid", err)
+	}
+}
+
+func TestLookupRejectsCodeAfterAccessRevoked(t *testing.T) {
+	store := newFakeAccessStore()
+	orderID, itemID, userID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	payload, _ := json.Marshal(AccessCodePayload{
+		OrderID: orderID, OrderItemID: itemID, UserID: userID,
+		Emails: []string{"family@example.test"}, ExpiresAt: time.Now().Add(10 * time.Minute),
+	})
+	code := "ABCD234567"
+	_ = store.Store(context.Background(), HashAccessCode(code), payload, time.Minute)
+	inbox := &fakeOTPInbox{enabled: true, message: &otpinbox.Message{Code: "445566", ReceivedAt: time.Now()}}
+	svc := NewAccountOTPService(store, inbox, time.Minute)
+	validator := &fakeAccessValidator{valid: false}
+	svc.SetAccessValidator(validator)
+
+	if _, err := svc.Lookup(context.Background(), "family@example.test", code); !errors.Is(err, ErrOTPAccessInvalid) {
+		t.Fatalf("revoked code error = %v, want ErrOTPAccessInvalid", err)
+	}
+	if validator.orderID != orderID || validator.orderItemID != itemID || validator.userID != userID {
+		t.Fatalf("validator called with %s/%s/%s", validator.orderID, validator.orderItemID, validator.userID)
 	}
 }
 

@@ -164,6 +164,8 @@ func main() {
 	adminOrderSvc := service.NewAdminOrderService(store)
 	adminVoucherSvc := service.NewAdminVoucherService(store)
 	adminInventorySvc := service.NewAdminInventoryService(store, cipher)
+	adminOrderSvc.SetAuditWriter(store)
+	adminOrderSvc.SetCredentialRotator(adminInventorySvc)
 	orderDeliverySvc := service.NewOrderDeliveryService(store, store, cipher, mail, store)
 	otpInbox := otpinbox.New(otpinbox.Config{
 		Addr: cfg.OTPInbox.Addr, User: cfg.OTPInbox.User, Password: cfg.OTPInbox.Password,
@@ -177,6 +179,9 @@ func main() {
 	}
 	orderDeliverySvc.SetAccessCodeSupport(otpAccessCodes, cfg.AppFrontendURL)
 	accountOTPSvc := service.NewAccountOTPService(otpAccessCodes, otpInbox, cfg.OTPInbox.Lookback)
+	// A code issued before cancellation must stop working immediately. The store
+	// re-checks order status, delivery and slot state at lookup time.
+	accountOTPSvc.SetAccessValidator(store)
 	// Hybrid lookup: use the account's own mailbox when it has a stored app
 	// password, otherwise fall back to the central OTP_IMAP_* mailbox.
 	accountOTPSvc.SetPerAccountInbox(store, cipher, otpinbox.AccountReaderFactory{

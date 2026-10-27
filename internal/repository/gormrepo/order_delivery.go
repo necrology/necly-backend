@@ -94,7 +94,8 @@ func (s *Store) LoadDeliveryMaterial(ctx context.Context, orderID, orderItemID s
 		Joins("JOIN order_items oi ON oi.id = s.order_item_id").
 		Joins("JOIN product_prices pp ON pp.id = oi.product_price_id").
 		Joins("JOIN product_durations pd ON pd.id = pp.duration_id").
-		Where("s.order_item_id = ? AND oi.order_id = ? AND s.status <> ?", orderItemID, orderID, "released").
+		Where("s.order_item_id = ? AND oi.order_id = ? AND s.status NOT IN ? AND (s.access_expires_at IS NULL OR s.access_expires_at > now())",
+			orderItemID, orderID, []string{"released", "revoked", "expired"}).
 		Order("s.created_at ASC, s.id ASC").
 		Scan(&rows).Error; err != nil {
 		return nil, fmt.Errorf("load delivery material: %w", err)
