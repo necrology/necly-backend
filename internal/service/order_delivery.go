@@ -53,6 +53,10 @@ type DeliverySlot struct {
 	AccountStatus        string
 	AccountExpiresAt     *time.Time
 	EncryptedCredentials []byte
+	// MailboxAppPasswordSet reports whether the inventory account has a Gmail
+	// app password for direct IMAP reads. The secret itself never leaves the
+	// repository; order pages only need the readiness flag.
+	MailboxAppPasswordSet bool
 }
 
 // DeliveryMaterial groups all reserved slots for one order item. The number of
@@ -149,6 +153,10 @@ type OrderDeliveryService struct {
 	// optional so the W17 delivery flow keeps working in existing deployments.
 	accessCodes AccessCodeStore
 	frontendURL string
+	// centralOTPInboxReady is wired after the OTP service is constructed. It
+	// tells the order page whether a shared mailbox can serve accounts that do
+	// not store their own app password.
+	centralOTPInboxReady bool
 }
 
 func NewOrderDeliveryService(repo OrderDeliveryRepository, orders AdminOrderRepository, cipher *CredentialCipher, mail MailSender, audit AuditWriter) *OrderDeliveryService {
@@ -470,6 +478,10 @@ type deliveryAccount struct {
 	Username     string
 	Password     string
 	Instructions string
+	// OTPReady is true when the central OTP mailbox is configured or this
+	// account has its own stored app password. Callers use it to avoid handing
+	// the buyer an access code that can never be redeemed.
+	OTPReady bool
 }
 
 // prepareFailureReason checks preconditions that do not depend on credential

@@ -76,19 +76,21 @@ func (s *Store) GetOrderDelivery(ctx context.Context, orderID, deliveryID string
 // from being read even if a caller supplies one.
 func (s *Store) LoadDeliveryMaterial(ctx context.Context, orderID, orderItemID string) (*service.DeliveryMaterial, error) {
 	type materialRow struct {
-		SlotID               string
-		InventoryAccountID   string
-		AccountLabel         string
-		AccountStatus        string
-		AccountExpiresAt     *time.Time
-		EncryptedCredentials []byte
-		DurationDays         int
+		SlotID                string
+		InventoryAccountID    string
+		AccountLabel          string
+		AccountStatus         string
+		AccountExpiresAt      *time.Time
+		EncryptedCredentials  []byte
+		MailboxAppPasswordSet bool
+		DurationDays          int
 	}
 	var rows []materialRow
 	if err := s.db.WithContext(ctx).Table("inventory_slots AS s").
 		Select(`s.id AS slot_id, s.inventory_account_id,
 			COALESCE(a.label, '') AS account_label, a.status AS account_status,
 			a.expires_at AS account_expires_at, a.encrypted_credentials,
+			(a.mailbox_app_password_encrypted IS NOT NULL) AS mailbox_app_password_set,
 			COALESCE(pd.days, 0) AS duration_days`).
 		Joins("JOIN inventory_accounts a ON a.id = s.inventory_account_id").
 		Joins("JOIN order_items oi ON oi.id = s.order_item_id").
@@ -108,6 +110,7 @@ func (s *Store) LoadDeliveryMaterial(ctx context.Context, orderID, orderItemID s
 			SlotID: row.SlotID, InventoryAccountID: row.InventoryAccountID,
 			AccountLabel: row.AccountLabel, AccountStatus: row.AccountStatus,
 			AccountExpiresAt: row.AccountExpiresAt, EncryptedCredentials: row.EncryptedCredentials,
+			MailboxAppPasswordSet: row.MailboxAppPasswordSet,
 		})
 	}
 	return material, nil

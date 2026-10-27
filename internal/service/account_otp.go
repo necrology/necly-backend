@@ -61,6 +61,10 @@ type AccountAccess struct {
 	DurationName string `json:"duration_name"`
 	AccountLabel string `json:"account_label"`
 	AccountEmail string `json:"account_email"`
+	// OTPReady tells the buyer (and the UI) whether an access code for this
+	// account can actually be redeemed. It is false when neither a central
+	// mailbox nor the account's own app password is configured.
+	OTPReady bool `json:"otp_ready"`
 }
 
 // IssuedAccessCode is returned once, to the authenticated owner. The dashboard
@@ -78,6 +82,12 @@ type IssuedAccessCode struct {
 func (s *OrderDeliveryService) SetAccessCodeSupport(store AccessCodeStore, frontendURL string) {
 	s.accessCodes = store
 	s.frontendURL = strings.TrimRight(frontendURL, "/")
+}
+
+// SetCentralOTPInboxReady records whether the shared OTP mailbox is usable.
+// Accounts without their own app password can only be served when it is true.
+func (s *OrderDeliveryService) SetCentralOTPInboxReady(ready bool) {
+	s.centralOTPInboxReady = ready
 }
 
 // InboxReady reports whether account OTP retrieval is configured. The frontend
@@ -131,6 +141,7 @@ func (s *OrderDeliveryService) ListAccountAccess(ctx context.Context, userID, or
 			out = append(out, AccountAccess{
 				OrderItemID: item.ID, ProductName: item.ProductName, DurationName: item.DurationName,
 				AccountLabel: account.Label, AccountEmail: account.Username,
+				OTPReady: account.OTPReady,
 			})
 		}
 	}
@@ -190,6 +201,7 @@ func (s *OrderDeliveryService) IssueAccountAccessCode(ctx context.Context, userI
 	}
 	emails := make([]string, 0, len(accounts))
 	seen := make(map[string]bool, len(accounts))
+	allReady := true
 	for _, account := range accounts {
 		email := strings.TrimSpace(account.Username)
 		key := strings.ToLower(email)
@@ -198,9 +210,18 @@ func (s *OrderDeliveryService) IssueAccountAccessCode(ctx context.Context, userI
 		}
 		seen[key] = true
 		emails = append(emails, email)
+		if !account.OTPReady {
+			allReady = false
+		}
 	}
 	if len(emails) == 0 {
 		return nil, ErrNotFound
+	}
+	// Do not hand out a code that no configured mailbox can redeem. Returning
+	// the operator error here keeps the order page honest: the button stays
+	// disabled until a mailbox source exists for every account in the item.
+	if !allReady {
+		return nil, ErrOTPUnavailable
 	}
 
 	code, err := newAccessCode()
@@ -266,7 +287,10 @@ func (s *OrderDeliveryService) deliveredAccounts(ctx context.Context, orderID, i
 		if label == "" {
 			label = "Akun langganan"
 		}
-		out = append(out, deliveryAccount{Label: label, Username: username, Instructions: instructions})
+		out = append(out, deliveryAccount{
+			Label: label, Username: username, Instructions: instructions,
+			OTPReady: s.centralOTPInboxReady || slot.MailboxAppPasswordSet,
+		})
 	}
 	return out, nil
 }
