@@ -301,6 +301,38 @@ func TestCreateInventoryAccount_DefaultsLabelAndSharingLimit(t *testing.T) {
 	}
 }
 
+func TestCreateInventoryAccount_RejectsMalformedCredentials(t *testing.T) {
+	repo := &stubInventoryRepo{productExists: true}
+	svc := NewAdminInventoryService(repo, testCipher(t))
+
+	_, err := svc.CreateInventoryAccount(context.Background(), CreateInventoryAccountInput{
+		ProductID:   uuid.NewString(),
+		Credentials: "user@example.com\npass",
+	})
+
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("galat %v, ingin ErrInvalidInput", err)
+	}
+	if repo.createdAccount != nil {
+		t.Fatal("akun dengan kredensial rusak tidak boleh disimpan")
+	}
+}
+
+func TestUpdateInventoryAccount_RejectsMalformedCredentials(t *testing.T) {
+	id := uuid.NewString()
+	repo := &stubInventoryRepo{
+		accountWithCredentials: &domain.InventoryAccount{ID: id, SharingLimit: 5, Status: InventoryStatusActive},
+	}
+	svc := NewAdminInventoryService(repo, testCipher(t))
+	bad := "user@example.com\npass"
+
+	_, err := svc.UpdateInventoryAccount(context.Background(), id, UpdateInventoryAccountInput{Credentials: &bad})
+
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("galat %v, ingin ErrInvalidInput", err)
+	}
+}
+
 func TestCreateInventoryAccount_UnknownProductIsNotFound(t *testing.T) {
 	repo := &stubInventoryRepo{productExists: false}
 	svc := NewAdminInventoryService(repo, testCipher(t))

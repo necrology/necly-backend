@@ -465,7 +465,12 @@ func (s *AdminInventoryService) buildCreateCredential(input CreateInventoryAccou
 	if email == "" && explicitPassword == "" {
 		// Preserve the pre-NEC-121 behavior for clients that still send only
 		// credentials: encrypt the value verbatim, then derive the indexed email
-		// when the username is a valid address.
+		// when the username is a valid address. Validate the format first so a
+		// broken blob cannot be stored and only fail later at delivery time.
+		username, password, _, ok := parseInventoryCredential([]byte(legacy))
+		if !ok || username == "" || password == "" {
+			return "", nil, fmt.Errorf("%w: tulis email dan kata sandi dalam satu baris dengan format email:kata-sandi", ErrInvalidInput)
+		}
 		if s.cipher == nil {
 			return "", nil, errors.New("credential cipher not configured")
 		}
@@ -473,10 +478,8 @@ func (s *AdminInventoryService) buildCreateCredential(input CreateInventoryAccou
 		if err != nil {
 			return "", nil, fmt.Errorf("encrypt credentials: %w", err)
 		}
-		if username, _, _, ok := parseInventoryCredential([]byte(legacy)); ok {
-			if normalized, err := normalizeAccountEmail(username); err == nil {
-				email = normalized
-			}
+		if normalized, err := normalizeAccountEmail(username); err == nil {
+			email = normalized
 		}
 		return email, sealed, nil
 	}
@@ -546,16 +549,18 @@ func (s *AdminInventoryService) mergeUpdateCredential(account *domain.InventoryA
 	// value is encrypted as-is. We still try to derive account_email from a
 	// parseable username so OTP lookup can use the indexed column.
 	if credentialsSent && !emailSent && !passwordSent {
+		username, password, _, ok := parseInventoryCredential([]byte(*input.Credentials))
+		if !ok || username == "" || password == "" {
+			return false, fmt.Errorf("%w: tulis email dan kata sandi dalam satu baris dengan format email:kata-sandi", ErrInvalidInput)
+		}
 		sealed, err := s.cipher.Encrypt([]byte(*input.Credentials))
 		if err != nil {
 			return false, fmt.Errorf("encrypt credentials: %w", err)
 		}
 		account.EncryptedCredentials = sealed
-		if username, _, _, ok := parseInventoryCredential([]byte(*input.Credentials)); ok {
-			if normalized, err := normalizeAccountEmail(username); err == nil {
-				account.AccountEmail = normalized
-				return true, nil
-			}
+		account.AccountEmail = ""
+		if normalized, err := normalizeAccountEmail(username); err == nil {
+			account.AccountEmail = normalized
 		}
 		return true, nil
 	}
