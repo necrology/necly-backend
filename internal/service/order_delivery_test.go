@@ -323,7 +323,7 @@ func TestDeliverApprovedOrderMovesTrackingToAccessReceived(t *testing.T) {
 
 func TestDeliverApprovedOrderUsesComplaintPageAndNoReplyWording(t *testing.T) {
 	fixture := newDeliveryFixture(t, true, "user:secret")
-	fixture.service.SetAccessCodeSupport(nil, "https://necly.example")
+	fixture.service.SetAccessCodeSupport(newFakeAccessStore(), "https://necly.example")
 
 	if _, err := fixture.service.DeliverApprovedOrder(context.Background(), AdminActor{}, fixture.order.ID); err != nil {
 		t.Fatalf("DeliverApprovedOrder() error = %v", err)
@@ -337,6 +337,16 @@ func TestDeliverApprovedOrderUsesComplaintPageAndNoReplyWording(t *testing.T) {
 	}
 	if !strings.Contains(body, "Email ini tidak menerima balasan") {
 		t.Fatalf("email tidak menjelaskan larangan balasan:\n%s", body)
+	}
+	for _, want := range []string{
+		"https://necly.example/otp",
+		"tekan Buat kode akses OTP",
+		"Tunggu beberapa saat sampai kode OTP terbaru",
+		"Kembali ke platform dan masukkan kode OTP",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("email tidak memuat langkah OTP %q:\n%s", want, body)
+		}
 	}
 }
 

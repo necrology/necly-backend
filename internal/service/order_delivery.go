@@ -702,10 +702,16 @@ func (s *OrderDeliveryService) writeUsageInstructions(body *strings.Builder, ite
 	step++
 	if s.accessCodes != nil {
 		if s.frontendURL != "" {
-			fmt.Fprintf(body, "%d. Jika platform meminta kode OTP, buka %s/otp dan masukkan email akun serta kode akses yang diberikan admin.\n", step, s.frontendURL)
+			fmt.Fprintf(body, "%d. Jika platform meminta kode OTP lewat email, buka halaman Ambil OTP di %s/otp.\n", step, s.frontendURL)
 		} else {
-			fmt.Fprintf(body, "%d. Jika platform meminta kode OTP, gunakan halaman Ambil OTP di situs Necly dengan kode akses dari admin.\n", step)
+			fmt.Fprintf(body, "%d. Jika platform meminta kode OTP lewat email, buka halaman Ambil OTP di situs Necly.\n", step)
 		}
+		step++
+		body.WriteString(fmt.Sprintf("%d. Di halaman pesanan, buka bagian Akses akun & OTP, tekan Buat kode akses OTP, lalu masukkan email akun dan kode akses tersebut di halaman Ambil OTP.\n", step))
+		step++
+		body.WriteString(fmt.Sprintf("%d. Tunggu beberapa saat sampai kode OTP terbaru dari email akun muncul di halaman Ambil OTP, lalu salin kodenya.\n", step))
+		step++
+		body.WriteString(fmt.Sprintf("%d. Kembali ke platform dan masukkan kode OTP tersebut untuk menyelesaikan login.\n", step))
 		step++
 	}
 	if s.frontendURL != "" {
