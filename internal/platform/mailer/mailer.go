@@ -176,6 +176,10 @@ func (m *smtpMailer) render(msg Message) []byte {
 	fmt.Fprintf(&b, "To: %s\r\n", headerValue(msg.To))
 	fmt.Fprintf(&b, "Subject: %s\r\n", headerValue(msg.Subject))
 	fmt.Fprintf(&b, "Date: %s\r\n", time.Now().UTC().Format(time.RFC1123Z))
+	// Transactional mail from this store never accepts replies. Mark it as
+	// auto-generated and suppress common out-of-office/auto-reply handlers.
+	b.WriteString("Auto-Submitted: auto-generated\r\n")
+	b.WriteString("X-Auto-Response-Suppress: All\r\n")
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/plain; charset=\"UTF-8\"\r\n")
 	b.WriteString("\r\n")

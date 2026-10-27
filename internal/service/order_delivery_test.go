@@ -30,9 +30,10 @@ func (m *deliveryFakeMail) Send(_ context.Context, msg mailer.Message) error {
 func (m *deliveryFakeMail) Enabled() bool { return m.enabled }
 
 type deliveryFakeRepo struct {
-	order      *domain.Order
-	deliveries []domain.OrderDelivery
-	material   map[string]*DeliveryMaterial
+	order             *domain.Order
+	deliveries        []domain.OrderDelivery
+	material          map[string]*DeliveryMaterial
+	statusTransitions []domain.OrderStatus
 }
 
 func (r *deliveryFakeRepo) ListOrders(context.Context, OrderFilter, int, int) ([]domain.Order, int64, error) {
@@ -48,8 +49,13 @@ func (r *deliveryFakeRepo) GetOrderByID(_ context.Context, orderID string) (*dom
 	return &copyOrder, nil
 }
 
-func (r *deliveryFakeRepo) TransitionOrderStatus(context.Context, string, domain.OrderStatus, time.Time) (*domain.Order, error) {
-	return nil, ErrInvalidTransition
+func (r *deliveryFakeRepo) TransitionOrderStatus(_ context.Context, orderID string, status domain.OrderStatus, _ time.Time) (*domain.Order, error) {
+	if r.order == nil || r.order.ID != orderID {
+		return nil, ErrNotFound
+	}
+	r.statusTransitions = append(r.statusTransitions, status)
+	r.order.Status = status
+	return r.order, nil
 }
 
 func (r *deliveryFakeRepo) UpdateOrder(context.Context, *domain.Order) error { return nil }
@@ -295,8 +301,42 @@ func TestDeliverApprovedOrderSupportsLegacyUsernameColonPassword(t *testing.T) {
 	if len(fixture.mail.sent) != 1 {
 		t.Fatalf("sent emails = %d, want 1", len(fixture.mail.sent))
 	}
-	if !strings.Contains(fixture.mail.sent[0].Body, "induk@necly.id") || !strings.Contains(fixture.mail.sent[0].Body, "Password : rahasia") {
+	if !strings.Contains(fixture.mail.sent[0].Body, "induk@necly.id") || !strings.Contains(fixture.mail.sent[0].Body, "Kata sandi     : rahasia") {
 		t.Fatalf("email did not split the legacy credential:\n%s", fixture.mail.sent[0].Body)
+	}
+}
+
+func TestDeliverApprovedOrderMovesTrackingToAccessReceived(t *testing.T) {
+	fixture := newDeliveryFixture(t, true, "user:secret")
+
+	if _, err := fixture.service.DeliverApprovedOrder(context.Background(), AdminActor{}, fixture.order.ID); err != nil {
+		t.Fatalf("DeliverApprovedOrder() error = %v", err)
+	}
+
+	if fixture.order.Status != domain.OrderDelivered {
+		t.Fatalf("order status = %q, ingin %q", fixture.order.Status, domain.OrderDelivered)
+	}
+	if len(fixture.repo.statusTransitions) != 2 || fixture.repo.statusTransitions[0] != domain.OrderShipped || fixture.repo.statusTransitions[1] != domain.OrderDelivered {
+		t.Fatalf("status transitions = %#v, ingin [shipped delivered]", fixture.repo.statusTransitions)
+	}
+}
+
+func TestDeliverApprovedOrderUsesComplaintPageAndNoReplyWording(t *testing.T) {
+	fixture := newDeliveryFixture(t, true, "user:secret")
+	fixture.service.SetAccessCodeSupport(nil, "https://necly.example")
+
+	if _, err := fixture.service.DeliverApprovedOrder(context.Background(), AdminActor{}, fixture.order.ID); err != nil {
+		t.Fatalf("DeliverApprovedOrder() error = %v", err)
+	}
+	body := fixture.mail.sent[0].Body
+	if strings.Contains(body, "balas email ini") {
+		t.Fatalf("email masih meminta balasan:\n%s", body)
+	}
+	if !strings.Contains(body, "https://necly.example/laporan-kendala") {
+		t.Fatalf("email tidak memuat tautan laporan kendala:\n%s", body)
+	}
+	if !strings.Contains(body, "Email ini tidak menerima balasan") {
+		t.Fatalf("email tidak menjelaskan larangan balasan:\n%s", body)
 	}
 }
 

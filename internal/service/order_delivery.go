@@ -40,7 +40,6 @@ const (
 	deliverySendingLease             = 5 * time.Minute
 	maxDeliveryReasonLength          = 500
 	inventoryCredentialInstructions  = "Simpan data akun ini. Jangan mengubah kata sandi atau profil akun karena akun digunakan bersama sesuai paket yang dibeli."
-	deliveryEmailUsageInstructions   = "Cara penggunaan:\n1. Buka layanan sesuai produk yang dibeli.\n2. Masuk menggunakan username dan password di atas.\n3. Jangan mengubah kata sandi, email, atau profil akun.\n4. Jika tidak dapat masuk, hubungi dukungan dengan menyertakan nomor pesanan."
 	maxDeliveryAccountLabelLength    = 120
 	maxDeliveryCredentialFieldLength = 512
 )
@@ -460,6 +459,7 @@ func (s *OrderDeliveryService) deliverOne(ctx context.Context, actor AdminActor,
 		s.fail(ctx, actor, order, delivery, DeliveryErrorPersistenceFailed, isRetry)
 		return
 	}
+	s.syncOrderStatusAfterDelivery(ctx, order)
 	s.record(ctx, actor, order, delivery, AuditOrderDeliverySent, map[string]any{
 		"order_id": order.ID, "order_item_id": item.ID, "delivery_id": delivery.ID,
 	})
@@ -595,19 +595,16 @@ func validDeliveryCredentialField(value string) bool {
 func (s *OrderDeliveryService) buildMessage(order *domain.Order, item *domain.OrderItem, accounts []deliveryAccount, accessExpiresAt time.Time) mailer.Message {
 	var body strings.Builder
 	body.WriteString("Halo " + order.Customer.Name + ",\n\n")
-	body.WriteString("Pembayaran dan pesanan Anda telah disetujui. Berikut akun yang dapat digunakan:\n\n")
-	fmt.Fprintf(&body, "Nomor pesanan : %s\n", order.Number)
-	fmt.Fprintf(&body, "Produk        : %s\n", item.ProductName)
-	fmt.Fprintf(&body, "Durasi        : %s\n", item.DurationName)
-	fmt.Fprintf(&body, "Jumlah        : %d\n", item.Quantity)
-	fmt.Fprintf(&body, "Masa akses    : sampai %s\n\n", accessExpiresAt.Format("2 January 2006"))
+	body.WriteString("Akses untuk pesanan Anda sudah aktif. Berikut detail pesanan dan akun yang dapat digunakan.\n\n")
+	writeDeliverySummary(&body, order, item, accessExpiresAt)
+	body.WriteString("AKUN ANDA\n")
 	writeDeliveryAccounts(&body, accounts)
-	body.WriteString(deliveryEmailUsageInstructions)
-	body.WriteString("\n\nJika ada kendala, balas email ini atau hubungi dukungan dengan menyertakan nomor pesanan.\n")
+	s.writeUsageInstructions(&body, item)
+	body.WriteString("\nEmail ini tidak menerima balasan. Semua kendala ditangani melalui halaman Laporan Kendala.\n")
 	body.WriteString("— NECLY Services\n")
 	return mailer.Message{
 		To:      order.Customer.Email,
-		Subject: "Akun pesanan " + order.Number + " — " + item.ProductName,
+		Subject: "Akses pesanan " + order.Number + " — " + item.ProductName,
 		Body:    body.String(),
 	}
 }
@@ -619,17 +616,13 @@ func (s *OrderDeliveryService) buildReplacementMessage(order *domain.Order, item
 	var body strings.Builder
 	body.WriteString("Halo " + order.Customer.Name + ",\n\n")
 	body.WriteString("Akun untuk pesanan Anda telah diganti karena masa aktif akun sebelumnya berakhir atau keluhan Anda disetujui.\n\n")
-	fmt.Fprintf(&body, "Nomor pesanan : %s\n", order.Number)
-	if item != nil {
-		fmt.Fprintf(&body, "Produk        : %s\n", item.ProductName)
-		fmt.Fprintf(&body, "Durasi        : %s\n", item.DurationName)
-	}
-	fmt.Fprintf(&body, "Alasan        : %s\n", reason)
-	fmt.Fprintf(&body, "Masa akses    : sampai %s\n\n", accessExpiresAt.Format("2 January 2006"))
-	body.WriteString("Berikut akun pengganti Anda:\n\n")
+	writeDeliverySummary(&body, order, item, accessExpiresAt)
+	fmt.Fprintf(&body, "Alasan penggantian : %s\n\n", reason)
+	body.WriteString("AKUN PENGGANTI\n")
 	writeDeliveryAccounts(&body, accounts)
-	body.WriteString(deliveryEmailUsageInstructions)
-	body.WriteString("\n\nTidak ada tagihan baru untuk penggantian ini. Jika ada kendala, hubungi dukungan dengan menyertakan nomor pesanan.\n")
+	s.writeUsageInstructions(&body, item)
+	body.WriteString("\nTidak ada tagihan baru untuk penggantian ini.\n")
+	body.WriteString("Email ini tidak menerima balasan. Semua kendala ditangani melalui halaman Laporan Kendala.\n")
 	body.WriteString("— NECLY Services\n")
 	subject := "Akun pengganti pesanan " + order.Number
 	if item != nil {
@@ -638,15 +631,147 @@ func (s *OrderDeliveryService) buildReplacementMessage(order *domain.Order, item
 	return mailer.Message{To: order.Customer.Email, Subject: subject, Body: body.String()}
 }
 
+func writeDeliverySummary(body *strings.Builder, order *domain.Order, item *domain.OrderItem, accessExpiresAt time.Time) {
+	body.WriteString("RINGKASAN PESANAN\n")
+	fmt.Fprintf(body, "Nomor pesanan : %s\n", order.Number)
+	if item != nil {
+		fmt.Fprintf(body, "Produk        : %s\n", item.ProductName)
+		fmt.Fprintf(body, "Durasi        : %s\n", item.DurationName)
+		fmt.Fprintf(body, "Jumlah akses  : %d\n", item.Quantity)
+	}
+	fmt.Fprintf(body, "Masa akses    : sampai %s\n\n", accessExpiresAt.Format("2 January 2006"))
+}
+
 func writeDeliveryAccounts(body *strings.Builder, accounts []deliveryAccount) {
 	for index, account := range accounts {
-		fmt.Fprintf(body, "Akun %d (%s)\n", index+1, account.Label)
-		fmt.Fprintf(body, "  Username : %s\n", account.Username)
-		fmt.Fprintf(body, "  Password : %s\n", account.Password)
+		fmt.Fprintf(body, "Akun %d — %s\n", index+1, account.Label)
+		fmt.Fprintf(body, "  Email/username : %s\n", account.Username)
+		fmt.Fprintf(body, "  Kata sandi     : %s\n", account.Password)
 		if strings.TrimSpace(account.Instructions) != "" {
-			fmt.Fprintf(body, "  Catatan  : %s\n", account.Instructions)
+			fmt.Fprintf(body, "  Catatan        : %s\n", account.Instructions)
 		}
 		body.WriteString("\n")
+	}
+}
+
+// platformLoginURL keeps the customer instructions concrete for the products
+// the store sells. Unknown products fall back to the official app/site name
+// without inventing a URL.
+func platformLoginURL(productName string) string {
+	name := strings.ToLower(strings.TrimSpace(productName))
+	switch {
+	case strings.Contains(name, "chatgpt"):
+		return "https://chatgpt.com"
+	case strings.Contains(name, "netflix"):
+		return "https://www.netflix.com/login"
+	case strings.Contains(name, "disney"):
+		return "https://www.disneyplus.com/login"
+	case strings.Contains(name, "spotify"):
+		return "https://accounts.spotify.com/login"
+	case strings.Contains(name, "apple music"):
+		return "https://music.apple.com"
+	case strings.Contains(name, "microsoft") || strings.Contains(name, "office") || strings.Contains(name, "365"):
+		return "https://www.office.com"
+	case strings.Contains(name, "canva"):
+		return "https://www.canva.com/login"
+	case strings.Contains(name, "google one"):
+		return "https://one.google.com"
+	case strings.Contains(name, "dropbox"):
+		return "https://www.dropbox.com/login"
+	default:
+		return ""
+	}
+}
+
+func (s *OrderDeliveryService) writeUsageInstructions(body *strings.Builder, item *domain.OrderItem) {
+	productName := "layanan yang dibeli"
+	if item != nil && strings.TrimSpace(item.ProductName) != "" {
+		productName = strings.TrimSpace(item.ProductName)
+	}
+	body.WriteString("Cara penggunaan dan login:\n")
+	step := 1
+	if loginURL := platformLoginURL(productName); loginURL != "" {
+		fmt.Fprintf(body, "%d. Buka %s (%s).\n", step, productName, loginURL)
+	} else {
+		fmt.Fprintf(body, "%d. Buka situs atau aplikasi resmi %s.\n", step, productName)
+	}
+	step++
+	body.WriteString(fmt.Sprintf("%d. Pilih menu Masuk/Login, lalu masukkan email/username dan kata sandi di atas.\n", step))
+	step++
+	body.WriteString(fmt.Sprintf("%d. Jangan mengubah kata sandi, email, atau profil akun karena akun digunakan bersama.\n", step))
+	step++
+	if s.accessCodes != nil {
+		if s.frontendURL != "" {
+			fmt.Fprintf(body, "%d. Jika platform meminta kode OTP, buka %s/otp dan masukkan email akun serta kode akses yang diberikan admin.\n", step, s.frontendURL)
+		} else {
+			fmt.Fprintf(body, "%d. Jika platform meminta kode OTP, gunakan halaman Ambil OTP di situs Necly dengan kode akses dari admin.\n", step)
+		}
+		step++
+	}
+	if s.frontendURL != "" {
+		fmt.Fprintf(body, "%d. Jika tidak bisa masuk, buat laporan di %s/laporan-kendala dengan menyertakan nomor pesanan.\n", step, s.frontendURL)
+	} else {
+		fmt.Fprintf(body, "%d. Jika tidak bisa masuk, buat laporan melalui menu Laporan Kendala di situs Necly dengan menyertakan nomor pesanan.\n", step)
+	}
+}
+
+// syncOrderStatusAfterDelivery keeps the buyer-facing tracking in step with the
+// delivery ledger. A partially delivered order becomes "Dikirim", and the last
+// successful email moves the order to "Akses diterima" (delivered). The email
+// has already left the process, so a rejected transition is logged and never
+// turns a successful delivery into a failure.
+func (s *OrderDeliveryService) syncOrderStatusAfterDelivery(ctx context.Context, order *domain.Order) {
+	deliveries, err := s.repo.ListOrderDeliveries(ctx, order.ID)
+	if err != nil {
+		log.Printf("delivery: list deliveries for order status %s failed: %v", order.ID, err)
+		return
+	}
+	if len(deliveries) == 0 {
+		return
+	}
+	anySent := false
+	allSent := true
+	for _, delivery := range deliveries {
+		if delivery.Status == domain.DeliverySent {
+			anySent = true
+			continue
+		}
+		allSent = false
+	}
+	if !anySent {
+		return
+	}
+
+	// The in-memory order is a snapshot from before this batch. A multi-item
+	// order may already have moved to shipped after the previous item, so read
+	// the current status before deciding which transition is valid.
+	currentStatus := order.Status
+	if fresh, err := s.orders.GetOrderByID(ctx, order.ID); err == nil && fresh != nil {
+		currentStatus = fresh.Status
+	}
+
+	if !allSent {
+		if currentStatus == domain.OrderProcessing {
+			if _, err := s.orders.TransitionOrderStatus(ctx, order.ID, domain.OrderShipped, s.now()); err != nil {
+				log.Printf("delivery: transition order %s to shipped failed: %v", order.ID, err)
+			}
+		}
+		return
+	}
+
+	// Delivered is reachable from processing only through shipped in the
+	// shared state machine, so a single-item order may need both transitions.
+	if currentStatus == domain.OrderProcessing {
+		if _, err := s.orders.TransitionOrderStatus(ctx, order.ID, domain.OrderShipped, s.now()); err != nil {
+			log.Printf("delivery: transition order %s to shipped failed: %v", order.ID, err)
+			return
+		}
+		currentStatus = domain.OrderShipped
+	}
+	if currentStatus == domain.OrderShipped {
+		if _, err := s.orders.TransitionOrderStatus(ctx, order.ID, domain.OrderDelivered, s.now()); err != nil {
+			log.Printf("delivery: transition order %s to delivered failed: %v", order.ID, err)
+		}
 	}
 }
 

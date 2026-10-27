@@ -290,7 +290,13 @@ func (s *OrderDeliveryService) buildAccessCodeMessage(order *domain.Order, item 
 	}
 	body.WriteString("2. Masukkan email akun dan kode akses di atas.\n")
 	body.WriteString("3. Kode OTP dari platform akan ditampilkan dan dapat langsung disalin.\n\n")
-	body.WriteString("Jangan bagikan kode akses ini. Jika Anda tidak meminta kode, abaikan email ini dan hubungi dukungan.\n\n")
+	body.WriteString("Jangan bagikan kode akses ini. Jika Anda tidak meminta kode, abaikan email ini.\n")
+	if s.frontendURL != "" {
+		fmt.Fprintf(&body, "Untuk kendala, buat laporan di %s/laporan-kendala dengan menyertakan nomor pesanan.\n", s.frontendURL)
+	} else {
+		body.WriteString("Untuk kendala, buat laporan melalui menu Laporan Kendala di situs Necly dengan menyertakan nomor pesanan.\n")
+	}
+	body.WriteString("Email ini tidak menerima balasan.\n\n")
 	body.WriteString("— NECLY Services\n")
 	return mailer.Message{
 		To:      order.Customer.Email,
