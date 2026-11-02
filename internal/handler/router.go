@@ -238,6 +238,7 @@ func (r *Router) registerProtected(api fiber.Router) {
 	protected.Delete("/cart/items/:itemId", r.removeCartItem)
 	protected.Post("/checkout", r.checkout)
 	protected.Get("/orders", r.listOrders)
+	protected.Delete("/orders/:id", r.archiveOrder)
 	protected.Get("/orders/:id", r.getOrder)
 	// Purchased-account access and the email-OTP access code are owner-only.
 	protected.Get("/orders/:id/account-access", r.getAccountAccess)
@@ -1342,6 +1343,31 @@ func (r *Router) lookupAccountOTP(c *fiber.Ctx) error {
 		"otp":         message.Code,
 		"received_at": message.ReceivedAt,
 	})
+}
+
+// archiveOrder implements DELETE /api/v1/orders/:id. It deliberately returns
+// the same 404 for an absent order and an order owned by a different user.
+func (r *Router) archiveOrder(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(string)
+	orderID := c.Params("id")
+	if _, err := uuid.Parse(orderID); err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pesanan tidak ditemukan", "code": "not_found"})
+	}
+
+	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+	defer cancel()
+
+	if err := r.orderSvc.ArchiveOrder(ctx, userID, orderID, time.Now().UTC()); err != nil {
+		switch {
+		case errors.Is(err, service.ErrNotFound):
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Pesanan tidak ditemukan", "code": "not_found"})
+		case errors.Is(err, service.ErrOrderArchiveNotAllowed):
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "order_archive_not_allowed"})
+		default:
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal mengarsipkan pesanan", "code": "internal_error"})
+		}
+	}
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 func (r *Router) getOrder(c *fiber.Ctx) error {

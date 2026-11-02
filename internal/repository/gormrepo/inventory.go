@@ -84,7 +84,7 @@ func (s *Store) attachSlotCounts(ctx context.Context, accounts []domain.Inventor
 			COUNT(*) AS total,
 			COUNT(*) FILTER (WHERE s.status = 'available') AS available,
 			COUNT(DISTINCT COALESCE(o.user_id, s.reserved_by))
-				FILTER (WHERE COALESCE(o.user_id, s.reserved_by) IS NOT NULL) AS assigned`).
+				FILTER (WHERE s.status <> 'released' AND COALESCE(o.user_id, s.reserved_by) IS NOT NULL) AS assigned`).
 		Joins("LEFT JOIN order_items oi ON oi.id = s.order_item_id").
 		Joins("LEFT JOIN orders o ON o.id = oi.order_id").
 		Where("s.inventory_account_id IN ?", ids).
@@ -111,7 +111,8 @@ func applyAccountDerived(account *domain.InventoryAccount, total, available, ass
 	account.TotalSlots = int(total)
 	account.AvailableSlots = int(available)
 	account.UsedSlots = account.TotalSlots - account.AvailableSlots
-	account.AssignedUsers = int(assigned)
+	account.UsedUsers = int(assigned)
+	account.AssignedUsers = account.UsedUsers
 	if account.SharingLimit > account.TotalSlots {
 		account.RemainingSlots = account.SharingLimit - account.TotalSlots
 	} else {

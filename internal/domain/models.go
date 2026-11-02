@@ -195,7 +195,12 @@ type InventoryAccount struct {
 	UsedSlots      int  `json:"used_slots" gorm:"-"`
 	RemainingSlots int  `json:"remaining_slots" gorm:"-"`
 	Sellable       bool `json:"sellable" gorm:"-"`
-	AssignedUsers  int  `json:"assigned_users" gorm:"-"`
+	// UsedUsers is the number of distinct active buyers on this account. It is
+	// deliberately separate from UsedSlots: a repeated buyer can occupy more
+	// than one slot without consuming another five-user seat.
+	UsedUsers int `json:"used_users" gorm:"-"`
+	// AssignedUsers is kept for older dashboard clients. It mirrors UsedUsers.
+	AssignedUsers int `json:"assigned_users" gorm:"-"`
 	// DaysRemaining is nil when the account has no expiry, so the dashboard can
 	// distinguish "unlimited" from "expires today" (zero).
 	DaysRemaining *int `json:"days_remaining" gorm:"-"`
@@ -331,9 +336,12 @@ type Order struct {
 	// RequestFingerprint is the canonical hash that makes a replay safe. Older
 	// rows created before migration 010 keep NULL and are rejected as
 	// idempotency conflicts rather than guessed.
-	RequestFingerprint *string     `json:"-" gorm:"size:64"`
-	Items              []OrderItem `json:"items,omitempty" gorm:"foreignKey:OrderID"`
-	Payments           []Payment   `json:"payments,omitempty" gorm:"foreignKey:OrderID"`
+	RequestFingerprint *string `json:"-" gorm:"size:64"`
+	// ArchivedAt records when a buyer hid this terminal order from their history.
+	// The order and every related financial/delivery record remain intact.
+	ArchivedAt *time.Time  `json:"archived_at,omitempty" gorm:"index"`
+	Items      []OrderItem `json:"items,omitempty" gorm:"foreignKey:OrderID"`
+	Payments   []Payment   `json:"payments,omitempty" gorm:"foreignKey:OrderID"`
 	// Customer backs the admin order list and dashboard, both of which preload
 	// it. Reads that do not preload simply omit the field.
 	Customer *User `json:"customer,omitempty" gorm:"foreignKey:UserID"`

@@ -21,6 +21,7 @@ type OrderRepository interface {
 	GetOrderByIdempotencyKey(ctx context.Context, key string) (*domain.Order, error)
 	GetOrdersForAdmin(ctx context.Context, filter service.OrderFilter, page, perPage int) ([]domain.Order, int64, error)
 	UpdateOrderStatus(ctx context.Context, orderID string, status domain.OrderStatus, now time.Time) error
+	ArchiveOrder(ctx context.Context, userID, orderID string, now time.Time) error
 }
 
 type OrderFilter struct {
@@ -38,7 +39,7 @@ func (s *Store) ListUserOrders(ctx context.Context, userID string, page, perPage
 	if perPage < 1 || perPage > 100 {
 		perPage = 20
 	}
-	query := s.db.WithContext(ctx).Model(&domain.Order{}).Preload("Items").Preload("Payments").Where("user_id = ?", userID)
+	query := s.db.WithContext(ctx).Model(&domain.Order{}).Preload("Items").Preload("Payments").Where("user_id = ? AND archived_at IS NULL", userID)
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, fmt.Errorf("count orders: %w", err)
@@ -115,6 +116,45 @@ func (s *Store) GetOrdersForAdmin(ctx context.Context, filter service.OrderFilte
 		return nil, 0, fmt.Errorf("list orders: %w", err)
 	}
 	return orders, total, nil
+}
+
+// ArchiveOrder is owner-scoped from lookup through update, so another buyer
+// cannot infer that an order exists. Only pending-payment and terminal statuses
+// are archiveable; paid/fulfilment states stay out of the archive until they
+// settle. The archived_at predicate makes retries idempotent without touching
+// any related row or the order's updated_at timestamp.
+func (s *Store) ArchiveOrder(ctx context.Context, userID, orderID string, now time.Time) error {
+	archiveableStatuses := []domain.OrderStatus{
+		domain.OrderPending,
+		domain.OrderDelivered,
+		domain.OrderCompleted,
+		domain.OrderCancelled,
+		domain.OrderExpired,
+		domain.OrderRefunded,
+	}
+	result := s.db.WithContext(ctx).Model(&domain.Order{}).
+		Where("id = ? AND user_id = ? AND archived_at IS NULL AND status IN ?", orderID, userID, archiveableStatuses).
+		UpdateColumn("archived_at", now)
+	if result.Error != nil {
+		return fmt.Errorf("archive order: %w", result.Error)
+	}
+	if result.RowsAffected > 0 {
+		return nil
+	}
+
+	var order domain.Order
+	err := s.db.WithContext(ctx).Select("status", "archived_at").
+		Where("id = ? AND user_id = ?", orderID, userID).First(&order).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return service.ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("load order for archive: %w", err)
+	}
+	if order.ArchivedAt != nil {
+		return nil
+	}
+	return service.ErrOrderArchiveNotAllowed
 }
 
 func (s *Store) UpdateOrderStatus(ctx context.Context, orderID string, status domain.OrderStatus, now time.Time) error {

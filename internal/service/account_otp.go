@@ -371,7 +371,13 @@ type AccountOTPReaderFactory interface {
 	NewReader(accountEmail, appPassword, imapHost string) otpinbox.Reader
 }
 
-const perAccountOTPTimeout = 18 * time.Second
+const (
+	perAccountOTPTimeout = 18 * time.Second
+	// DefaultOTPLookback covers provider mail that is already 20+ minutes old by
+	// the time the customer opens the access page. The previous 15-minute window
+	// made valid codes look missing while they were still in the mailbox.
+	DefaultOTPLookback = 30 * time.Minute
+)
 
 // AccountOTPService resolves a code+email pair into the newest OTP. It first
 // tries the account's own mailbox when an app password is stored, then falls
@@ -407,7 +413,7 @@ func (s *AccountOTPService) SetAccessValidator(validator AccessCodeValidator) {
 
 func NewAccountOTPService(codes AccessCodeStore, inbox otpinbox.Reader, lookback time.Duration) *AccountOTPService {
 	if lookback <= 0 {
-		lookback = 15 * time.Minute
+		lookback = DefaultOTPLookback
 	}
 	return &AccountOTPService{
 		codes: codes, inbox: inbox, lookback: lookback,

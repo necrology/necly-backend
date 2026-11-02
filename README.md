@@ -100,8 +100,9 @@ go run ./cmd/server
 
 ### Checkout & Orders (auth required)
 - `POST /api/v1/checkout` — create order (idempotency key required)
-- `GET /api/v1/orders` — list my orders
-- `GET /api/v1/orders/:id` — order detail
+- `GET /api/v1/orders` — list my active (unarchived) orders
+- `GET /api/v1/orders/:id` — order detail; archived orders remain readable by their owner
+- `DELETE /api/v1/orders/:id` — soft-archive a pending-payment or terminal order owned by the caller; returns `204` on a repeated request, `404` for another user's/missing order, and `409 order_archive_not_allowed` for an active order
 - `GET /api/v1/orders/:id/tracking` — order tracking/timeline
 - `GET /api/v1/orders/:id/account-access` — delivered account emails + OTP readiness
 - `POST /api/v1/orders/:id/account-access/:itemId/code` — issue a 15-minute OTP access code

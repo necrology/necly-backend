@@ -48,6 +48,9 @@ var (
 	// the same account in a short window. The message never includes the code.
 	ErrOTPRateLimited    = errors.New("Terlalu banyak permintaan kode OTP. Coba lagi sebentar lagi")
 	ErrInvalidTransition = errors.New("Perubahan status pesanan tidak valid")
+	// ErrOrderArchiveNotAllowed is returned for orders that can still be paid,
+	// fulfilled, or delivered. Terminal orders may be archived by their owner.
+	ErrOrderArchiveNotAllowed = errors.New("Pesanan aktif tidak dapat diarsipkan")
 	// ErrInvalidPaymentEvent covers a callback whose fields are incomplete or
 	// whose state cannot be mapped. It is rejected before any row is mutated.
 	ErrInvalidPaymentEvent = errors.New("Notifikasi pembayaran tidak valid")

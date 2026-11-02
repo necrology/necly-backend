@@ -15,6 +15,7 @@ type OrderRepository interface {
 	GetOrderByIdempotencyKey(ctx context.Context, key string) (*domain.Order, error)
 	GetOrdersForAdmin(ctx context.Context, filter OrderFilter, page, perPage int) ([]domain.Order, int64, error)
 	UpdateOrderStatus(ctx context.Context, orderID string, status domain.OrderStatus, now time.Time) error
+	ArchiveOrder(ctx context.Context, userID, orderID string, now time.Time) error
 }
 
 type OrderFilter struct {

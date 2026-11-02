@@ -34,6 +34,13 @@ func (s *OrderService) GetOrderByID(ctx context.Context, orderID string) (*domai
 	return s.orderRepo.GetOrderByID(ctx, orderID)
 }
 
+// ArchiveOrder hides a terminal order from its owner's history without removing
+// any payment, delivery, inventory, or audit records. Repeating the request is
+// intentionally a no-op, so DELETE returns 204 for an already archived order.
+func (s *OrderService) ArchiveOrder(ctx context.Context, userID, orderID string, now time.Time) error {
+	return s.orderRepo.ArchiveOrder(ctx, userID, orderID, now)
+}
+
 func (s *OrderService) GetOrderByIdempotencyKey(ctx context.Context, key string) (*domain.Order, error) {
 	return s.orderRepo.GetOrderByIdempotencyKey(ctx, key)
 }

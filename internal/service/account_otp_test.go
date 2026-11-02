@@ -33,14 +33,22 @@ func (s *fakeAccessStore) Load(_ context.Context, key string) ([]byte, bool, err
 }
 
 type fakeOTPInbox struct {
-	enabled bool
-	message *otpinbox.Message
-	err     error
+	enabled      bool
+	message      *otpinbox.Message
+	err          error
+	calls        int
+	since        time.Time
+	respectSince bool
 }
 
 func (i *fakeOTPInbox) Enabled() bool { return i.enabled }
 
-func (i *fakeOTPInbox) Latest(context.Context, string, time.Time) (*otpinbox.Message, error) {
+func (i *fakeOTPInbox) Latest(_ context.Context, _ string, since time.Time) (*otpinbox.Message, error) {
+	i.calls++
+	i.since = since
+	if i.respectSince && i.message != nil && !i.message.ReceivedAt.IsZero() && i.message.ReceivedAt.Before(since.Add(-2*time.Minute)) {
+		return nil, otpinbox.ErrNotFound
+	}
 	return i.message, i.err
 }
 
@@ -192,6 +200,31 @@ func TestAccountAccessReportsOTPReadinessAndBlocksUselessCodes(t *testing.T) {
 	}
 }
 
+func TestLookupUsesThirtyMinuteLookbackForOlderOTP(t *testing.T) {
+	store := newFakeAccessStore()
+	code := storeOTPAccessCode(t, store, "family@example.test")
+	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	inbox := &fakeOTPInbox{enabled: true, respectSince: true, message: &otpinbox.Message{
+		Code: "445566", ReceivedAt: now.Add(-20 * time.Minute),
+	}}
+	svc := NewAccountOTPService(store, inbox, 0)
+	svc.now = func() time.Time { return now }
+
+	message, err := svc.Lookup(context.Background(), "family@example.test", code)
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if message.Code != "445566" {
+		t.Fatalf("otp = %q, want the 20-minute-old code", message.Code)
+	}
+	if want := now.Add(-DefaultOTPLookback); !inbox.since.Equal(want) {
+		t.Fatalf("lookback start = %s, want %s", inbox.since, want)
+	}
+	if DefaultOTPLookback < 30*time.Minute {
+		t.Fatalf("DefaultOTPLookback = %s, want at least 30m", DefaultOTPLookback)
+	}
+}
+
 func TestLookupRequiresMatchingEmailAndLiveCode(t *testing.T) {
 	store := newFakeAccessStore()
 	expires := time.Now().Add(10 * time.Minute)
@@ -331,6 +364,9 @@ func TestAccountOTPLookupUsesDirectMailboxWhenAppPasswordExists(t *testing.T) {
 	}
 	if message.Code != "111222" {
 		t.Fatalf("otp = %q, want the direct mailbox code", message.Code)
+	}
+	if central.calls != 0 {
+		t.Fatalf("central mailbox was read %d times before the direct mailbox succeeded", central.calls)
 	}
 	if factory.calls != 1 || factory.appPassword != "gmail-app-password" || factory.host != "imap.gmail.com:993" || factory.email != "family@example.test" {
 		t.Fatalf("factory call = %+v", factory)
