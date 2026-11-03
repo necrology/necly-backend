@@ -22,8 +22,11 @@ func TestApplyAccountDerivedAggregatesAssignedUsersAndReviewFlag(t *testing.T) {
 	if account.TotalSlots != 4 || account.AvailableSlots != 2 || account.UsedSlots != 2 {
 		t.Fatalf("slot counters = total %d available %d used %d, want 4/2/2", account.TotalSlots, account.AvailableSlots, account.UsedSlots)
 	}
+	if account.UsedUsers != 3 {
+		t.Fatalf("used_users = %d, want 3", account.UsedUsers)
+	}
 	if account.AssignedUsers != 3 {
-		t.Fatalf("assigned_users = %d, want 3", account.AssignedUsers)
+		t.Fatalf("assigned_users = %d, want 3 (legacy alias of used_users)", account.AssignedUsers)
 	}
 	if account.RemainingSlots != 1 {
 		t.Fatalf("remaining_slots = %d, want 1", account.RemainingSlots)

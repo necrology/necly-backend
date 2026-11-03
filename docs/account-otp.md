@@ -149,9 +149,16 @@ OTP_IMAP_USER=otp@necly.example
 OTP_IMAP_PASSWORD=<app password>
 OTP_IMAP_MAILBOX=INBOX
 OTP_IMAP_TLS=true
-OTP_IMAP_LOOKBACK=15m
+OTP_IMAP_LOOKBACK=30m
 OTP_IMAP_TIMEOUT=20s
 ```
+
+`OTP_IMAP_LOOKBACK` default-nya 30 menit agar kode yang sudah berumur sekitar
+20 menit tetap ditemukan saat pelanggan membuka halaman Ambil OTP. Nilai yang
+tidak diisi atau tidak valid jatuh ke default tersebut. Lookup mencoba mailbox
+langsung akun lebih dulu, lalu mailbox pusat sebagai fallback; email ubah/reset
+kata sandi tetap diabaikan dan kode hanya dikembalikan untuk penerima yang
+cocok.
 
 Bila memakai forwarding ke mailbox pusat, pertahankan alamat asli pada header
 `Delivered-To`, `X-Original-To`, atau `To`. Tanpa header tersebut pesan sengaja

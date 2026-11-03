@@ -81,12 +81,16 @@ type DeliveryAccountOption struct {
 	ExpiresAt          *time.Time `json:"expires_at,omitempty"`
 	DaysRemaining      *int       `json:"days_remaining"`
 	SharingLimit       int        `json:"sharing_limit"`
-	AssignedUsers      int        `json:"assigned_users"`
-	UsedSlots          int        `json:"used_slots"`
-	RemainingSlots     int        `json:"remaining_slots"`
-	UsedByCustomer     bool       `json:"used_by_customer"`
-	AssignedToItem     bool       `json:"assigned_to_item"`
-	CanAssign          bool       `json:"can_assign"`
+	// UsedUsers counts distinct buyers on the account. It is separate from
+	// UsedSlots so a repeat buyer occupying another slot does not look like a
+	// sixth user. AssignedUsers keeps the old field name for compatibility.
+	UsedUsers      int  `json:"used_users"`
+	AssignedUsers  int  `json:"assigned_users"`
+	UsedSlots      int  `json:"used_slots"`
+	RemainingSlots int  `json:"remaining_slots"`
+	UsedByCustomer bool `json:"used_by_customer"`
+	AssignedToItem bool `json:"assigned_to_item"`
+	CanAssign      bool `json:"can_assign"`
 }
 
 // DeliveryItemOptions groups the candidate accounts for one order item. The

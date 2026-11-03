@@ -103,6 +103,25 @@ func accountUsageExcludingItemTx(tx *gorm.DB, accountID, orderItemID string) (ac
 	return accountUsage{Rows: row.Rows, Users: row.Users}, nil
 }
 
+// accountUserAssignedTx reports whether userID already occupies a live row on
+// the account, optionally excluding the current order item. A repeat buyer does
+// not consume another unique-user seat, but the row cap still applies.
+func accountUserAssignedTx(tx *gorm.DB, accountID, userID, excludeOrderItemID string) (bool, error) {
+	var count int64
+	query := tx.Table("inventory_slots AS s").
+		Joins("LEFT JOIN order_items oi ON oi.id = s.order_item_id").
+		Joins("LEFT JOIN orders o ON o.id = oi.order_id").
+		Where("s.inventory_account_id = ? AND s.status <> ? AND COALESCE(o.user_id, s.reserved_by) = ?",
+			accountID, "released", userID)
+	if excludeOrderItemID != "" {
+		query = query.Where("(s.order_item_id IS NULL OR s.order_item_id <> ?)", excludeOrderItemID)
+	}
+	if err := query.Count(&count).Error; err != nil {
+		return false, fmt.Errorf("count account user rows: %w", err)
+	}
+	return count > 0, nil
+}
+
 // accountUsedByCustomerTx answers "has this buyer already received this account
 // for this product?". Only a successfully sent delivery counts: an order that is
 // still waiting for approval has not used the account yet.
@@ -163,20 +182,16 @@ func (s *Store) findUnusedAccountTx(tx *gorm.DB, productID, userID, excludeOrder
 		if usage.Rows+int64(quantity) > int64(limit) {
 			continue
 		}
-		// The row cap already enforces five users, but keep the explicit check
-		// for legacy data and for clarity.
-		addedUsers := int64(1)
-		var currentUserCount int64
-		if err := tx.Table("inventory_slots AS s").
-			Joins("LEFT JOIN order_items oi ON oi.id = s.order_item_id").
-			Joins("LEFT JOIN orders o ON o.id = oi.order_id").
-			Where("s.inventory_account_id = ? AND s.status <> ? AND COALESCE(o.user_id, s.reserved_by) = ? AND (s.order_item_id IS NULL OR s.order_item_id <> ?)",
-				account.ID, "released", userID, orderItemID).
-			Count(&currentUserCount).Error; err != nil {
-			return "", fmt.Errorf("count current user slots: %w", err)
+		// The row cap already enforces five users, but keep the explicit unique
+		// user check for legacy data and for clarity. A repeat buyer adds rows
+		// without consuming another user seat.
+		buyerAssigned, err := accountUserAssignedTx(tx, account.ID, userID, orderItemID)
+		if err != nil {
+			return "", err
 		}
-		if currentUserCount > 0 {
-			addedUsers = 0
+		addedUsers := int64(0)
+		if !buyerAssigned {
+			addedUsers = 1
 		}
 		if usage.Users+addedUsers > int64(service.MaxSharingLimit) {
 			continue
@@ -295,7 +310,8 @@ func (s *Store) PrepareDeliveryAssignment(ctx context.Context, orderID, orderIte
 			if err != nil {
 				return err
 			}
-			if usage.Rows > int64(effectiveSharingLimit(*account)) {
+			if usage.Rows > int64(effectiveSharingLimit(*account)) ||
+				usage.Users > int64(service.MaxSharingLimit) {
 				currentAssignmentsValid = false
 				break
 			}
@@ -367,7 +383,16 @@ func (s *Store) AssignDeliveryAccount(ctx context.Context, orderID, deliveryID, 
 		if err != nil {
 			return err
 		}
-		if usage.Rows+int64(item.Quantity) > int64(effectiveSharingLimit(*account)) {
+		buyerAssigned, err := accountUserAssignedTx(tx, account.ID, order.UserID, item.ID)
+		if err != nil {
+			return err
+		}
+		addedUsers := int64(0)
+		if !buyerAssigned {
+			addedUsers = 1
+		}
+		if usage.Rows+int64(item.Quantity) > int64(effectiveSharingLimit(*account)) ||
+			usage.Users+addedUsers > int64(service.MaxSharingLimit) {
 			return service.ErrDeliveryAccountFull
 		}
 		if err := tx.Model(&domain.InventorySlot{}).
@@ -449,7 +474,16 @@ func (s *Store) ReplaceDeliveryAccount(ctx context.Context, orderID, deliveryID,
 		if err != nil {
 			return err
 		}
-		if usage.Rows+int64(item.Quantity) > int64(effectiveSharingLimit(*account)) {
+		buyerAssigned, err := accountUserAssignedTx(tx, account.ID, order.UserID, item.ID)
+		if err != nil {
+			return err
+		}
+		addedUsers := int64(0)
+		if !buyerAssigned {
+			addedUsers = 1
+		}
+		if usage.Rows+int64(item.Quantity) > int64(effectiveSharingLimit(*account)) ||
+			usage.Users+addedUsers > int64(service.MaxSharingLimit) {
 			return service.ErrDeliveryAccountFull
 		}
 
@@ -630,8 +664,20 @@ func (s *Store) LoadDeliveryOptions(ctx context.Context, orderID string) ([]serv
 			if remaining < 0 {
 				remaining = 0
 			}
+			buyerAssigned, err := accountUserAssignedTx(s.db.WithContext(ctx), account.ID, order.UserID, item.OrderItemID)
+			if err != nil {
+				return nil, err
+			}
+			usedUsers := int(usage.Users)
+			if assignedPerAccount[account.ID] > 0 && !buyerAssigned {
+				usedUsers++
+			}
+			addedUsers := int64(0)
+			if !buyerAssigned {
+				addedUsers = 1
+			}
 			canAssign := !used && int(usage.Rows)+item.Quantity <= limit &&
-				usage.Users+int64(boolToInt(assignedPerAccount[account.ID] == 0)) <= int64(service.MaxSharingLimit)
+				usage.Users+addedUsers <= int64(service.MaxSharingLimit)
 			options = append(options, service.DeliveryAccountOption{
 				InventoryAccountID: account.ID,
 				Label:              account.Label,
@@ -639,7 +685,8 @@ func (s *Store) LoadDeliveryOptions(ctx context.Context, orderID string) ([]serv
 				ExpiresAt:          account.ExpiresAt,
 				DaysRemaining:      domain.DaysRemaining(account.ExpiresAt, now),
 				SharingLimit:       limit,
-				AssignedUsers:      int(usage.Users),
+				UsedUsers:          usedUsers,
+				AssignedUsers:      usedUsers,
 				UsedSlots:          int(usage.Rows) + assignedPerAccount[account.ID],
 				RemainingSlots:     remaining,
 				UsedByCustomer:     used,
@@ -664,13 +711,6 @@ func (s *Store) LoadDeliveryOptions(ctx context.Context, orderID string) ([]serv
 		})
 	}
 	return result, nil
-}
-
-func boolToInt(value bool) int {
-	if value {
-		return 1
-	}
-	return 0
 }
 
 // attachDeliveryDetails fills the credential-free presentation fields. It is

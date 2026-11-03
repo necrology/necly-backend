@@ -27,8 +27,9 @@ update mengembalikan field turunan berikut:
 
 | Field | Arti |
 |---|---|
-| `assigned_users` | jumlah user unik yang memiliki slot pada akun |
-| `total_slots` / `available_slots` / `used_slots` | kapasitas dari baris `inventory_slots` |
+| `used_users` | jumlah **pengguna unik** aktif yang memiliki slot pada akun; pembeli yang sama tidak menambah hitungan ini |
+| `assigned_users` | nama lama untuk `used_users`, dipertahankan untuk klien dashboard lama |
+| `total_slots` / `available_slots` / `used_slots` | kapasitas dari baris `inventory_slots`; `used_slots` menghitung baris, bukan pengguna unik |
 | `remaining_slots` | sisa kapasitas terhadap `sharing_limit` (tidak pernah negatif) |
 | `days_remaining` | sisa hari sampai `expires_at`; `null` berarti tanpa batas, `0` berarti sudah kedaluwarsa |
 | `otp_configured` | apakah secret TOTP tersimpan |
@@ -154,6 +155,7 @@ Response:
           "expires_at": "2026-12-31T23:59:59Z",
           "days_remaining": 70,
           "sharing_limit": 5,
+          "used_users": 2,
           "assigned_users": 2,
           "used_slots": 2,
           "remaining_slots": 3,
@@ -170,8 +172,13 @@ Response:
 - Hanya akun `active`, belum kedaluwarsa, dan milik produk item yang muncul.
 - `remaining_slots` memakai `min(sharing_limit, 5)` dan tidak menghitung slot
   berstatus `released`.
-- `used_by_customer=true` berarti pembeli sudah pernah menerima akun tersebut
-  untuk produk yang sama pada pengiriman yang berhasil.
+- `used_users` adalah jumlah pengguna unik; `used_slots` adalah jumlah baris
+  slot. Pembelian ulang oleh pengguna yang sama menambah `used_slots` tetapi
+  tidak menambah `used_users`. `assigned_users` tetap dikirim sebagai alias
+  kompatibilitas.
+- Batas keras lima pengguna unik dan lima baris slot ditegakkan pada pemilihan
+  manual, pemilihan otomatis, dan persiapan pengiriman. Akun legacy dengan
+  data di atas lima pengguna tidak dapat menerima assignment baru.
 - `can_assign=false` bila akun penuh, sudah dipakai pembeli, atau item quantity
   melebihi kapasitas akun.
 

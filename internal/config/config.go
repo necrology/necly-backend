@@ -285,7 +285,7 @@ func Load() (*Config, error) {
 			Password: os.Getenv("OTP_IMAP_PASSWORD"),
 			Mailbox:  getEnv("OTP_IMAP_MAILBOX", "INBOX"),
 			UseTLS:   otpIMAPTLS,
-			Lookback: mustEnvDuration("OTP_IMAP_LOOKBACK", 15*time.Minute),
+			Lookback: mustEnvDuration("OTP_IMAP_LOOKBACK", 30*time.Minute),
 			Timeout:  mustEnvDuration("OTP_IMAP_TIMEOUT", 20*time.Second),
 		},
 		Google: GoogleConfig{
