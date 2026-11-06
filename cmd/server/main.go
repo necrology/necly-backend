@@ -178,6 +178,7 @@ func main() {
 		otpAccessCodes = rediscache.NewOTPAccessCodes(redisClient, "necly:otp-access:")
 	}
 	orderDeliverySvc.SetAccessCodeSupport(otpAccessCodes, cfg.AppFrontendURL)
+	orderDeliverySvc.SetAccessCodeCooldown(redisClient)
 	orderDeliverySvc.SetCentralOTPInboxReady(otpInbox.Enabled())
 	accountOTPSvc := service.NewAccountOTPService(otpAccessCodes, otpInbox, cfg.OTPInbox.Lookback)
 	// A code issued before cancellation must stop working immediately. The store
