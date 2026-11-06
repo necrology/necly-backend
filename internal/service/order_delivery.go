@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/necly/services/internal/domain"
 	"github.com/necly/services/internal/platform/mailer"
+	"github.com/necly/services/internal/platform/rediscache"
 )
 
 // DeliveryError* are the stable, non-sensitive codes stored on a failed
@@ -161,6 +162,9 @@ type OrderDeliveryService struct {
 	// tells the order page whether a shared mailbox can serve accounts that do
 	// not store their own app password.
 	centralOTPInboxReady bool
+	// accessCodeCooldown gates repeated access-code generation per user+item.
+	// Nil-safe: a nil gate silently allows every request (dev without Redis).
+	accessCodeCooldown *rediscache.Cooldown
 }
 
 func NewOrderDeliveryService(repo OrderDeliveryRepository, orders AdminOrderRepository, cipher *CredentialCipher, mail MailSender, audit AuditWriter) *OrderDeliveryService {

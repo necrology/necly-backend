@@ -16,6 +16,8 @@ import (
 	"github.com/necly/services/internal/domain"
 	"github.com/necly/services/internal/platform/mailer"
 	"github.com/necly/services/internal/platform/otpinbox"
+	"github.com/necly/services/internal/platform/rediscache"
+	"github.com/redis/go-redis/v9"
 )
 
 var (
@@ -28,12 +30,35 @@ var (
 	ErrOTPUnavailable = errors.New("Layanan ambil OTP belum tersedia")
 	// ErrOTPNotFound means no recent OTP email arrived for the account yet.
 	ErrOTPNotFound = errors.New("Belum ada kode OTP masuk untuk akun ini")
+	// ErrOTPAccessCodeCooldown means the user tried to generate a new access
+	// code before the per-item cooldown expired.
+	ErrOTPAccessCodeCooldown = errors.New("Kode akses & OTP dapat digunakan selama 5 menit, untuk saat ini gunakan kode akses yang sudah dibuat.")
 )
+
+// CooldownError is returned when an action is rate-limited. It carries the
+// remaining wait and, for access-code cooldown, the absolute time until the
+// next attempt is allowed.
+type AccessCodeCooldownError struct {
+	RetryAfter        time.Duration
+	CodeCooldownUntil *time.Time
+}
+
+func (e *AccessCodeCooldownError) Error() string {
+	if e.CodeCooldownUntil != nil {
+		return ErrOTPAccessCodeCooldown.Error()
+	}
+	// Fallback for other cooldowns (e.g. report cooldown uses formatCooldownMessage)
+	return formatCooldownMessage(e.RetryAfter)
+}
 
 // AccessCodeTTL is how long a code generated from the account dashboard stays
 // usable. It is short on purpose: the code is a bearer credential for reading
 // someone else's OTP.
 const AccessCodeTTL = 15 * time.Minute
+
+// AccessCodeCooldownTTL is the minimum interval between generating new access
+// codes for the same order item by the same user. QA baris 123.
+const AccessCodeCooldownTTL = 5 * time.Minute
 
 // AccessCodeStore persists short-lived access codes outside the database. The
 // key is a SHA-256 digest; the plaintext code is never stored.
@@ -65,15 +90,19 @@ type AccountAccess struct {
 	// account can actually be redeemed. It is false when neither a central
 	// mailbox nor the account's own app password is configured.
 	OTPReady bool `json:"otp_ready"`
+	// CodeCooldownUntil is the absolute time until which a new access code
+	// cannot be generated for this item. Populated from the cooldown store.
+	CodeCooldownUntil *time.Time `json:"code_cooldown_until,omitempty"`
 }
 
 // IssuedAccessCode is returned once, to the authenticated owner. The dashboard
 // shows it and the service also emails it to the verified buyer.
 type IssuedAccessCode struct {
-	Code      string    `json:"code"`
-	ExpiresAt time.Time `json:"expires_at"`
-	Emails    []string  `json:"emails"`
-	EmailSent bool      `json:"email_sent"`
+	Code              string     `json:"code"`
+	ExpiresAt         time.Time  `json:"expires_at"`
+	Emails            []string   `json:"emails"`
+	EmailSent         bool       `json:"email_sent"`
+	CodeCooldownUntil *time.Time `json:"code_cooldown_until,omitempty"`
 }
 
 // SetAccessCodeSupport wires the email-OTP feature into the existing delivery
@@ -88,6 +117,12 @@ func (s *OrderDeliveryService) SetAccessCodeSupport(store AccessCodeStore, front
 // Accounts without their own app password can only be served when it is true.
 func (s *OrderDeliveryService) SetCentralOTPInboxReady(ready bool) {
 	s.centralOTPInboxReady = ready
+}
+
+// SetAccessCodeCooldown wires the per-item access-code generation cooldown.
+// Pass a nil client to disable the gate (e.g. local dev without Redis).
+func (s *OrderDeliveryService) SetAccessCodeCooldown(client *redis.Client) {
+	s.accessCodeCooldown = rediscache.NewCooldown(client, "access-code:", AccessCodeCooldownTTL)
 }
 
 // InboxReady reports whether account OTP retrieval is configured. The frontend
@@ -138,10 +173,23 @@ func (s *OrderDeliveryService) ListAccountAccess(ctx context.Context, userID, or
 			continue
 		}
 		for _, account := range accounts {
+			// Check cooldown for this user+order+item
+			var cooldownUntil *time.Time
+			if s.accessCodeCooldown != nil {
+				cooldownKey := fmt.Sprintf("%s:%s:%s", userID, orderID, item.ID)
+				if retry, err := s.accessCodeCooldown.BlockedFor(ctx, cooldownKey); err == nil && retry > 0 {
+					until := s.now().Add(retry)
+					cooldownUntil = &until
+				}
+			}
 			out = append(out, AccountAccess{
-				OrderItemID: item.ID, ProductName: item.ProductName, DurationName: item.DurationName,
-				AccountLabel: account.Label, AccountEmail: account.Username,
-				OTPReady: account.OTPReady,
+				OrderItemID:       item.ID,
+				ProductName:       item.ProductName,
+				DurationName:      item.DurationName,
+				AccountLabel:      account.Label,
+				AccountEmail:      account.Username,
+				OTPReady:          account.OTPReady,
+				CodeCooldownUntil: cooldownUntil,
 			})
 		}
 	}
@@ -224,6 +272,16 @@ func (s *OrderDeliveryService) IssueAccountAccessCode(ctx context.Context, userI
 		return nil, ErrOTPUnavailable
 	}
 
+	// Enforce per-item cooldown so the same user cannot spam new codes.
+	// Key is user:order:item to scope the limit to one order item.
+	if s.accessCodeCooldown != nil {
+		cooldownKey := fmt.Sprintf("%s:%s:%s", userID, orderID, itemID)
+		if retry, err := s.accessCodeCooldown.BlockedFor(ctx, cooldownKey); err == nil && retry > 0 {
+			until := s.now().Add(retry)
+			return nil, &AccessCodeCooldownError{RetryAfter: retry, CodeCooldownUntil: &until}
+		}
+	}
+
 	code, err := newAccessCode()
 	if err != nil {
 		return nil, fmt.Errorf("generate access code: %w", err)
@@ -241,7 +299,14 @@ func (s *OrderDeliveryService) IssueAccountAccessCode(ctx context.Context, userI
 		return nil, fmt.Errorf("store access code: %w", err)
 	}
 
-	result := &IssuedAccessCode{Code: code, ExpiresAt: expiresAt, Emails: emails}
+	// Start the cooldown window so a repeat request within 5 minutes is rejected.
+	cooldownUntil := s.now().Add(AccessCodeCooldownTTL)
+	if s.accessCodeCooldown != nil {
+		cooldownKey := fmt.Sprintf("%s:%s:%s", userID, orderID, itemID)
+		_ = s.accessCodeCooldown.Block(ctx, cooldownKey)
+	}
+
+	result := &IssuedAccessCode{Code: code, ExpiresAt: expiresAt, Emails: emails, CodeCooldownUntil: &cooldownUntil}
 	if reason := s.prepareFailureReason(order); reason == "" {
 		msg := s.buildAccessCodeMessage(order, item, emails, code, expiresAt)
 		sendCtx, cancel := context.WithTimeout(ctx, deliverySendTimeout)

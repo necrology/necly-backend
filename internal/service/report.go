@@ -63,9 +63,24 @@ type CooldownError struct {
 }
 
 func (e *CooldownError) Error() string {
-	minutes := int(e.RetryAfter.Minutes())
-	if minutes < 1 {
-		minutes = 1
+	return formatCooldownMessage(e.RetryAfter)
+}
+
+// formatCooldownMessage returns a human-readable Indonesian duration.
+// Examples: 167 min -> "2 jam 47 menit", 120 min -> "2 jam", 47 min -> "47 menit".
+// Rounds up to the next minute so the message never understates the remaining wait.
+func formatCooldownMessage(d time.Duration) string {
+	totalMinutes := int(d.Minutes())
+	if totalMinutes < 1 {
+		totalMinutes = 1
+	}
+	hours := totalMinutes / 60
+	minutes := totalMinutes % 60
+	if hours > 0 && minutes > 0 {
+		return fmt.Sprintf("Laporan kendala dari email ini baru saja dikirim. Silakan coba lagi dalam %d jam %d menit.", hours, minutes)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("Laporan kendala dari email ini baru saja dikirim. Silakan coba lagi dalam %d jam.", hours)
 	}
 	return fmt.Sprintf("Laporan kendala dari email ini baru saja dikirim. Silakan coba lagi dalam %d menit.", minutes)
 }

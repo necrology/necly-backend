@@ -1284,7 +1284,24 @@ func (r *Router) issueAccountAccessCode(c *fiber.Ctx) error {
 
 	result, err := r.orderDeliverySvc.IssueAccountAccessCode(ctx, userID, orderID, itemID)
 	if err != nil {
+		var cooldown *service.AccessCodeCooldownError
 		switch {
+		case errors.As(err, &cooldown):
+			if cooldown.CodeCooldownUntil != nil {
+				retryAfter := int(cooldown.RetryAfter.Seconds())
+				if retryAfter < 1 {
+					retryAfter = 1
+				}
+				c.Set("Retry-After", strconv.Itoa(retryAfter))
+				return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
+					"error":               cooldown.Error(),
+					"code":                "otp_access_code_cooldown",
+					"retry_after":         retryAfter,
+					"code_cooldown_until": cooldown.CodeCooldownUntil.Format(time.RFC3339),
+				})
+			}
+			// Fallback for other cooldown types (not expected here)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal membuat kode akses OTP", "code": "internal_error"})
 		case errors.Is(err, service.ErrOTPUnavailable):
 			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
 				"error": "Layanan ambil OTP belum dikonfigurasi. Hubungi dukungan.", "code": "otp_unavailable",
