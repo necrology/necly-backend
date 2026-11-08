@@ -156,6 +156,41 @@ func TestAddressedToRequiresExactMailbox(t *testing.T) {
 			want:   true,
 		},
 		{
+			name:   "Gmail original recipient exact",
+			header: mail.Header{"X-Gm-Original-To": {"victim@example.com"}},
+			want:   true,
+		},
+		{
+			name:   "Google original recipient exact",
+			header: mail.Header{"X-Google-Original-To": {"<victim@example.com>"}},
+			want:   true,
+		},
+		{
+			name:   "RFC 3464 original recipient exact",
+			header: mail.Header{"Original-Recipient": {"rfc822; victim@example.com"}},
+			want:   true,
+		},
+		{
+			name:   "Gmail alias is not canonicalized",
+			header: mail.Header{"X-Gm-Original-To": {"victim+login@example.com"}},
+			want:   false,
+		},
+		{
+			name:   "Gmail dots are not canonicalized",
+			header: mail.Header{"X-Gm-Original-To": {"vic.tim@example.com"}},
+			want:   false,
+		},
+		{
+			name:   "malformed RFC 3464 original recipient",
+			header: mail.Header{"Original-Recipient": {"victim@example.com"}},
+			want:   false,
+		},
+		{
+			name:   "unsupported original recipient type",
+			header: mail.Header{"Original-Recipient": {"x400; victim@example.com"}},
+			want:   false,
+		},
+		{
 			name:   "target only as domain suffix",
 			header: mail.Header{"To": {"victim@example.com.attacker.test"}},
 			want:   false,
@@ -229,6 +264,10 @@ func TestParseMessageRejectsRecipientSubstringCollisions(t *testing.T) {
 		"Delivered-To: victim@example.com.attacker.test",
 		"Delivered-To: victim@example.com, attacker@example.net",
 		"X-Original-To: victim2@example.com",
+		"X-Gm-Original-To: victim+login@example.com",
+		"X-Gm-Original-To: vic.tim@example.com",
+		"X-Gm-Original-To: victim@example.com, attacker@example.net",
+		"Original-Recipient: rfc822; victim2@example.com",
 		"To: victim@example.com <attacker@example.net",
 	}
 	for _, header := range rejectedHeaders {
@@ -250,6 +289,9 @@ func TestParseMessageRejectsRecipientSubstringCollisions(t *testing.T) {
 		"To: Victim Account <VICTIM@EXAMPLE.COM>",
 		"Delivered-To: victim@example.com",
 		"X-Original-To: <victim@example.com>",
+		"X-Gm-Original-To: victim@example.com",
+		"X-Google-Original-To: <victim@example.com>",
+		"Original-Recipient: rfc822; victim@example.com",
 		"Envelope-To: victim@example.com",
 		"Cc: victim@example.com",
 	}

@@ -358,6 +358,27 @@ func TestDeliverApprovedOrderUsesComplaintPageAndNoReplyWording(t *testing.T) {
 	}
 }
 
+func TestDeliverApprovedOrderExplainsChatGPTPasswordBeforeOptionalOTP(t *testing.T) {
+	fixture := newDeliveryFixture(t, true, "chatgpt-account@example.test:account-password")
+	fixture.order.Items[0].ProductName = "ChatGPT Plus"
+	fixture.service.SetAccessCodeSupport(newFakeAccessStore(), "https://necly.example")
+
+	if _, err := fixture.service.DeliverApprovedOrder(context.Background(), AdminActor{}, fixture.order.ID); err != nil {
+		t.Fatalf("DeliverApprovedOrder() error = %v", err)
+	}
+	body := fixture.mail.sent[0].Body
+	passwordStep := "masukkan email akun di atas, lalu lanjutkan dengan kata sandi akun di atas"
+	optionalOTPStep := "Ambil OTP hanya jika ChatGPT benar-benar menampilkan permintaan kode verifikasi setelah langkah kata sandi"
+	passwordIndex := strings.Index(body, passwordStep)
+	otpIndex := strings.Index(body, optionalOTPStep)
+	if passwordIndex < 0 || otpIndex < 0 {
+		t.Fatalf("instruksi ChatGPT tidak lengkap:\n%s", body)
+	}
+	if passwordIndex >= otpIndex {
+		t.Fatalf("instruksi OTP mendahului password:\n%s", body)
+	}
+}
+
 func TestDeliverApprovedOrderMarksEmailFailureAndRetrySendsOnce(t *testing.T) {
 	fixture := newDeliveryFixture(t, true, "user:secret")
 	fixture.mail.err = errors.New("smtp unavailable")

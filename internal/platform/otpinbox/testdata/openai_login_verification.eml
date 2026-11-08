@@ -1,0 +1,40 @@
+Delivered-To: mailbox-owner@example.test
+X-Gm-Original-To: chatgpt.alias+shared@example.test
+X-Google-Original-To: mailbox-owner@example.test
+To: Undisclosed recipients:;
+From: OpenAI <noreply@openai.example>
+Subject: ChatGPT - Your code is 314159
+Date: Sun, 08 Nov 2026 12:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="outer-provider-boundary"
+
+--outer-provider-boundary
+Content-Type: multipart/related; boundary="related-provider-boundary"
+
+--related-provider-boundary
+Content-Type: multipart/alternative; boundary="alternative-provider-boundary"
+
+--alternative-provider-boundary
+Content-Type: text/plain; charset="UTF-8"
+Content-Transfer-Encoding: quoted-printable
+
+Complete your verification to continue signing in to ChatGPT.
+--alternative-provider-boundary
+Content-Type: text/html; charset="UTF-8"
+Content-Transfer-Encoding: quoted-printable
+
+<html><body><p>Your ChatGPT verification code is:</p><div><strong>314159</strong></div><p>This code expires shortly. If you didn't request this code, you can safely ignore this email.</p></body></html>
+--alternative-provider-boundary--
+--related-provider-boundary
+Content-Type: image/png; name="logo.png"
+Content-Disposition: inline; filename="logo.png"
+Content-Transfer-Encoding: base64
+
+aW1hZ2UtZGF0YS13aXRob3V0LWNvZGU=
+--related-provider-boundary--
+--outer-provider-boundary
+Content-Type: text/plain; name="provider-footer.txt"
+Content-Disposition: attachment; filename="provider-footer.txt"
+
+Attachment reference 999999 must not be parsed.
+--outer-provider-boundary--

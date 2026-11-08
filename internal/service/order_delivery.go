@@ -708,6 +708,7 @@ func (s *OrderDeliveryService) writeUsageInstructions(body *strings.Builder, ite
 	if item != nil && strings.TrimSpace(item.ProductName) != "" {
 		productName = strings.TrimSpace(item.ProductName)
 	}
+	isChatGPT := strings.Contains(strings.ToLower(productName), "chatgpt")
 	body.WriteString("Cara penggunaan dan login:\n")
 	step := 1
 	if loginURL := platformLoginURL(productName); loginURL != "" {
@@ -716,11 +717,19 @@ func (s *OrderDeliveryService) writeUsageInstructions(body *strings.Builder, ite
 		fmt.Fprintf(body, "%d. Buka situs atau aplikasi resmi %s.\n", step, productName)
 	}
 	step++
-	body.WriteString(fmt.Sprintf("%d. Pilih menu Masuk/Login, lalu masukkan email/username dan kata sandi di atas.\n", step))
+	if isChatGPT {
+		fmt.Fprintf(body, "%d. Pilih menu Masuk/Login, masukkan email akun di atas, lalu lanjutkan dengan kata sandi akun di atas.\n", step)
+	} else {
+		fmt.Fprintf(body, "%d. Pilih menu Masuk/Login, lalu masukkan email/username dan kata sandi di atas.\n", step)
+	}
 	step++
 	body.WriteString(fmt.Sprintf("%d. Jangan mengubah kata sandi, email, atau profil akun karena akun digunakan bersama.\n", step))
 	step++
 	if s.accessCodes != nil {
+		if isChatGPT {
+			fmt.Fprintf(body, "%d. Ambil OTP hanya jika ChatGPT benar-benar menampilkan permintaan kode verifikasi setelah langkah kata sandi.\n", step)
+			step++
+		}
 		if s.frontendURL != "" {
 			fmt.Fprintf(body, "%d. Jika platform meminta kode OTP lewat email, buka halaman Ambil OTP di %s/otp.\n", step, s.frontendURL)
 		} else {

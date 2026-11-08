@@ -2,6 +2,7 @@ package otpinbox
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -75,6 +76,21 @@ func TestParseMessageDoesNotRejectSkewedSenderDate(t *testing.T) {
 	}
 }
 
+func TestParseMessageAcceptsSanitizedOpenAIProviderFixture(t *testing.T) {
+	raw, err := os.ReadFile("testdata/openai_login_verification.eml")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	message, ok := parseMessage(raw, "chatgpt.alias+shared@example.test", time.Now().Add(-time.Hour))
+	if !ok {
+		t.Fatal("expected sanitized OpenAI login verification fixture to be accepted")
+	}
+	if message.Code != "314159" {
+		t.Fatalf("code = %q, want 314159", message.Code)
+	}
+}
+
 func TestParseMessageReadsHTMLMultipartAndQuotedPrintable(t *testing.T) {
 	raw := strings.Join([]string{
 		"To: family@example.test",
@@ -109,6 +125,30 @@ func TestParseMessageRejectsMessagesWithoutOTPContext(t *testing.T) {
 
 	if _, ok := parseMessage([]byte(raw), "family@example.test", time.Now().Add(-time.Hour)); ok {
 		t.Fatal("an invoice reference must not be treated as an OTP")
+	}
+}
+
+func TestParseMessageReadsNestedRFC822ProviderWrapper(t *testing.T) {
+	raw := strings.Join([]string{
+		"X-Gm-Original-To: wrapped.alias@example.test",
+		"To: mailbox-owner@example.test",
+		"From: OpenAI <noreply@openai.example>",
+		"Subject: OpenAI account notification",
+		"Content-Type: multipart/mixed; boundary=outer",
+		"",
+		"--outer",
+		"Content-Type: message/rfc822",
+		"",
+		"Subject: Your OpenAI verification code",
+		"Content-Type: text/html; charset=UTF-8",
+		"",
+		"<p>Use verification code <strong>246810</strong> to continue logging in.</p>",
+		"--outer--",
+	}, "\r\n")
+
+	message, ok := parseMessage([]byte(raw), "wrapped.alias@example.test", time.Now().Add(-time.Hour))
+	if !ok || message.Code != "246810" {
+		t.Fatalf("message = %+v, ok = %t", message, ok)
 	}
 }
 

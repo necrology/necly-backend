@@ -18,6 +18,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -503,21 +504,40 @@ func addressedTo(header mail.Header, recipient string) bool {
 		}
 	}
 
-	// Envelope headers carry exactly one original recipient. Malformed or
-	// multi-address values fail closed so a crafted forwarding header cannot
-	// smuggle in a different mailbox.
-	for _, key := range []string{"Delivered-To", "X-Original-To", "Envelope-To", "X-Forwarded-To"} {
+	// Envelope headers carry exactly one original recipient. Gmail adds
+	// X-Gm-Original-To when an alias or forwarding rule rewrites the visible To
+	// header. Keep aliases literal: dots and +tags are not normalized because
+	// doing so could cross the isolation boundary between inventory accounts.
+	// Malformed or multi-address values fail closed.
+	for _, key := range []string{
+		"Delivered-To", "X-Original-To", "X-Gm-Original-To", "X-Google-Original-To",
+		"Envelope-To", "X-Envelope-To", "X-Forwarded-To",
+	} {
 		for _, value := range header[key] {
-			addresses, err := mail.ParseAddressList(value)
-			if err != nil || len(addresses) != 1 {
-				continue
-			}
-			if normalizeAddress(addresses[0].Address) == recipient {
+			if exactHeaderRecipient(value, recipient) {
 				return true
 			}
 		}
 	}
+
+	// RFC 3464 Original-Recipient includes an address type before a semicolon,
+	// for example "rfc822; account@example.test". Only that exact form and one
+	// syntactically valid mailbox are accepted.
+	for _, value := range header["Original-Recipient"] {
+		parts := strings.SplitN(value, ";", 2)
+		if len(parts) != 2 || !strings.EqualFold(strings.TrimSpace(parts[0]), "rfc822") {
+			continue
+		}
+		if exactHeaderRecipient(parts[1], recipient) {
+			return true
+		}
+	}
 	return false
+}
+
+func exactHeaderRecipient(value, recipient string) bool {
+	addresses, err := mail.ParseAddressList(value)
+	return err == nil && len(addresses) == 1 && normalizeAddress(addresses[0].Address) == recipient
 }
 
 func decodeHeader(value string) string {
@@ -540,35 +560,63 @@ func parseDate(value string) time.Time {
 	return parsed
 }
 
-// extractText walks a MIME tree and returns the visible text. It deliberately
-// ignores attachments and stops at the first text/plain part, falling back to
-// HTML when no plain part exists.
+// extractText walks the complete visible MIME tree. Provider mail commonly
+// nests multipart/alternative inside multipart/related or multipart/mixed, and
+// its plain-text preheader does not always contain the code that appears in the
+// HTML part. Collecting every non-attachment text part avoids dropping that
+// code while keeping binary attachments out of the parser.
 func extractText(contentType, transferEncoding string, body io.Reader) string {
 	mediaType, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
 		mediaType = "text/plain"
 	}
+	mediaType = strings.ToLower(mediaType)
 	if strings.HasPrefix(mediaType, "multipart/") {
 		boundary := params["boundary"]
 		if boundary == "" {
 			return ""
 		}
 		reader := multipart.NewReader(body, boundary)
-		var fallback string
+		var texts []string
 		for {
 			part, err := reader.NextPart()
 			if err != nil {
 				break
 			}
-			text := extractText(part.Header.Get("Content-Type"), part.Header.Get("Content-Transfer-Encoding"), part)
-			if strings.HasPrefix(strings.ToLower(part.Header.Get("Content-Type")), "text/plain") && text != "" {
-				return text
+			disposition, _, dispositionErr := mime.ParseMediaType(part.Header.Get("Content-Disposition"))
+			if dispositionErr == nil && strings.EqualFold(disposition, "attachment") {
+				continue
 			}
-			if text != "" && fallback == "" {
-				fallback = text
+			text := extractText(part.Header.Get("Content-Type"), part.Header.Get("Content-Transfer-Encoding"), part)
+			if text != "" {
+				texts = append(texts, text)
 			}
 		}
-		return fallback
+		return strings.Join(texts, " ")
+	}
+
+	// A non-attachment message/rfc822 part is another MIME envelope. This occurs
+	// in forwarding/provider wrappers; recurse into its subject and body rather
+	// than treating encoded inner headers as visible text.
+	if mediaType == "message/rfc822" {
+		decoded, err := decodeTransferEncoding(transferEncoding, body)
+		if err != nil {
+			return ""
+		}
+		raw, err := io.ReadAll(io.LimitReader(decoded, maxRawMessageBytes))
+		if err != nil {
+			return ""
+		}
+		nested, err := mail.ReadMessage(bufio.NewReader(bytes.NewReader(raw)))
+		if err != nil {
+			return ""
+		}
+		subject := decodeHeader(nested.Header.Get("Subject"))
+		text := extractText(nested.Header.Get("Content-Type"), nested.Header.Get("Content-Transfer-Encoding"), nested.Body)
+		return strings.Join(strings.Fields(subject+" "+text), " ")
+	}
+	if mediaType != "text/plain" && mediaType != "text/html" {
+		return ""
 	}
 
 	decoded, err := decodeTransferEncoding(transferEncoding, body)
@@ -580,8 +628,8 @@ func extractText(contentType, transferEncoding string, body io.Reader) string {
 		return ""
 	}
 	value := string(text)
-	if strings.HasPrefix(mediaType, "text/html") {
-		value = htmlTag.ReplaceAllString(value, " ")
+	if mediaType == "text/html" {
+		value = html.UnescapeString(htmlTag.ReplaceAllString(value, " "))
 	}
 	return strings.Join(strings.Fields(value), " ")
 }
