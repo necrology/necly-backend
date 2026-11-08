@@ -425,6 +425,59 @@ func TestAccountOTPLookupFallsBackToCentralMailbox(t *testing.T) {
 	})
 }
 
+func TestAccountOTPLookupObservabilityDistinguishesMissingMailboxAndReadableInbox(t *testing.T) {
+	cipher := accountOTPTestCipher(t)
+	store := newFakeAccessStore()
+	code := storeOTPAccessCode(t, store, "family@example.test")
+
+	t.Run("missing direct configuration falls back without PII", func(t *testing.T) {
+		central := &fakeOTPInbox{enabled: true, err: otpinbox.ErrNotFound}
+		svc := NewAccountOTPService(store, central, time.Minute)
+		events := make([]AccountOTPLookupEvent, 0, 2)
+		svc.observe = func(event AccountOTPLookupEvent) { events = append(events, event) }
+		svc.SetPerAccountInbox(&fakeAccountResolver{account: &domain.InventoryAccount{
+			AccountEmail: "family@example.test",
+		}}, cipher, &fakeAccountReaderFactory{})
+
+		_, err := svc.Lookup(context.Background(), "family@example.test", code)
+		if !errors.Is(err, ErrOTPNotFound) {
+			t.Fatalf("error = %v, want ErrOTPNotFound from readable fallback", err)
+		}
+		want := []AccountOTPLookupEvent{AccountOTPMailboxNotConfigured, AccountOTPCentralNotFound}
+		if len(events) != len(want) || events[0] != want[0] || events[1] != want[1] {
+			t.Fatalf("events = %v, want %v", events, want)
+		}
+		joined := string(events[0]) + string(events[1])
+		for _, secret := range []string{"family@example.test", code, "111222"} {
+			if strings.Contains(joined, secret) {
+				t.Fatalf("observability leaked %q in %q", secret, joined)
+			}
+		}
+	})
+
+	t.Run("readable direct inbox has a distinct not-found outcome", func(t *testing.T) {
+		sealed, err := cipher.Encrypt([]byte("gmail-app-password"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		direct := &fakeOTPInbox{enabled: true, err: otpinbox.ErrNotFound}
+		svc := NewAccountOTPService(store, &fakeOTPInbox{enabled: false}, time.Minute)
+		events := make([]AccountOTPLookupEvent, 0, 1)
+		svc.observe = func(event AccountOTPLookupEvent) { events = append(events, event) }
+		svc.SetPerAccountInbox(&fakeAccountResolver{account: &domain.InventoryAccount{
+			AccountEmail: "family@example.test", MailboxAppPasswordEncrypted: sealed,
+		}}, cipher, &fakeAccountReaderFactory{reader: direct})
+
+		_, err = svc.Lookup(context.Background(), "family@example.test", code)
+		if !errors.Is(err, ErrOTPNotFound) {
+			t.Fatalf("error = %v, want ErrOTPNotFound", err)
+		}
+		if len(events) != 1 || events[0] != AccountOTPDirectNotFound {
+			t.Fatalf("events = %v, want [%s]", events, AccountOTPDirectNotFound)
+		}
+	})
+}
+
 func TestAccountOTPLookupFailsClosedWithoutAnyMailbox(t *testing.T) {
 	store := newFakeAccessStore()
 	code := storeOTPAccessCode(t, store, "family@example.test")

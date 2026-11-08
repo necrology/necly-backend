@@ -444,6 +444,19 @@ const (
 	DefaultOTPLookback = 30 * time.Minute
 )
 
+// AccountOTPLookupEvent is a non-sensitive operational outcome. Values never
+// contain an account email, access code, OTP, or mailbox credential.
+type AccountOTPLookupEvent string
+
+const (
+	AccountOTPMailboxNotConfigured AccountOTPLookupEvent = "direct_mailbox_not_configured"
+	AccountOTPMailboxConfigInvalid AccountOTPLookupEvent = "direct_mailbox_config_invalid"
+	AccountOTPDirectNotFound       AccountOTPLookupEvent = "direct_mailbox_otp_not_found"
+	AccountOTPDirectReadFailed     AccountOTPLookupEvent = "direct_mailbox_read_failed"
+	AccountOTPCentralNotFound      AccountOTPLookupEvent = "central_mailbox_otp_not_found"
+	AccountOTPCentralReadFailed    AccountOTPLookupEvent = "central_mailbox_read_failed"
+)
+
 // AccountOTPService resolves a code+email pair into the newest OTP. It first
 // tries the account's own mailbox when an app password is stored, then falls
 // back to the shared mailbox. It never logs the email, code or OTP.
@@ -458,6 +471,7 @@ type AccountOTPService struct {
 	cipher        *CredentialCipher
 	directTimeout time.Duration
 	validator     AccessCodeValidator
+	observe       func(AccountOTPLookupEvent)
 }
 
 // AccessCodeValidator re-checks the live order state when a previously issued
@@ -483,6 +497,9 @@ func NewAccountOTPService(codes AccessCodeStore, inbox otpinbox.Reader, lookback
 	return &AccountOTPService{
 		codes: codes, inbox: inbox, lookback: lookback,
 		now: func() time.Time { return time.Now().UTC() }, directTimeout: perAccountOTPTimeout,
+		observe: func(event AccountOTPLookupEvent) {
+			log.Printf("account otp lookup: outcome=%s", event)
+		},
 	}
 }
 
@@ -572,27 +589,43 @@ func (s *AccountOTPService) lookupMailbox(ctx context.Context, email string) (*o
 	var directErr error
 
 	if s.resolver != nil && s.cipher != nil && s.factory != nil {
-		account, err := s.resolver.GetAccountByEmail(ctx, email)
-		if err == nil && account != nil && len(account.MailboxAppPasswordEncrypted) > 0 {
+		account, resolveErr := s.resolver.GetAccountByEmail(ctx, email)
+		switch {
+		case resolveErr != nil:
+			s.recordLookupEvent(AccountOTPDirectReadFailed)
+		case account == nil || len(account.MailboxAppPasswordEncrypted) == 0:
+			s.recordLookupEvent(AccountOTPMailboxNotConfigured)
+		default:
 			directAttempted = true
 			appPassword, decryptErr := s.cipher.Decrypt(account.MailboxAppPasswordEncrypted)
-			if decryptErr == nil {
-				// Pass the stored value as-is. The factory revalidates it against
-				// the allowlist so an old or tampered row cannot reach the dialer.
-				reader := s.factory.NewReader(email, string(appPassword), account.MailboxIMAPHost)
-				if reader != nil && reader.Enabled() {
-					timeout := s.directTimeout
-					if timeout <= 0 {
-						timeout = perAccountOTPTimeout
-					}
-					readCtx, cancel := context.WithTimeout(ctx, timeout)
-					message, readErr := reader.Latest(readCtx, email, since)
-					cancel()
-					if readErr == nil {
-						return message, nil
-					}
-					directErr = readErr
-				}
+			if decryptErr != nil {
+				directErr = otpinbox.ErrNotConfigured
+				s.recordLookupEvent(AccountOTPMailboxConfigInvalid)
+				break
+			}
+			// Pass the stored value as-is. The factory revalidates it against
+			// the allowlist so an old or tampered row cannot reach the dialer.
+			reader := s.factory.NewReader(email, string(appPassword), account.MailboxIMAPHost)
+			if reader == nil || !reader.Enabled() {
+				directErr = otpinbox.ErrNotConfigured
+				s.recordLookupEvent(AccountOTPMailboxConfigInvalid)
+				break
+			}
+			timeout := s.directTimeout
+			if timeout <= 0 {
+				timeout = perAccountOTPTimeout
+			}
+			readCtx, cancel := context.WithTimeout(ctx, timeout)
+			message, readErr := reader.Latest(readCtx, email, since)
+			cancel()
+			if readErr == nil {
+				return message, nil
+			}
+			directErr = readErr
+			if errors.Is(readErr, otpinbox.ErrNotFound) {
+				s.recordLookupEvent(AccountOTPDirectNotFound)
+			} else {
+				s.recordLookupEvent(AccountOTPDirectReadFailed)
 			}
 		}
 	}
@@ -604,11 +637,13 @@ func (s *AccountOTPService) lookupMailbox(ctx context.Context, email string) (*o
 			return message, nil
 		case errors.Is(err, otpinbox.ErrNotFound):
 			// The fallback mailbox was readable and simply has no recent code.
+			s.recordLookupEvent(AccountOTPCentralNotFound)
 			return nil, ErrOTPNotFound
 		case errors.Is(err, otpinbox.ErrNotConfigured):
 			return nil, ErrOTPUnavailable
 		default:
 			// Transport errors must not leak mailbox details to the public page.
+			s.recordLookupEvent(AccountOTPCentralReadFailed)
 			return nil, fmt.Errorf("read otp inbox: %w", err)
 		}
 	}
@@ -626,4 +661,10 @@ func (s *AccountOTPService) lookupMailbox(ctx context.Context, email string) (*o
 		return nil, fmt.Errorf("read account otp inbox: %w", directErr)
 	}
 	return nil, ErrOTPNotFound
+}
+
+func (s *AccountOTPService) recordLookupEvent(event AccountOTPLookupEvent) {
+	if s != nil && s.observe != nil {
+		s.observe(event)
+	}
 }

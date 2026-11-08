@@ -43,6 +43,38 @@ func TestParseMessageRejectsAnotherCustomersMail(t *testing.T) {
 	}
 }
 
+func TestParseMessageAcceptsEncodedRecipientAndTopLevelBase64(t *testing.T) {
+	raw := strings.Join([]string{
+		"To: =?UTF-8?Q?Akun_Terjual?= <SOLD-ACCOUNT@Example.Test>",
+		"Subject: =?UTF-8?Q?Kode_masuk_Anda?=",
+		"Content-Type: text/plain; charset=UTF-8",
+		"Content-Transfer-Encoding: base64",
+		"",
+		"S29kZSBsb2dpbiBBbmRhIGFkYWxhaCA3Nzg4OTku",
+	}, "\r\n")
+
+	message, ok := parseMessage([]byte(raw), "sold-account@example.test", time.Now().Add(-time.Hour))
+	if !ok || message.Code != "778899" || message.Subject != "Kode masuk Anda" {
+		t.Fatalf("message = %+v, ok = %t", message, ok)
+	}
+}
+
+func TestParseMessageDoesNotRejectSkewedSenderDate(t *testing.T) {
+	raw := strings.Join([]string{
+		"To: sold-account@example.test",
+		"Subject: Your sign-in code",
+		"Date: Tue, 21 Oct 2025 10:00:00 +0700",
+		"Content-Type: text/plain; charset=UTF-8",
+		"",
+		"Your login code is 112233.",
+	}, "\r\n")
+
+	message, ok := parseMessage([]byte(raw), "sold-account@example.test", time.Now().Add(-30*time.Minute))
+	if !ok || message.Code != "112233" {
+		t.Fatalf("message = %+v, ok = %t; INTERNALDATE must decide the IMAP lookback", message, ok)
+	}
+}
+
 func TestParseMessageReadsHTMLMultipartAndQuotedPrintable(t *testing.T) {
 	raw := strings.Join([]string{
 		"To: family@example.test",
@@ -53,7 +85,7 @@ func TestParseMessageReadsHTMLMultipartAndQuotedPrintable(t *testing.T) {
 		"Content-Type: text/html; charset=UTF-8",
 		"Content-Transfer-Encoding: quoted-printable",
 		"",
-		"<p>Kode masuk Anda: <b>903412</b></p>",
+		"<p>Kode masuk Anda: <b>9034=31=32</b></p>",
 		"--abc--",
 	}, "\r\n")
 

@@ -205,9 +205,12 @@ func (r *imapReader) clientTLSConfig(addr string) *tls.Config {
 }
 
 const (
-	// maxFetchedMessages bounds the work and memory for one lookup. An OTP
-	// normally arrives within seconds; a larger window only costs latency.
-	maxFetchedMessages = 25
+	// maxFetchedMessages bounds work and memory without letting a busy shared
+	// inbox hide a matching OTP behind a few dozen unrelated messages. Messages
+	// are still parsed locally because forwarding setups use several different
+	// original-recipient headers that cannot be expressed as one portable IMAP
+	// search query.
+	maxFetchedMessages = 250
 	maxRawMessageBytes = 2 << 20
 	// logoutTimeout bounds the best-effort LOGOUT so a server that stops
 	// responding cannot extend the session past the caller's deadline.
@@ -335,8 +338,14 @@ func (r *imapReader) fetchLatest(ctx context.Context, recipient string, since ti
 		if !ok {
 			continue
 		}
-		if candidate.ReceivedAt.IsZero() {
+		// IMAP INTERNALDATE is set by the receiving mailbox and is more reliable
+		// than a sender-controlled Date header (which is often missing or skewed).
+		// It is also the timestamp used by the IMAP lookback search.
+		if !msg.InternalDate.IsZero() {
 			candidate.ReceivedAt = msg.InternalDate
+		}
+		if !candidate.ReceivedAt.IsZero() && candidate.ReceivedAt.Before(since.Add(-2*time.Minute)) {
+			continue
 		}
 		if best == nil || candidate.ReceivedAt.After(best.ReceivedAt) {
 			best = candidate
@@ -444,11 +453,11 @@ func parseMessage(raw []byte, recipient string, since time.Time) (*Message, bool
 	}
 
 	receivedAt := parseDate(msg.Header.Get("Date"))
-	if !receivedAt.IsZero() && receivedAt.Before(since.Add(-2*time.Minute)) {
-		return nil, false
-	}
-	subject := decodeHeader(msg.Header.Get("Subject"))
-	body := extractText(msg.Header.Get("Content-Type"), msg.Body)
+	// The IMAP reader applies the lookback using INTERNALDATE. Do not reject a
+	// message solely because its sender-controlled Date header is absent,
+	// malformed, or skewed.
+	subject := strings.Join(strings.Fields(decodeHeader(msg.Header.Get("Subject"))), " ")
+	body := extractText(msg.Header.Get("Content-Type"), msg.Header.Get("Content-Transfer-Encoding"), msg.Body)
 	if len(body) > 200_000 {
 		body = body[:200_000]
 	}
@@ -534,7 +543,7 @@ func parseDate(value string) time.Time {
 // extractText walks a MIME tree and returns the visible text. It deliberately
 // ignores attachments and stops at the first text/plain part, falling back to
 // HTML when no plain part exists.
-func extractText(contentType string, body io.Reader) string {
+func extractText(contentType, transferEncoding string, body io.Reader) string {
 	mediaType, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
 		mediaType = "text/plain"
@@ -551,7 +560,7 @@ func extractText(contentType string, body io.Reader) string {
 			if err != nil {
 				break
 			}
-			text := extractText(part.Header.Get("Content-Type"), part)
+			text := extractText(part.Header.Get("Content-Type"), part.Header.Get("Content-Transfer-Encoding"), part)
 			if strings.HasPrefix(strings.ToLower(part.Header.Get("Content-Type")), "text/plain") && text != "" {
 				return text
 			}
@@ -562,7 +571,7 @@ func extractText(contentType string, body io.Reader) string {
 		return fallback
 	}
 
-	decoded, err := decodeTransferEncoding(params["content-transfer-encoding"], body)
+	decoded, err := decodeTransferEncoding(transferEncoding, body)
 	if err != nil {
 		return ""
 	}
