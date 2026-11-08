@@ -51,10 +51,10 @@ func (e *AccessCodeCooldownError) Error() string {
 	return formatCooldownMessage(e.RetryAfter)
 }
 
-// AccessCodeTTL is how long a code generated from the account dashboard stays
-// usable. It is short on purpose: the code is a bearer credential for reading
-// someone else's OTP.
-const AccessCodeTTL = 15 * time.Minute
+// AccessCodeTTL is how long an automatically issued delivery code stays usable.
+// It deliberately matches the existing generation cooldown: the delivery email
+// is the source of the plaintext code and Redis is the only persisted state.
+const AccessCodeTTL = 5 * time.Minute
 
 // AccessCodeCooldownTTL is the minimum interval between generating new access
 // codes for the same order item by the same user. QA baris 123.
@@ -63,8 +63,12 @@ const AccessCodeCooldownTTL = 5 * time.Minute
 // AccessCodeStore persists short-lived access codes outside the database. The
 // key is a SHA-256 digest; the plaintext code is never stored.
 type AccessCodeStore interface {
-	Store(ctx context.Context, key string, value []byte, ttl time.Duration) error
+	// StoreIssued atomically replaces the previous code for one user/order/item
+	// scope. Implementations persist the code only under its hash and keep a
+	// short-lived scope index so retries cannot leave multiple valid codes.
+	StoreIssued(ctx context.Context, codeKey, scopeKey string, value []byte, expiresUnix int64, ttl time.Duration) error
 	Load(ctx context.Context, key string) (value []byte, found bool, err error)
+	LoadStatus(ctx context.Context, scopeKey string) (expiresUnix int64, found bool, err error)
 }
 
 // AccessCodePayload is the data bound to one code. Emails is a list because a
@@ -90,8 +94,12 @@ type AccountAccess struct {
 	// account can actually be redeemed. It is false when neither a central
 	// mailbox nor the account's own app password is configured.
 	OTPReady bool `json:"otp_ready"`
-	// CodeCooldownUntil is the absolute time until which a new access code
-	// cannot be generated for this item. Populated from the cooldown store.
+	// AccessCodeStatus is "valid", "expired", or "unavailable". The plaintext
+	// code is intentionally absent: it exists only in the delivery email.
+	AccessCodeStatus    string     `json:"access_code_status"`
+	AccessCodeExpiresAt *time.Time `json:"access_code_expires_at,omitempty"`
+	// CodeCooldownUntil is retained for frontend compatibility. Automatically
+	// issued codes use the same five-minute window as their expiry.
 	CodeCooldownUntil *time.Time `json:"code_cooldown_until,omitempty"`
 }
 
@@ -105,11 +113,12 @@ type IssuedAccessCode struct {
 	CodeCooldownUntil *time.Time `json:"code_cooldown_until,omitempty"`
 }
 
-// SetAccessCodeSupport wires the email-OTP feature into the existing delivery
-// service, which is the only component allowed to decrypt inventory
-// credentials. A nil store leaves the feature disabled.
+// SetAccessCodeSupport wires automatic access-code issuance into delivery.
+// Calling it with a nil store means the feature is required but unavailable,
+// so delivery fails closed rather than sending an account without a valid code.
 func (s *OrderDeliveryService) SetAccessCodeSupport(store AccessCodeStore, frontendURL string) {
 	s.accessCodes = store
+	s.accessCodesEnabled = true
 	s.frontendURL = strings.TrimRight(frontendURL, "/")
 }
 
@@ -172,24 +181,34 @@ func (s *OrderDeliveryService) ListAccountAccess(ctx context.Context, userID, or
 			log.Printf("account access: load material for order %s item %s failed: %v", order.ID, item.ID, err)
 			continue
 		}
-		for _, account := range accounts {
-			// Check cooldown for this user+order+item
-			var cooldownUntil *time.Time
-			if s.accessCodeCooldown != nil {
-				cooldownKey := fmt.Sprintf("%s:%s:%s", userID, orderID, item.ID)
-				if retry, err := s.accessCodeCooldown.BlockedFor(ctx, cooldownKey); err == nil && retry > 0 {
-					until := s.now().Add(retry)
-					cooldownUntil = &until
+		codeStatus := "expired"
+		var codeExpiresAt *time.Time
+		if s.accessCodes == nil {
+			codeStatus = "unavailable"
+		} else {
+			expiresUnix, found, statusErr := s.accessCodes.LoadStatus(ctx, AccessCodeScopeKey(userID, orderID, item.ID))
+			switch {
+			case statusErr != nil:
+				codeStatus = "unavailable"
+			case found:
+				expires := time.Unix(expiresUnix, 0).UTC()
+				if expires.After(s.now()) {
+					codeStatus = "valid"
+					codeExpiresAt = &expires
 				}
 			}
+		}
+		for _, account := range accounts {
 			out = append(out, AccountAccess{
-				OrderItemID:       item.ID,
-				ProductName:       item.ProductName,
-				DurationName:      item.DurationName,
-				AccountLabel:      account.Label,
-				AccountEmail:      account.Username,
-				OTPReady:          account.OTPReady,
-				CodeCooldownUntil: cooldownUntil,
+				OrderItemID:         item.ID,
+				ProductName:         item.ProductName,
+				DurationName:        item.DurationName,
+				AccountLabel:        account.Label,
+				AccountEmail:        account.Username,
+				OTPReady:            account.OTPReady,
+				AccessCodeStatus:    codeStatus,
+				AccessCodeExpiresAt: codeExpiresAt,
+				CodeCooldownUntil:   codeExpiresAt,
 			})
 		}
 	}
@@ -272,35 +291,27 @@ func (s *OrderDeliveryService) IssueAccountAccessCode(ctx context.Context, userI
 		return nil, ErrOTPUnavailable
 	}
 
-	// Enforce per-item cooldown so the same user cannot spam new codes.
-	// Key is user:order:item to scope the limit to one order item.
-	if s.accessCodeCooldown != nil {
-		cooldownKey := fmt.Sprintf("%s:%s:%s", userID, orderID, itemID)
-		if retry, err := s.accessCodeCooldown.BlockedFor(ctx, cooldownKey); err == nil && retry > 0 {
-			until := s.now().Add(retry)
+	// The delivery email is the source of an already-valid code. Since Redis
+	// deliberately cannot recover its plaintext, reject manual regeneration
+	// until that code expires instead of invalidating the emailed credential.
+	scopeKey := AccessCodeScopeKey(userID, orderID, itemID)
+	if expiresUnix, found, statusErr := s.accessCodes.LoadStatus(ctx, scopeKey); statusErr != nil {
+		return nil, fmt.Errorf("load access code status: %w", statusErr)
+	} else if found {
+		until := time.Unix(expiresUnix, 0).UTC()
+		if retry := until.Sub(s.now()); retry > 0 {
 			return nil, &AccessCodeCooldownError{RetryAfter: retry, CodeCooldownUntil: &until}
 		}
 	}
 
-	code, err := newAccessCode()
+	code, expiresAt, err := s.storeAccessCode(ctx, userID, order.ID, itemID, emails)
 	if err != nil {
-		return nil, fmt.Errorf("generate access code: %w", err)
-	}
-	expiresAt := s.now().Add(AccessCodeTTL)
-	payload := AccessCodePayload{
-		OrderID: order.ID, OrderItemID: itemID, UserID: userID,
-		Emails: emails, ExpiresAt: expiresAt,
-	}
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("encode access code: %w", err)
-	}
-	if err := s.accessCodes.Store(ctx, HashAccessCode(code), encoded, AccessCodeTTL); err != nil {
-		return nil, fmt.Errorf("store access code: %w", err)
+		return nil, err
 	}
 
-	// Start the cooldown window so a repeat request within 5 minutes is rejected.
-	cooldownUntil := s.now().Add(AccessCodeCooldownTTL)
+	// Start the compatibility cooldown window so older frontend clients still
+	// receive the expected metadata.
+	cooldownUntil := expiresAt
 	if s.accessCodeCooldown != nil {
 		cooldownKey := fmt.Sprintf("%s:%s:%s", userID, orderID, itemID)
 		_ = s.accessCodeCooldown.Block(ctx, cooldownKey)
@@ -415,6 +426,37 @@ func HashAccessCode(code string) string {
 	normalized := strings.ToUpper(strings.TrimSpace(code))
 	digest := sha256.Sum256([]byte(normalized))
 	return hex.EncodeToString(digest[:])
+}
+
+// AccessCodeScopeKey is a non-secret, one-way identifier for a user/order/item
+// binding. It lets Redis atomically invalidate an older code without storing
+// that code's plaintext.
+func AccessCodeScopeKey(userID, orderID, itemID string) string {
+	digest := sha256.Sum256([]byte("scope\x00" + userID + "\x00" + orderID + "\x00" + itemID))
+	return "scope:" + hex.EncodeToString(digest[:])
+}
+
+func (s *OrderDeliveryService) storeAccessCode(ctx context.Context, userID, orderID, itemID string, emails []string) (string, time.Time, error) {
+	code, err := newAccessCode()
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("generate access code: %w", err)
+	}
+	expiresAt := s.now().Add(AccessCodeTTL)
+	payload := AccessCodePayload{
+		OrderID: orderID, OrderItemID: itemID, UserID: userID,
+		Emails: append([]string(nil), emails...), ExpiresAt: expiresAt,
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("encode access code: %w", err)
+	}
+	if s.accessCodes == nil {
+		return "", time.Time{}, ErrOTPUnavailable
+	}
+	if err := s.accessCodes.StoreIssued(ctx, HashAccessCode(code), AccessCodeScopeKey(userID, orderID, itemID), encoded, expiresAt.Unix(), AccessCodeTTL); err != nil {
+		return "", time.Time{}, fmt.Errorf("store access code: %w", err)
+	}
+	return code, expiresAt, nil
 }
 
 // NormalizeAccessCode accepts the separators customers naturally type.

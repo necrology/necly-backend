@@ -7,11 +7,11 @@ membaca OTP terbaru milik akun yang memang ia beli.
 
 ## Alur pembeli
 
-1. Pembeli membuka detail pesanan setelah admin menyetujui dan mengirim akun.
-2. Pada item yang sudah terkirim, halaman menampilkan **email akun** dan tombol
-   **Buat kode akses OTP**.
-3. Server membuat kode 10 karakter yang berlaku 15 menit, menyimpan hanya
-   hash-nya, lalu mengirim kode itu ke email pembeli yang terverifikasi.
+1. Admin menyetujui pengiriman akun.
+2. Sebelum email akun dikirim, server otomatis membuat kode 10 karakter yang
+   berlaku 5 menit dan menyimpan payload-nya hanya di Redis di bawah hash kode.
+3. Email pengiriman memuat email akun, kata sandi akun, kode akses, masa berlaku,
+   serta tautan `/otp`. Pembeli tidak perlu menekan tombol generate.
 4. Pembeli membuka `/otp`, memasukkan email akun dan kode akses.
 5. Server mencocokkan hash kode dan email, membaca email terbaru yang
    dialamatkan ke email akun tersebut, lalu menampilkan kode OTP.
@@ -19,9 +19,18 @@ membaca OTP terbaru milik akun yang memang ia beli.
    mengatur ulang kata sandi diabaikan sepenuhnya, termasuk kode angka di
    dalamnya, karena kode tersebut bukan kredensial login.
 
-Kode akses tidak pernah disimpan dalam bentuk plaintext. Email akun hanya
+Kode akses tidak pernah disimpan dalam bentuk plaintext. Email pengiriman
+adalah sumber utama plaintext; API detail hanya mengembalikan status dan waktu
+kedaluwarsa. Desain ini dipilih daripada encrypted short-lived store agar tidak
+menambah kunci dekripsi bearer credential di server. Email akun hanya
 ditampilkan kepada pemilik pesanan; kata sandi akun tetap tidak pernah
 dikembalikan API.
+
+Penyimpanan kode dan scope index dilakukan atomik. Retry setelah email gagal
+mengganti kode lama dan menghapus hash sebelumnya; replay delivery yang sudah
+`sent` tidak mengirim email atau membuat kode baru. Jika Redis gagal sebelum
+pengiriman, delivery menjadi `failed` dengan `access_code_failed` dan aman untuk
+dicoba ulang—tidak ditandai sukses secara palsu.
 
 ## Kontrak API
 
@@ -38,7 +47,10 @@ Mengembalikan akun yang sudah dikirim untuk pesanan milik pengguna.
       "duration_name": "1 Bulan",
       "account_label": "Akun utama",
       "account_email": "family@example.test",
-      "otp_ready": true
+      "otp_ready": true,
+      "access_code_status": "valid",
+      "access_code_expires_at": "2026-10-21T17:05:00Z",
+      "code_cooldown_until": "2026-10-21T17:05:00Z"
     }
   ],
   "otp_inbox_ready": true
@@ -46,8 +58,11 @@ Mengembalikan akun yang sudah dikirim untuk pesanan milik pengguna.
 ```
 
 - `otp_ready` per akun bernilai `false` bila akun itu tidak punya app password
-  maupun mailbox pusat. UI memakai nilai ini untuk menonaktifkan tombol kode
-  akses, sehingga pembeli tidak menerima kode yang tidak bisa ditukar.
+  maupun mailbox pusat.
+- `access_code_status` bernilai `valid`, `expired`, atau `unavailable`.
+  Plaintext kode dan hash tidak pernah dikembalikan. `access_code_expires_at`
+  hanya ada selama scope Redis masih valid; `code_cooldown_until` dipertahankan
+  sebagai metadata kompatibilitas frontend.
 - Pesanan milik pengguna lain dijawab `404` (tidak membedakan "tidak ada" dan
   "bukan milik Anda").
 - Pesanan yang belum `processing` atau lebih tinggi dijawab
@@ -56,7 +71,9 @@ Mengembalikan akun yang sudah dikirim untuk pesanan milik pengguna.
 
 ### `POST /api/v1/orders/:id/account-access/:itemId/code` (login)
 
-Membuat kode akses untuk satu item yang sudah terkirim.
+Fallback kompatibilitas untuk membuat kode baru setelah kode otomatis sudah
+kedaluwarsa. Selama kode dari email masih valid, endpoint mengembalikan
+`429 otp_access_code_cooldown` agar kode email tidak dinonaktifkan.
 
 ```json
 {
@@ -167,7 +184,7 @@ aktif karena kode akses disimpan di sana dengan TTL.
 
 ## Batas keamanan
 
-- Kode akses: 10 karakter acak, TTL 15 menit, hanya hash SHA-256 yang disimpan.
+- Kode akses: 10 karakter acak, TTL 5 menit, hanya hash SHA-256 yang disimpan.
 - Endpoint lookup publik dibatasi 10 percobaan/menit per IP; endpoint pembuatan
   kode hanya untuk pemilik pesanan.
 - Email, kode akses, dan OTP tidak pernah ditulis ke log, audit, atau pesan

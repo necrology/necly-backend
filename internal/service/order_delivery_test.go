@@ -1,9 +1,11 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
+	"log"
 	"strings"
 	"testing"
 	"time"
@@ -14,12 +16,14 @@ import (
 )
 
 type deliveryFakeMail struct {
-	enabled bool
-	err     error
-	sent    []mailer.Message
+	enabled   bool
+	err       error
+	sent      []mailer.Message
+	attempted []mailer.Message
 }
 
 func (m *deliveryFakeMail) Send(_ context.Context, msg mailer.Message) error {
+	m.attempted = append(m.attempted, msg)
 	if m.err != nil {
 		return m.err
 	}
@@ -252,6 +256,7 @@ func newDeliveryFixture(t *testing.T, verified bool, credential string) *deliver
 	audit := &fakeAudit{}
 	service := NewOrderDeliveryService(repo, repo, cipher, mail, audit)
 	service.now = func() time.Time { return now }
+	service.SetCentralOTPInboxReady(true)
 	return &deliveryFixture{
 		repo: repo, mail: mail, audit: audit, cipher: cipher, service: service,
 		order: order, itemID: itemID,
@@ -348,7 +353,10 @@ func TestDeliverApprovedOrderUsesComplaintPageAndNoReplyWording(t *testing.T) {
 	}
 	for _, want := range []string{
 		"https://necly.example/otp",
-		"tekan Buat kode akses OTP",
+		"KODE AKSES OTP",
+		"Berlaku        : 5 menit",
+		"berbeda dari kata sandi akun dan berbeda dari OTP platform",
+		"kode akses OTP 5 menit yang tercantum di email ini",
 		"Tunggu beberapa saat sampai kode OTP terbaru",
 		"Kembali ke platform dan masukkan kode OTP",
 	} {
@@ -376,6 +384,140 @@ func TestDeliverApprovedOrderExplainsChatGPTPasswordBeforeOptionalOTP(t *testing
 	}
 	if passwordIndex >= otpIndex {
 		t.Fatalf("instruksi OTP mendahului password:\n%s", body)
+	}
+}
+
+func TestDeliverApprovedOrderAutomaticallyStoresOneFiveMinuteCode(t *testing.T) {
+	fixture := newDeliveryFixture(t, true, "family@example.test:secret")
+	store := newFakeAccessStore()
+	fixture.service.SetAccessCodeSupport(store, "https://necly.example")
+
+	if _, err := fixture.service.DeliverApprovedOrder(context.Background(), AdminActor{}, fixture.order.ID); err != nil {
+		t.Fatalf("DeliverApprovedOrder() error = %v", err)
+	}
+	if len(store.data) != 1 || store.ttl != 5*time.Minute {
+		t.Fatalf("stored codes = %d ttl = %s, want one 5-minute code", len(store.data), store.ttl)
+	}
+	if len(store.statuses) != 1 {
+		t.Fatalf("scope statuses = %d, want 1", len(store.statuses))
+	}
+	body := fixture.mail.sent[0].Body
+	var code string
+	for key := range store.data {
+		for _, candidate := range strings.Fields(body) {
+			if len(candidate) == 10 && HashAccessCode(candidate) == key {
+				code = candidate
+				break
+			}
+		}
+	}
+	if code == "" {
+		t.Fatalf("delivery email did not contain the hashed access code:\n%s", body)
+	}
+	if strings.Contains(string(store.data[HashAccessCode(code)]), code) {
+		t.Fatal("Redis payload persisted the plaintext access code")
+	}
+
+	if _, err := fixture.service.DeliverApprovedOrder(context.Background(), AdminActor{}, fixture.order.ID); err != nil {
+		t.Fatalf("idempotent replay: %v", err)
+	}
+	if len(fixture.mail.sent) != 1 || len(store.data) != 1 {
+		t.Fatalf("replay sent %d emails and left %d codes", len(fixture.mail.sent), len(store.data))
+	}
+}
+
+func TestDeliverApprovedOrderRedisFailureIsRetryable(t *testing.T) {
+	fixture := newDeliveryFixture(t, true, "family@example.test:secret")
+	store := newFakeAccessStore()
+	store.err = errors.New("redis unavailable")
+	fixture.service.SetAccessCodeSupport(store, "https://necly.example")
+
+	if _, err := fixture.service.DeliverApprovedOrder(context.Background(), AdminActor{}, fixture.order.ID); err != nil {
+		t.Fatalf("DeliverApprovedOrder() error = %v", err)
+	}
+	failed := deliveryStatus(t, fixture)
+	if failed.Status != domain.DeliveryFailed || failed.ErrorCode == nil || *failed.ErrorCode != DeliveryErrorAccessCodeFailed {
+		t.Fatalf("delivery after Redis failure = %#v", failed)
+	}
+	if len(fixture.mail.sent) != 0 {
+		t.Fatal("credentials were emailed without a persisted access code")
+	}
+
+	store.err = nil
+	if _, err := fixture.service.RetryDelivery(context.Background(), AdminActor{}, fixture.order.ID, failed.ID); err != nil {
+		t.Fatalf("RetryDelivery() error = %v", err)
+	}
+	if got := deliveryStatus(t, fixture); got.Status != domain.DeliverySent {
+		t.Fatalf("retried delivery = %#v", got)
+	}
+	if len(fixture.mail.sent) != 1 || len(store.data) != 1 {
+		t.Fatalf("retry sent %d emails and stored %d codes", len(fixture.mail.sent), len(store.data))
+	}
+}
+
+func TestDeliverApprovedOrderEmailFailureReplacesOrphanedCodeOnRetry(t *testing.T) {
+	fixture := newDeliveryFixture(t, true, "family@example.test:secret")
+	store := newFakeAccessStore()
+	fixture.service.SetAccessCodeSupport(store, "https://necly.example")
+	fixture.mail.err = errors.New("smtp unavailable")
+
+	if _, err := fixture.service.DeliverApprovedOrder(context.Background(), AdminActor{}, fixture.order.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.data) != 1 {
+		t.Fatalf("codes after email failure = %d, want 1", len(store.data))
+	}
+	var oldKey string
+	for key := range store.data {
+		oldKey = key
+	}
+	failed := deliveryStatus(t, fixture)
+
+	fixture.mail.err = nil
+	if _, err := fixture.service.RetryDelivery(context.Background(), AdminActor{}, fixture.order.ID, failed.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.data) != 1 {
+		t.Fatalf("retry left %d valid codes, want 1", len(store.data))
+	}
+	if _, stillValid := store.data[oldKey]; stillValid {
+		t.Fatal("retry left the orphaned pre-email code valid")
+	}
+}
+
+func TestDeliverApprovedOrderDoesNotLogAccessCodeOrCredentials(t *testing.T) {
+	fixture := newDeliveryFixture(t, true, "family@example.test:super-secret-password")
+	fixture.service.SetAccessCodeSupport(newFakeAccessStore(), "https://necly.example")
+	fixture.mail.err = errors.New("smtp unavailable")
+
+	var logs bytes.Buffer
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+	})
+
+	if _, err := fixture.service.DeliverApprovedOrder(context.Background(), AdminActor{}, fixture.order.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.mail.attempted) != 1 {
+		t.Fatalf("mail attempts = %d, want 1", len(fixture.mail.attempted))
+	}
+	body := fixture.mail.attempted[0].Body
+	var code string
+	for _, candidate := range strings.Fields(body) {
+		if len(candidate) == 10 {
+			code = candidate
+			break
+		}
+	}
+	for _, secret := range []string{"family@example.test", "super-secret-password", code} {
+		if secret != "" && strings.Contains(logs.String(), secret) {
+			t.Fatalf("delivery log leaked secret %q: %s", secret, logs.String())
+		}
 	}
 }
 

@@ -14,22 +14,49 @@ import (
 	"github.com/necly/services/internal/platform/otpinbox"
 )
 
-type fakeAccessStore struct {
-	data map[string][]byte
-	ttl  time.Duration
+type fakeAccessStatus struct {
+	codeKey     string
+	expiresUnix int64
 }
 
-func newFakeAccessStore() *fakeAccessStore { return &fakeAccessStore{data: map[string][]byte{}} }
+type fakeAccessStore struct {
+	data     map[string][]byte
+	statuses map[string]fakeAccessStatus
+	ttl      time.Duration
+	err      error
+}
 
-func (s *fakeAccessStore) Store(_ context.Context, key string, value []byte, ttl time.Duration) error {
-	s.data[key] = append([]byte(nil), value...)
+func newFakeAccessStore() *fakeAccessStore {
+	return &fakeAccessStore{data: map[string][]byte{}, statuses: map[string]fakeAccessStatus{}}
+}
+
+func (s *fakeAccessStore) StoreIssued(_ context.Context, codeKey, scopeKey string, value []byte, expiresUnix int64, ttl time.Duration) error {
+	if s.err != nil {
+		return s.err
+	}
+	if previous, ok := s.statuses[scopeKey]; ok {
+		delete(s.data, previous.codeKey)
+	}
+	s.data[codeKey] = append([]byte(nil), value...)
+	s.statuses[scopeKey] = fakeAccessStatus{codeKey: codeKey, expiresUnix: expiresUnix}
 	s.ttl = ttl
 	return nil
 }
 
 func (s *fakeAccessStore) Load(_ context.Context, key string) ([]byte, bool, error) {
+	if s.err != nil {
+		return nil, false, s.err
+	}
 	value, ok := s.data[key]
 	return value, ok, nil
+}
+
+func (s *fakeAccessStore) LoadStatus(_ context.Context, scopeKey string) (int64, bool, error) {
+	if s.err != nil {
+		return 0, false, s.err
+	}
+	status, ok := s.statuses[scopeKey]
+	return status.expiresUnix, ok, nil
 }
 
 type fakeOTPInbox struct {
@@ -171,6 +198,34 @@ func TestIssueAccountAccessCodeStoresHashAndEmailsTheBuyer(t *testing.T) {
 	}
 }
 
+func TestListAccountAccessReturnsAutomaticCodeStatusWithoutPlaintext(t *testing.T) {
+	svc, _, _, store, order := accessFixture(t)
+	svc.now = func() time.Time { return time.Date(2026, 10, 21, 10, 0, 0, 0, time.UTC) }
+	expiresAt := svc.now().Add(AccessCodeTTL)
+	payload, _ := json.Marshal(AccessCodePayload{
+		OrderID: order.ID, OrderItemID: order.Items[0].ID, UserID: order.UserID,
+		Emails: []string{"family@example.test"}, ExpiresAt: expiresAt,
+	})
+	if err := store.StoreIssued(context.Background(), HashAccessCode("ABCD234567"), AccessCodeScopeKey(order.UserID, order.ID, order.Items[0].ID), payload, expiresAt.Unix(), AccessCodeTTL); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := svc.ListAccountAccess(context.Background(), order.UserID, order.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].AccessCodeStatus != "valid" || items[0].AccessCodeExpiresAt == nil || !items[0].AccessCodeExpiresAt.Equal(expiresAt) {
+		t.Fatalf("access code metadata = %+v", items)
+	}
+	encoded, err := json.Marshal(items[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "ABCD234567") || strings.Contains(string(encoded), HashAccessCode("ABCD234567")) {
+		t.Fatalf("account access leaked code material: %s", encoded)
+	}
+}
+
 func TestAccountAccessReportsOTPReadinessAndBlocksUselessCodes(t *testing.T) {
 	svc, repo, _, _, order := accessFixture(t)
 	svc.SetCentralOTPInboxReady(false)
@@ -233,7 +288,7 @@ func TestLookupRequiresMatchingEmailAndLiveCode(t *testing.T) {
 		Emails: []string{"family@example.test"}, ExpiresAt: expires,
 	})
 	code := "ABCD234567"
-	if err := store.Store(context.Background(), HashAccessCode(code), payload, time.Minute); err != nil {
+	if err := store.StoreIssued(context.Background(), HashAccessCode(code), AccessCodeScopeKey("user", "order", "item"), payload, expires.Unix(), time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	inbox := &fakeOTPInbox{enabled: true, message: &otpinbox.Message{Code: "445566", ReceivedAt: time.Now()}}
@@ -263,7 +318,7 @@ func TestLookupRejectsCodeAfterAccessRevoked(t *testing.T) {
 		Emails: []string{"family@example.test"}, ExpiresAt: time.Now().Add(10 * time.Minute),
 	})
 	code := "ABCD234567"
-	_ = store.Store(context.Background(), HashAccessCode(code), payload, time.Minute)
+	_ = store.StoreIssued(context.Background(), HashAccessCode(code), AccessCodeScopeKey(userID, orderID, itemID), payload, time.Now().Add(time.Minute).Unix(), time.Minute)
 	inbox := &fakeOTPInbox{enabled: true, message: &otpinbox.Message{Code: "445566", ReceivedAt: time.Now()}}
 	svc := NewAccountOTPService(store, inbox, time.Minute)
 	validator := &fakeAccessValidator{valid: false}
@@ -281,7 +336,7 @@ func TestLookupReportsUnavailableAndMissingMailbox(t *testing.T) {
 	store := newFakeAccessStore()
 	payload, _ := json.Marshal(AccessCodePayload{Emails: []string{"family@example.test"}})
 	code := "ABCD234567"
-	_ = store.Store(context.Background(), HashAccessCode(code), payload, time.Minute)
+	_ = store.StoreIssued(context.Background(), HashAccessCode(code), AccessCodeScopeKey("user", "order", "item"), payload, time.Now().Add(time.Minute).Unix(), time.Minute)
 
 	disabled := NewAccountOTPService(store, &fakeOTPInbox{enabled: false}, time.Minute)
 	if _, err := disabled.Lookup(context.Background(), "family@example.test", code); !errors.Is(err, ErrOTPUnavailable) {
@@ -336,7 +391,7 @@ func storeOTPAccessCode(t *testing.T, store *fakeAccessStore, email string) stri
 		t.Fatal(err)
 	}
 	code := "ABCD234567"
-	if err := store.Store(context.Background(), HashAccessCode(code), payload, time.Minute); err != nil {
+	if err := store.StoreIssued(context.Background(), HashAccessCode(code), AccessCodeScopeKey("user", "order", email), payload, time.Now().Add(time.Minute).Unix(), time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	return code

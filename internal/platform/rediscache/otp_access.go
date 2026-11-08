@@ -29,11 +29,31 @@ func NewOTPAccessCodes(client *redis.Client, prefix string) *OTPAccessCodes {
 // ErrOTPAccessStoreUnavailable is returned when Redis is not configured.
 var ErrOTPAccessStoreUnavailable = errors.New("otp access code store is unavailable")
 
-func (s *OTPAccessCodes) Store(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+var storeIssuedScript = redis.NewScript(`
+local old = redis.call("HGET", KEYS[2], "code_key")
+if old then
+  redis.call("DEL", KEYS[3] .. old)
+end
+redis.call("SET", KEYS[1], ARGV[1], "PX", ARGV[4])
+redis.call("HSET", KEYS[2], "code_key", ARGV[2], "expires_unix", ARGV[3])
+redis.call("PEXPIRE", KEYS[2], ARGV[4])
+return 1
+`)
+
+// StoreIssued atomically invalidates the previous hashed code for the scope,
+// writes the new hashed-code payload, and stores only its expiry metadata in the
+// scope index. Neither key nor value contains the plaintext access code.
+func (s *OTPAccessCodes) StoreIssued(ctx context.Context, codeKey, scopeKey string, value []byte, expiresUnix int64, ttl time.Duration) error {
 	if s == nil || s.client == nil {
 		return ErrOTPAccessStoreUnavailable
 	}
-	return s.client.Set(ctx, s.prefix+key, value, ttl).Err()
+	if ttl <= 0 {
+		return errors.New("otp access code ttl must be positive")
+	}
+	return storeIssuedScript.Run(ctx, s.client,
+		[]string{s.prefix + codeKey, s.prefix + scopeKey, s.prefix},
+		value, codeKey, expiresUnix, ttl.Milliseconds(),
+	).Err()
 }
 
 func (s *OTPAccessCodes) Load(ctx context.Context, key string) ([]byte, bool, error) {
@@ -48,4 +68,18 @@ func (s *OTPAccessCodes) Load(ctx context.Context, key string) ([]byte, bool, er
 		return nil, false, err
 	}
 	return value, true, nil
+}
+
+func (s *OTPAccessCodes) LoadStatus(ctx context.Context, scopeKey string) (int64, bool, error) {
+	if s == nil || s.client == nil {
+		return 0, false, ErrOTPAccessStoreUnavailable
+	}
+	expiresUnix, err := s.client.HGet(ctx, s.prefix+scopeKey, "expires_unix").Int64()
+	if errors.Is(err, redis.Nil) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return expiresUnix, true, nil
 }

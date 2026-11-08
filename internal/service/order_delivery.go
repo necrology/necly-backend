@@ -28,6 +28,7 @@ const (
 	DeliveryErrorAccountUnavailable = "inventory_account_unavailable"
 	DeliveryErrorCredentialInvalid  = "credential_invalid"
 	DeliveryErrorEmailFailed        = "email_failed"
+	DeliveryErrorAccessCodeFailed   = "access_code_failed"
 	DeliveryErrorPersistenceFailed  = "persistence_failed"
 	// DeliveryErrorNoAlternativeAccount is recorded when every candidate
 	// account has already been used by this buyer for the same product. The
@@ -154,10 +155,12 @@ type OrderDeliveryService struct {
 	audit  AuditWriter
 	now    func() time.Time
 
-	// accessCodes and frontendURL power the email-OTP access page. Both are
-	// optional so the W17 delivery flow keeps working in existing deployments.
-	accessCodes AccessCodeStore
-	frontendURL string
+	// accessCodes and frontendURL power automatic email-OTP access. A service
+	// explicitly wired with a nil store fails delivery closed; an unwired unit or
+	// legacy embedding remains backward-compatible.
+	accessCodes        AccessCodeStore
+	accessCodesEnabled bool
+	frontendURL        string
 	// centralOTPInboxReady is wired after the OTP service is constructed. It
 	// tells the order page whether a shared mailbox can serve accounts that do
 	// not store their own app password.
@@ -447,8 +450,30 @@ func (s *OrderDeliveryService) deliverOne(ctx context.Context, actor AdminActor,
 		return
 	}
 
+	var accessCode string
+	var accessCodeExpiresAt time.Time
+	if s.accessCodesEnabled {
+		if s.accessCodes == nil {
+			s.fail(ctx, actor, order, delivery, DeliveryErrorAccessCodeFailed, isRetry)
+			return
+		}
+		emails, ready := accessCodeEmails(accounts)
+		if !ready {
+			s.fail(ctx, actor, order, delivery, DeliveryErrorAccessCodeFailed, isRetry)
+			return
+		}
+		accessCode, accessCodeExpiresAt, err = s.storeAccessCode(ctx, order.UserID, order.ID, item.ID, emails)
+		if err != nil {
+			// Do not include the generated code, payload, or customer/account email
+			// in logs. The stable delivery error remains safe for retries.
+			log.Printf("delivery: store access code for order %s item %s failed: %v", order.ID, item.ID, err)
+			s.fail(ctx, actor, order, delivery, DeliveryErrorAccessCodeFailed, isRetry)
+			return
+		}
+	}
+
 	accessExpiresAt := now.AddDate(0, 0, material.DurationDays)
-	msg := s.buildMessage(order, item, accounts, accessExpiresAt)
+	msg := s.buildMessage(order, item, accounts, accessExpiresAt, accessCode, accessCodeExpiresAt)
 	sendCtx, cancel := context.WithTimeout(ctx, deliverySendTimeout)
 	defer cancel()
 	if err := s.mail.Send(sendCtx, msg); err != nil {
@@ -479,6 +504,23 @@ func (s *OrderDeliveryService) deliverOne(ctx context.Context, actor AdminActor,
 	s.record(ctx, actor, order, delivery, AuditOrderDeliverySent, map[string]any{
 		"order_id": order.ID, "order_item_id": item.ID, "delivery_id": delivery.ID,
 	})
+}
+
+func accessCodeEmails(accounts []deliveryAccount) ([]string, bool) {
+	emails := make([]string, 0, len(accounts))
+	seen := make(map[string]bool, len(accounts))
+	for _, account := range accounts {
+		email := strings.TrimSpace(account.Username)
+		key := strings.ToLower(email)
+		if email == "" || !account.OTPReady {
+			return nil, false
+		}
+		if !seen[key] {
+			seen[key] = true
+			emails = append(emails, email)
+		}
+	}
+	return emails, len(emails) > 0
 }
 
 type deliveryAccount struct {
@@ -547,6 +589,7 @@ func (s *OrderDeliveryService) decryptAccounts(material *DeliveryMaterial) ([]de
 		}
 		accounts = append(accounts, deliveryAccount{
 			Label: label, Username: username, Password: password, Instructions: instructions,
+			OTPReady: s.centralOTPInboxReady || slot.MailboxAppPasswordSet,
 		})
 	}
 	if len(accounts) == 0 {
@@ -612,14 +655,25 @@ func validDeliveryCredentialField(value string) bool {
 	return value != "" && utf8.RuneCountInString(value) <= maxDeliveryCredentialFieldLength && !strings.ContainsAny(value, "\r\n")
 }
 
-func (s *OrderDeliveryService) buildMessage(order *domain.Order, item *domain.OrderItem, accounts []deliveryAccount, accessExpiresAt time.Time) mailer.Message {
+func (s *OrderDeliveryService) buildMessage(order *domain.Order, item *domain.OrderItem, accounts []deliveryAccount, accessExpiresAt time.Time, accessCode string, accessCodeExpiresAt time.Time) mailer.Message {
 	var body strings.Builder
 	body.WriteString("Halo " + order.Customer.Name + ",\n\n")
 	body.WriteString("Akses untuk pesanan Anda sudah aktif. Berikut detail pesanan dan akun yang dapat digunakan.\n\n")
 	writeDeliverySummary(&body, order, item, accessExpiresAt)
 	body.WriteString("AKUN ANDA\n")
 	writeDeliveryAccounts(&body, accounts)
-	s.writeUsageInstructions(&body, item)
+	if accessCode != "" {
+		body.WriteString("KODE AKSES OTP\n")
+		fmt.Fprintf(&body, "Kode akses     : %s\n", accessCode)
+		fmt.Fprintf(&body, "Berlaku        : 5 menit, sampai %s WIB\n", accessCodeExpiresAt.In(time.FixedZone("WIB", 7*3600)).Format("02 Jan 2006 15:04:05"))
+		body.WriteString("Kode akses ini berbeda dari kata sandi akun dan berbeda dari OTP platform. Gunakan kode akses hanya untuk membuka halaman Ambil OTP.\n")
+		if s.frontendURL != "" {
+			fmt.Fprintf(&body, "Halaman Ambil OTP: %s/otp\n\n", s.frontendURL)
+		} else {
+			body.WriteString("Buka halaman Ambil OTP di situs Necly.\n\n")
+		}
+	}
+	s.writeUsageInstructions(&body, item, accessCode != "")
 	body.WriteString("\nEmail ini tidak menerima balasan. Semua kendala ditangani melalui halaman Laporan Kendala.\n")
 	body.WriteString("— NECLY Services\n")
 	return mailer.Message{
@@ -640,7 +694,7 @@ func (s *OrderDeliveryService) buildReplacementMessage(order *domain.Order, item
 	fmt.Fprintf(&body, "Alasan penggantian : %s\n\n", reason)
 	body.WriteString("AKUN PENGGANTI\n")
 	writeDeliveryAccounts(&body, accounts)
-	s.writeUsageInstructions(&body, item)
+	s.writeUsageInstructions(&body, item, false)
 	body.WriteString("\nTidak ada tagihan baru untuk penggantian ini.\n")
 	body.WriteString("Email ini tidak menerima balasan. Semua kendala ditangani melalui halaman Laporan Kendala.\n")
 	body.WriteString("— NECLY Services\n")
@@ -703,7 +757,7 @@ func platformLoginURL(productName string) string {
 	}
 }
 
-func (s *OrderDeliveryService) writeUsageInstructions(body *strings.Builder, item *domain.OrderItem) {
+func (s *OrderDeliveryService) writeUsageInstructions(body *strings.Builder, item *domain.OrderItem, codeIncluded bool) {
 	productName := "layanan yang dibeli"
 	if item != nil && strings.TrimSpace(item.ProductName) != "" {
 		productName = strings.TrimSpace(item.ProductName)
@@ -736,7 +790,11 @@ func (s *OrderDeliveryService) writeUsageInstructions(body *strings.Builder, ite
 			fmt.Fprintf(body, "%d. Jika platform meminta kode OTP lewat email, buka halaman Ambil OTP di situs Necly.\n", step)
 		}
 		step++
-		body.WriteString(fmt.Sprintf("%d. Di halaman pesanan, buka bagian Akses akun & OTP, tekan Buat kode akses OTP, lalu masukkan email akun dan kode akses tersebut di halaman Ambil OTP.\n", step))
+		if codeIncluded {
+			body.WriteString(fmt.Sprintf("%d. Masukkan email akun dan kode akses OTP 5 menit yang tercantum di email ini pada halaman Ambil OTP.\n", step))
+		} else {
+			body.WriteString(fmt.Sprintf("%d. Di halaman pesanan, buka bagian Akses akun & OTP, buat kode akses OTP, lalu masukkan email akun dan kode akses tersebut di halaman Ambil OTP.\n", step))
+		}
 		step++
 		body.WriteString(fmt.Sprintf("%d. Tunggu beberapa saat sampai kode OTP terbaru dari email akun muncul di halaman Ambil OTP, lalu salin kodenya.\n", step))
 		step++
