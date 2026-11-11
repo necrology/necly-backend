@@ -127,6 +127,40 @@ func TestAdminUserIntegration_LastAdminCannotBeRemovedByAnyPath(t *testing.T) {
 	}
 }
 
+func TestAdminUserIntegration_SelfAccessChangesAreRejected(t *testing.T) {
+	ctx := context.Background()
+	db := openAdminUserDB(t)
+	store := NewStore(db)
+	svc := service.NewAdminUserService(store, store)
+
+	admin := createAdminUserFixture(t, db, domain.RoleAdmin, true)
+	actor := service.AdminActor{UserID: admin.ID, IPAddress: "203.0.113.77"}
+
+	if _, err := svc.UpdateUser(ctx, actor, admin.ID, service.AdminUserUpdate{Role: rolePtr(domain.RoleCustomer)}); !errors.Is(err, service.ErrSelfRoleChange) {
+		t.Fatalf("expected ErrSelfRoleChange, got %v", err)
+	}
+	assertUserRoleAndActive(t, db, admin.ID, domain.RoleAdmin, true)
+
+	inactive := false
+	if _, err := svc.UpdateUser(ctx, actor, admin.ID, service.AdminUserUpdate{Active: &inactive}); !errors.Is(err, service.ErrSelfDeactivate) {
+		t.Fatalf("expected ErrSelfDeactivate, got %v", err)
+	}
+	assertUserRoleAndActive(t, db, admin.ID, domain.RoleAdmin, true)
+
+	if err := svc.DeleteUser(ctx, actor, admin.ID); !errors.Is(err, service.ErrSelfDelete) {
+		t.Fatalf("expected ErrSelfDelete, got %v", err)
+	}
+	assertUserRoleAndActive(t, db, admin.ID, domain.RoleAdmin, true)
+
+	var audits []domain.AuditLog
+	if err := db.Order("created_at ASC").Find(&audits).Error; err != nil {
+		t.Fatalf("list audits: %v", err)
+	}
+	if len(audits) != 0 {
+		t.Fatalf("rejected self changes must not be audited as successful changes, got %d rows", len(audits))
+	}
+}
+
 func TestAdminUserIntegration_RoleAndStatusChangesAreAudited(t *testing.T) {
 	ctx := context.Background()
 	db := openAdminUserDB(t)
