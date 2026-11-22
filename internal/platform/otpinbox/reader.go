@@ -423,13 +423,24 @@ var (
 	htmlTag   = regexp.MustCompile(`(?s)<[^>]*>`)
 	yearValue = regexp.MustCompile(`^20\d{2}$`)
 
-	// passwordChangeMail matches mail that asks the reader to reset or change a
-	// password. Those messages often carry a numeric code as well, but the code
-	// unlocks a password change instead of a login, so it must never be returned
-	// as the account's login OTP. The patterns are deliberately phrase-based so
-	// ordinary login mail that merely warns "never share your password" or
-	// mentions a password policy is still accepted.
-	passwordChangeMail = regexp.MustCompile(`(?i)(?:` +
+	// styleScriptHeadRE removes <style>, <script>, <head> blocks and their content
+	// before HTML tag stripping. These blocks contain CSS/JS that must not be
+	// treated as visible text for OTP extraction.
+	styleScriptHeadRE = regexp.MustCompile(`(?is)<(?:style|script|head)\b[^>]*>.*?</(?:style|script|head)>`)
+
+	// htmlCommentRE removes HTML comments before tag stripping.
+	htmlCommentRE = regexp.MustCompile(`(?s)<!--.*?-->`)
+
+	// cssColorHexRE matches hex color literals like #191919, #EBEBEB, or
+	// numeric character reference forms like &#35;191919 (where &#35; is '#').
+	cssColorHexRE = regexp.MustCompile(`(?i)(?:#|&#35;)([0-9a-f]{6}|[0-9a-f]{3})\b`)
+
+	// cssColorFuncRE matches CSS color functions: rgb(), rgba(), hsl(), hsla().
+	cssColorFuncRE = regexp.MustCompile(`(?i)\b(?:rgb|rgba|hsl|hsla)\s*\([^)]*\)`)
+
+	// passwordChangeIntentRE matches explicit password reset/change intent phrases.
+	// Used to detect if a subject line itself declares a password-reset purpose.
+	passwordChangeIntentRE = regexp.MustCompile(`(?i)(?:` +
 		`\b(?:reset|change[ds]?|update[ds]?|set(?:\s+up)?|create|choose)\s+(?:(?:a|your|the|my|account)\s+)?(?:new\s+)?password\b` +
 		`|\bpassword\s+(?:reset|change[ds]?|update[ds]?|recovery|assistance)\b` +
 		`|\bpassword\s+(?:was|were|is|has\s+been|have\s+been)\s+(?:successfully\s+)?(?:changed|reset|updated)\b` +
@@ -439,6 +450,13 @@ var (
 		`|\b(?:kata\s+sandi|sandi|password)\s+(?:anda\s+)?(?:yang\s+)?baru\b` +
 		`|\b(?:kata\s+sandi|sandi|password)\b.{0,40}?\bdi(?:ubah|ganti|perbarui|reset)\b` +
 		`|\b(?:lupa|pemulihan|memulihkan|pulihkan)\s+(?:kata\s+sandi|sandi|password)\b)`)
+
+	// conditionalClauseRE matches conditional words that precede a reset intent,
+	// without requiring a sentence boundary in between. If a reset intent is
+	// immediately preceded by one of these words, it is a conditional clause
+	// (e.g., "if you were not trying to log in, please reset your password")
+	// and must not cause rejection of a nearby login code.
+	conditionalClauseRE = regexp.MustCompile(`(?i)\b(?:if|jika|bila|apabila|kalau|kalo|unless|seandainya)\b`)
 )
 
 // parseMessage is exported to tests through parseMessageForTest. It returns ok
@@ -462,10 +480,11 @@ func parseMessage(raw []byte, recipient string, since time.Time) (*Message, bool
 	if len(body) > 200_000 {
 		body = body[:200_000]
 	}
-	// Skip password reset/change mail entirely. Its code is a password-change
-	// credential, not a login OTP, so an older valid login code may still win
-	// the lookup in fetchLatest.
-	if passwordChangeMail.MatchString(strings.Join(strings.Fields(subject+" "+body), " ")) {
+
+	// If the subject itself declares a password-reset/change purpose, reject the
+	// entire message as before. This is a strong signal that the code is for
+	// password change, not login.
+	if passwordChangeIntentRE.MatchString(subject) {
 		return nil, false
 	}
 
@@ -629,6 +648,12 @@ func extractText(contentType, transferEncoding string, body io.Reader) string {
 	}
 	value := string(text)
 	if mediaType == "text/html" {
+		// Remove non-visible content BEFORE stripping tags, so CSS/JS/comments
+		// and color literals never become candidate digits.
+		value = styleScriptHeadRE.ReplaceAllString(value, " ")
+		value = htmlCommentRE.ReplaceAllString(value, " ")
+		value = cssColorHexRE.ReplaceAllString(value, " ")
+		value = cssColorFuncRE.ReplaceAllString(value, " ")
 		value = html.UnescapeString(htmlTag.ReplaceAllString(value, " "))
 	}
 	return strings.Join(strings.Fields(value), " ")
@@ -645,10 +670,46 @@ func decodeTransferEncoding(encoding string, body io.Reader) (io.Reader, error) 
 	}
 }
 
+// isConditionalResetIntent checks whether a password reset/change intent near
+// the given position is part of a conditional clause (e.g., "if you were not
+// trying to log in, please reset your password"). It searches backwards up to
+// 80 bytes for conditional words (if, jika, bila, apabila, kalau, kalo, unless,
+// seandainya) that directly precede the intent without a sentence boundary.
+func isConditionalResetIntent(text string, intentPos int) bool {
+	// Look backwards up to 80 bytes for a conditional word.
+	searchStart := intentPos - 80
+	if searchStart < 0 {
+		searchStart = 0
+	}
+	before := text[searchStart:intentPos]
+	// Find the last conditional word in the window.
+	matches := conditionalClauseRE.FindAllStringIndex(before, -1)
+	if len(matches) == 0 {
+		return false
+	}
+	lastConditional := matches[len(matches)-1]
+	// Check if there's a sentence boundary (., !, ?) between the conditional
+	// word and the intent position. If so, it's a separate sentence, not a
+	// conditional clause governing the intent.
+	between := before[lastConditional[1]:]
+	for _, r := range between {
+		if r == '.' || r == '!' || r == '?' {
+			return false
+		}
+	}
+	return true
+}
+
 // extractCode returns the most plausible OTP in a message. Real provider mail
 // usually puts the code near words such as "code", "kode" or "verification".
 // Requiring that context (or an exact 6-digit token) keeps order numbers,
 // prices and years from being returned as a login code.
+//
+// Password reset/change intent is now evaluated per-candidate: a code is
+// rejected only if a reset intent appears within ~80 bytes of the candidate
+// AND that intent is not part of a conditional clause. This avoids discarding
+// login code emails that merely contain boilerplate like "if you were not trying
+// to log in, please reset your password" far from the actual code.
 func extractCode(subject, body string) (string, bool) {
 	subjectHasKeyword := otpWords.MatchString(subject)
 	combined := subject + " " + body
@@ -673,6 +734,24 @@ func extractCode(subject, body string) (string, bool) {
 			end = len(combined)
 		}
 		nearbyKeyword := otpWords.MatchString(combined[start:end])
+
+		// Check for password reset/change intent near this candidate.
+		window := combined[start:end]
+		intentMatch := passwordChangeIntentRE.FindStringIndex(window)
+		hasResetIntent := intentMatch != nil
+		if hasResetIntent {
+			// Convert window-relative position to combined-relative.
+			absIntentPos := start + intentMatch[0]
+			// If the intent is conditional (e.g., "if ... reset your password"),
+			// ignore it for this candidate.
+			if isConditionalResetIntent(combined, absIntentPos) {
+				hasResetIntent = false
+			}
+		}
+		if hasResetIntent {
+			// This candidate is tied to a password reset action, not a login OTP.
+			continue
+		}
 
 		score := 0
 		if subjectHasKeyword {

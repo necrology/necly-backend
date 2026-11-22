@@ -1,0 +1,2036 @@
+Delivered-To: chatgpt.account@example.test
+Received: by 2002:a5d:5a0f:0:b0:48e:6ee7:315 with SMTP id 15csp205405wrh;
+        Fri, 6 Nov 2026 16:03:03 -0800 (PST)
+X-Received: by 2002:a05:6a00:3d42:b0:8a0:4502:195e with SMTP id d2e1a72fcca58-8b37cef95d0mr3684979b3a.60.1794009783545;
+        Fri, 06 Nov 2026 16:03:03 -0800 (PST)
+ARC-Seal: i=1; a=rsa-sha256; t=1794009783; cv=none;
+        d=google.com; s=arc-20260327;
+        b=SEn4OqJpFC7aOTUH0w4ghGg/4XRw/T1GhJ4TxtlRWOJKw6+mAegNqFuhLpYDvDY8WY
+         FmgcYRgmlHjL1ZColylwD1ddrkHpGat1O+GEqCY8UHHSelK6pJr12TCHmtEYnnFZHzqM
+         dBvsR5w9nOPPv/FbSnTcH7e456P+d+O/bxP+zRwiXvBQpGtOzzRmLfbGYmcUO4I/4ppa
+         sYllveW2OgcvfSvuQmBAaQhdTXDakUNfbwHLYfqqMGVP2Ji7rXp2/t+pyfwWqU1HPTjB
+         oc5uYmzCqzucLnIW6Os+xrBi4q9vMoccnZJdpHYKd+ALpPCXsN89KYAAIbVy4JoYk6No
+         LNiQ==
+ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=google.com; s=arc-20260327;
+        h=list-unsubscribe-post:list-unsubscribe:to:subject:message-id
+         :mime-version:from:date:content-transfer-encoding:dkim-signature
+         :dkim-signature;
+        bh=HUvWB8dS+qUam/EtQ8skdtJKYQ4vbzfGD2ifZzZD42s=;
+        fh=wc6oolYX/g2USfCn0dC091zTo6DJaO1QNcj8EaV6vb8=;
+        b=Ye4NiGhdgY0ZZwJeObr8kAHLCehCjE5Ri68Oqsh1Je8h/StBjMoPtmRBykzqSj8nDE
+         1lVFBO8qHPtBHgZAYhEVw4GpuUzVTTw1lDkbZCgt3bACp/Ursx+f4bPE6yP7ypbgN8xi
+         bPjg/7FIKz5GLdi9wAkOgDmnRdxu/4lSbG+bXJD8FEcDro73Ns9bx1btro6OACAX0K6R
+         tq51cDMdyGLj/9i2F2AlTLsj/2WVkPBEeWogPZzjpfZdxWQ0haCgOrfGFijEEo1NYCNd
+         d6OqRrrVs53U7tqoBONKgDY4ia5jSF1uUHUL0KnP3oHeomAgDfFw66fIqhyD8Gfiq7di
+         7CFg==;
+        dara=google.com
+ARC-Authentication-Results: i=1; mx.google.com;
+       dkim=pass header.i=@email.openai.com header.s=s1 header.b=eIdiPTYj;
+       dkim=pass header.i=@sendgrid.info header.s=smtpapi header.b=J57edyYi;
+       spf=pass (google.com: domain of bounces+108370056-fa75-necrology45=gmail.com@em6623.email.openai.com designates 167.89.7.164 as permitted sender) smtp.mailfrom="bounces+108370056-fa75-necrology45=gmail.com@em6623.email.openai.com";
+       dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=openai.com
+Return-Path: <bounces+108370056-fa75-necrology45=gmail.com@em6623.email.openai.com>
+Received: from o42.ptr7166.openai.com (o42.ptr7166.openai.com. [167.89.7.164])
+        by mx.google.com with ESMTPS id d2e1a72fcca58-8b3548460f1si8206111b3a.211.2026.11.06.16.03.03
+        for <chatgpt.account@example.test>
+        (version=TLS1_3 cipher=TLS_AES_128_GCM_SHA256 bits=128/128);
+        Fri, 06 Nov 2026 16:03:03 -0800 (PST)
+Received-SPF: pass (google.com: domain of bounces+108370056-fa75-necrology45=gmail.com@em6623.email.openai.com designates 167.89.7.164 as permitted sender) client-ip=167.89.7.164;
+Authentication-Results: mx.google.com;
+       dkim=pass header.i=@email.openai.com header.s=s1 header.b=eIdiPTYj;
+       dkim=pass header.i=@sendgrid.info header.s=smtpapi header.b=J57edyYi;
+       spf=pass (google.com: domain of bounces+108370056-fa75-necrology45=gmail.com@em6623.email.openai.com designates 167.89.7.164 as permitted sender) smtp.mailfrom="bounces+108370056-fa75-necrology45=gmail.com@em6623.email.openai.com";
+       dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=openai.com
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=email.openai.com;
+	h=content-transfer-encoding:content-type:date:from:mime-version:subject:
+	to:list-unsubscribe:list-unsubscribe-post:cc:content-type:date:
+	feedback-id:from:subject:to;
+	s=s1; t=1794009782;
+	bh=HUvWB8dS+qUam/EtQ8skdtJKYQ4vbzfGD2ifZzZD42s=;
+	b=eIdiPTYj6lw3c3/DEjBUAj7ESLSYJwJ0Jb5bdo0zNjKeX84VbpspqljybMTIdG9CBUe3
+	ZC1konnOFoS2JSa78avKEqPD66Cn8Bmxb3kiH84/sG9rgyVGGEDhrRyfP+tV0DW7pdCd+m
+	U5S0q4YKoft4FlsodWnWf8dQBtpNardhyFsLZN7KeXYlDIeW3nwpciKOydlQV/3RJ8papt
+	6Cc5pHF7mcpR3J8JC6gJ0biLcnKglRdQYdP6Ctx5iFnPWnSdEeqpYlgBRm2RxMZHNsF7GG
+	tOYO2U05+lJByE9IhOQpjC0nxm/Zhf6gwkAePOCKsrEqKwKl3jUj2D5iVunkz/CQ==
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=sendgrid.info;
+	h=content-transfer-encoding:content-type:date:from:mime-version:subject:
+	to:list-unsubscribe:list-unsubscribe-post:cc:content-type:date:
+	feedback-id:from:subject:to;
+	s=smtpapi; t=1794009782;
+	bh=HUvWB8dS+qUam/EtQ8skdtJKYQ4vbzfGD2ifZzZD42s=;
+	b=J57edyYiOQ+dXCr13pm62u1z2fdLVfkIX/mb3S70VBQXusXp44/N1uo9n/P8P578Xw60
+	aAGCtPuF7Epn3juneAwzFjr38krP0OGayzogs6FxR3u0jmIli7DYwuwYwOMzMM5tdV0QeM
+	cp/uEz3QR2r1G/P2QRcAoW5ur6Yq0bjTQ=
+Received: by recvd-677c846bbf-hmtwz with SMTP id recvd-677c846bbf-hmtwz-1-6AEE6AB6-160
+	2026-11-07 00:03:02.743621075 +0000 UTC m=+85754.812591857
+Received: from MTA4MzcwMDU2 (unknown)
+	by geopod-ismtpd-89 (SG) with HTTP
+	id I93R4sN6TQyPPUeBmKTMqw
+	Sat, 07 Nov 2026 00:03:02.697 +0000 (UTC)
+Content-Transfer-Encoding: quoted-printable
+Content-Type: text/html; charset=utf-8
+Date: Sat, 07 Nov 2026 00:03:02 +0000 (UTC)
+From: ChatGPT <noreply@email.openai.com>
+Mime-Version: 1.0
+Message-ID: <I93R4sN6TQyPPUeBmKTMqw@geopod-ismtpd-89>
+Subject: Punya pertanyaan? Mulai di sini
+X-SG-EID: 
+ =?us-ascii?Q?u001=2E2cVJOEP6rValQfJKwZO1ZPPp2yIilXnDhherIW4DlfmwSM5DUph+QZwre?=
+ =?us-ascii?Q?qLMgSI4FMsfC5+p8Cia8sKY9FC7+ghnNM+Mvb19?=
+ =?us-ascii?Q?uUV1DXxcpK=2FVEAFjUfi1MA55PjJ2Piafnpymu+K?=
+ =?us-ascii?Q?5CYk9VinUUp2rmUzecjK0+RV45VzsMj+H0FGbWt?=
+ =?us-ascii?Q?gDW6gNiCUMwVMPBE33LrmWzl2DoOVBCDE1Ta6Yr?=
+ =?us-ascii?Q?YsMAGnUQSUfsQJhB+LC1Wr7NlkgMWpqKSffzNtG?= =?us-ascii?Q?uKMK?=
+X-SG-ID: 
+ =?us-ascii?Q?u001=2ESdBcvi+Evd=2FbQef8eZF3BpTL9BgbK5wfSJMJGMsmprCfzdk8Q6weRGnug?=
+ =?us-ascii?Q?VdQiDX=2FdF1QYCogDzGgKeJ1l6TB2ayx1zvfC87f?=
+ =?us-ascii?Q?bZeU=2F=2FwUnyNL2kwP9spzUegdK7j7PIw15GCoRZh?=
+ =?us-ascii?Q?xyEGr9YBev3PajEgkF+ab0wyzNr89g7=2FIQZGXnV?=
+ =?us-ascii?Q?2CXjqsQipMYl=2Foza=2F1HSnUKNcj2b8xy3AhNochi?=
+ =?us-ascii?Q?QOkK4xmjMVFYpDX4hKe=2F2BGe8qE=2F=2FI7MklVfpKp?=
+ =?us-ascii?Q?jT3VccSWxnBJaG0QqusEr+0YvW7K7y=2FRTcRkbwp?=
+ =?us-ascii?Q?PhcoblLAr=2FDi4YGRvd0+jx1oAliYNjfkYpOS9HT?=
+ =?us-ascii?Q?mqV9xysiA2U3sCj65CwAB2emgDiTIiFm7Ae+Xjq?=
+ =?us-ascii?Q?I7k6fG4gSlyJaMIZV5Ix2RiL3Qh=2F3FBcVTa1O86?=
+ =?us-ascii?Q?LuSbCvoHJocFiLGdy7Es=2Fuz8FOOnV08Ugba6bZE?=
+ =?us-ascii?Q?Y4mSY=2FT872Zk8PEAU9XaBgWMR2HGrjus7f6wKlN?=
+ =?us-ascii?Q?+L7KgvvuvQ1J3iNxruyPrtuPbs9PhZtWlgLmThO?=
+ =?us-ascii?Q?I41=2FlUQz5KGLsOC305bd1NMwW1TNpn0uG7or+aR?=
+ =?us-ascii?Q?5D800uEjEjeH1HYmDw98zzYNUoFBHy0SlqklPXa?=
+ =?us-ascii?Q?srkENo2OeDpzT3xhovvVgewRxClZi=2F319DWtRxv?=
+ =?us-ascii?Q?CpZnsDrVpY4ijCCUBV6A=3D=3D?=
+To: chatgpt.account@example.test
+X-Entity-ID: u001.fuLTjbbFNnHmPBmC2XyIBw==
+List-Unsubscribe:
+ <https://r.openai.com/u/1/108370056.lHvAAvAVo6JNkrXrd8Iz7su3fTAWJR0YU5CO85ttNaxoMDAwdTAwMFnYjfFebPvrCUAXYZP1wGRWpaJx5TQnjL3EZiSxXvBK8lN2l0PMFjZK-H4KskVJGJLj4CABvkpSnCduAnCbeexmHQX8NNqokKJfRwfz-zGRznf0VVJ2O5d99P5_knEtSFuRbSCY_oYyzTt5xRU89In8DdNS34OgP6Y0dKrxl7mQKbrwakAEIfR5C2D6j-6gGM3lmG2Wr43uVQEdKXMYb5iEg1x6nXBjVpc_nW55wzSUVoOCg9pWANRez57ilvM2xR2GYMMqX3ohxdG5UO7864Q=>,
+ <mailto:unsubscribe@em6623.email.openai.com?subject=108370056.3A7pk5jKVwNxYHTbZnwigwbqAPk0bfi9_LvstAfSAQxoMDAwdTAwMK8qierq0mu0mX9GBwB66NTOxp0ox-enpRBBmE1-6upJfaOkUgNF99SEvszg0tnM1FIf7vnrsK8MX4dR4pImklaOj5znB_0KgN_aHw6vFzAQ99s9-n8CyIQCpDEfAHWhUg==>
+List-Unsubscribe-Post: List-Unsubscribe=One-Click
+
+<!DOCTYPE html>
+<html dir=3D"ltr">
+<head>
+ =20
+ =20
+ =20
+ =20
+  <meta charset=3D"utf-8">
+  <meta http-equiv=3D"x-ua-compatible" content=3D"ie=3Dedge">
+  <title></title>
+  <meta name=3D"viewport" content=3D"width=3Ddevice-width, initial-scale=3D=
+1">
+  <meta name=3D"color-scheme" content=3D"light dark only">
+  <meta name=3D"supported-color-schemes" content=3D"light dark only">
+ =20
+  <style type=3D"text/css">
+@media screen and (max-width:480px) {
+    h1.onboarding-section-title {
+      font-size: 28px !important;
+      line-height: 34px !important;
+      letter-spacing: 0 !important;
+    }
+    p.onboarding-section-body {
+      font-size: 14px !important;
+      line-height: 145% !important;
+    }
+    td.content-td.onboarding-card-section {
+      padding-left: 8px !important;
+      padding-right: 8px !important;
+    }
+    td.email-footer-row {
+      padding-left: 8px !important;
+      padding-right: 8px !important;
+    }
+    td.onboarding-card-padding {
+      padding: 12px !important;
+    }
+    td.onboarding-card-media-cell {
+      width: 72px !important;
+      min-width: 72px !important;
+    }
+    td.onboarding-card-media-cell-photo {
+      width: 144px !important;
+      min-width: 144px !important;
+    }
+    td.onboarding-card-media-cell-photo-gap {
+      width: 145px !important;
+      min-width: 145px !important;
+    }
+    table.onboarding-card-media-frame {
+      width: 72px !important;
+      max-width: 72px !important;
+    }
+    table.onboarding-card-media-frame-photo {
+      width: 144px !important;
+      max-width: 144px !important;
+    }
+    table.onboarding-card-media-frame-photo-gap,
+    table.onboarding-card-photo-split-gap {
+      width: 145px !important;
+      max-width: 145px !important;
+    }
+    td.onboarding-card-media-fill {
+      height: 72px !important;
+    }
+    td.onboarding-card-media-fill-photo {
+      height: 72px !important;
+    }
+    td.onboarding-card-media-fill-icon {
+      height: auto !important;
+      padding: 10px !important;
+    }
+    img.onboarding-card-icon-art,
+    table.onboarding-card-icon-art {
+      width: 52px !important;
+      max-width: 52px !important;
+      height: 52px !important;
+    }
+    td.onboarding-card-media-fill-icon-full-frame {
+      height: 72px !important;
+      padding: 0 !important;
+    }
+    img.onboarding-card-icon-art-full-frame,
+    table.onboarding-card-icon-art-full-frame {
+      width: 72px !important;
+      max-width: 72px !important;
+      height: 72px !important;
+    }
+    img.onboarding-card-photo-art {
+      width: 72px !important;
+      height: 72px !important;
+      max-width: 72px !important;
+    }
+    img.onboarding-card-photo-art-wide {
+      width: 144px !important;
+      height: 72px !important;
+      max-width: 144px !important;
+    }
+    td.onboarding-card-photo-split-cell-before,
+    img.onboarding-card-photo-art-half-before,
+    table.onboarding-card-photo-placeholder-half-before {
+      width: 72px !important;
+      max-width: 72px !important;
+    }
+    td.onboarding-card-photo-split-cell-after,
+    img.onboarding-card-photo-art-half-after,
+    table.onboarding-card-photo-placeholder-half-after {
+      width: 72px !important;
+      max-width: 72px !important;
+    }
+    td.onboarding-card-photo-split-gap {
+      width: 1px !important;
+      min-width: 1px !important;
+    }
+    img.onboarding-card-photo-art-half,
+    table.onboarding-card-photo-placeholder-half,
+    td.onboarding-card-photo-placeholder-fill {
+      height: 72px !important;
+    }
+    td.onboarding-card-gap {
+      width: 12px !important;
+      min-width: 12px !important;
+    }
+    p.onboarding-card-copy {
+      font-size: 13px !important;
+      line-height: 18px !important;
+      letter-spacing: -0.24px !important;
+    }
+    td.onboarding-card-arrow-cell {
+      width: 28px !important;
+      min-width: 28px !important;
+      padding-left: 6px !important;
+    }
+    [dir=3D"rtl"] td.onboarding-card-arrow-cell {
+      padding-left: 0 !important;
+      padding-right: 6px !important;
+    }
+    img.onboarding-card-arrow-img {
+      width: 24px !important;
+      height: 24px !important;
+    }
+  }
+  @media screen and (max-width:360px) {
+    h1.onboarding-section-title {
+      font-size: 25px !important;
+      line-height: 31px !important;
+    }
+    p.onboarding-section-body {
+      font-size: 13px !important;
+      line-height: 142% !important;
+    }
+    td.content-td.onboarding-card-section {
+      padding-left: 8px !important;
+      padding-right: 8px !important;
+    }
+    td.email-footer-row {
+      padding-left: 8px !important;
+      padding-right: 8px !important;
+    }
+    td.onboarding-card-padding {
+      padding: 10px !important;
+    }
+    td.onboarding-card-media-cell {
+      width: 64px !important;
+      min-width: 64px !important;
+    }
+    td.onboarding-card-media-cell-photo {
+      width: 136px !important;
+      min-width: 136px !important;
+    }
+    td.onboarding-card-media-cell-photo-gap {
+      width: 137px !important;
+      min-width: 137px !important;
+    }
+    table.onboarding-card-media-frame {
+      width: 64px !important;
+      max-width: 64px !important;
+    }
+    table.onboarding-card-media-frame-photo {
+      width: 136px !important;
+      max-width: 136px !important;
+    }
+    table.onboarding-card-media-frame-photo-gap,
+    table.onboarding-card-photo-split-gap {
+      width: 137px !important;
+      max-width: 137px !important;
+    }
+    td.onboarding-card-media-fill {
+      height: 64px !important;
+    }
+    td.onboarding-card-media-fill-photo {
+      height: 68px !important;
+    }
+    td.onboarding-card-media-fill-icon {
+      height: auto !important;
+      padding: 8px !important;
+    }
+    img.onboarding-card-icon-art,
+    table.onboarding-card-icon-art {
+      width: 48px !important;
+      max-width: 48px !important;
+      height: 48px !important;
+    }
+    td.onboarding-card-media-fill-icon-full-frame {
+      height: 64px !important;
+      padding: 0 !important;
+    }
+    img.onboarding-card-icon-art-full-frame,
+    table.onboarding-card-icon-art-full-frame {
+      width: 64px !important;
+      max-width: 64px !important;
+      height: 64px !important;
+    }
+    img.onboarding-card-photo-art {
+      width: 64px !important;
+      height: 64px !important;
+      max-width: 64px !important;
+    }
+    img.onboarding-card-photo-art-wide {
+      width: 136px !important;
+      height: 68px !important;
+      max-width: 136px !important;
+    }
+    td.onboarding-card-photo-split-cell-before,
+    img.onboarding-card-photo-art-half-before,
+    table.onboarding-card-photo-placeholder-half-before {
+      width: 68px !important;
+      max-width: 68px !important;
+    }
+    td.onboarding-card-photo-split-cell-after,
+    img.onboarding-card-photo-art-half-after,
+    table.onboarding-card-photo-placeholder-half-after {
+      width: 68px !important;
+      max-width: 68px !important;
+    }
+    td.onboarding-card-photo-split-gap {
+      width: 1px !important;
+      min-width: 1px !important;
+    }
+    img.onboarding-card-photo-art-half,
+    table.onboarding-card-photo-placeholder-half,
+    td.onboarding-card-photo-placeholder-fill {
+      height: 68px !important;
+    }
+    td.onboarding-card-gap {
+      width: 10px !important;
+      min-width: 10px !important;
+    }
+    p.onboarding-card-copy {
+      font-size: 12px !important;
+      line-height: 16px !important;
+    }
+    td.onboarding-card-arrow-cell {
+      width: 24px !important;
+      min-width: 24px !important;
+      padding-left: 4px !important;
+    }
+    [dir=3D"rtl"] td.onboarding-card-arrow-cell {
+      padding-left: 0 !important;
+      padding-right: 4px !important;
+    }
+    img.onboarding-card-arrow-img {
+      width: 20px !important;
+      height: 20px !important;
+    }
+  }
+</style>
+
+ =20
+ =20
+  <style type=3D"text/css">
+  /**
+   * Google webfonts. Recommended to include the .woff version for cross-cl=
+ient compatibility.
+   */
+  @media screen {
+    /* OpenAI Sans font family */
+    @font-face {
+      font-display: swap;
+      font-family: "OpenAI Sans";
+      font-style: normal;
+      font-weight: 400;
+      src: url("https://cdn.openai.com/common/fonts/openai-sans/v2/OpenAISa=
+ns-Regular.woff2") format("woff2");
+    }
+
+    @font-face {
+      font-display: swap;
+      font-family: "OpenAI Sans";
+      font-style: normal;
+      font-weight: 500;
+      src: url("https://cdn.openai.com/common/fonts/openai-sans/v2/OpenAISa=
+ns-Medium.woff2") format("woff2");
+    }
+
+    @font-face {
+      font-display: swap;
+      font-family: "OpenAI Sans";
+      font-style: normal;
+      font-weight: 600;
+      src: url("https://cdn.openai.com/common/fonts/openai-sans/v2/OpenAISa=
+ns-Semibold.woff2") format("woff2");
+    }
+
+    @font-face {
+      font-display: swap;
+      font-family: "OpenAI Sans";
+      font-style: normal;
+      font-weight: 700;
+      src: url("https://cdn.openai.com/common/fonts/openai-sans/v2/OpenAISa=
+ns-Bold.woff2") format("woff2");
+    }
+  }
+
+  :root {
+    color-scheme: light dark only;
+    supported-color-schemes: light dark only;
+  }
+
+  /**
+   * Avoid browser level font resizing.
+   * 1. Windows Mobile
+   * 2. iOS / OSX
+   */
+  body,
+  table,
+  td,
+  a {
+    -ms-text-size-adjust: 100%; /* 1 */
+    -webkit-text-size-adjust: 100%; /* 2 */
+    font-family: 'OpenAI Sans', Helvetica, Arial, sans-serif;
+  }
+
+  /**
+   * Remove extra space added to tables and cells in Outlook.
+   */
+  table,
+  td {
+    mso-table-rspace: 0pt;
+    mso-table-lspace: 0pt;
+    vertical-align: top; /* Align content to the top of table cells */
+  }
+
+  /**
+   * Better fluid images in Internet Explorer.
+   */
+  img {
+    -ms-interpolation-mode: bicubic;
+  }
+
+  /**
+   * Remove blue links for iOS devices.
+   */
+  a[x-apple-data-detectors] {
+    font-family: inherit !important;
+    font-size: inherit !important;
+    font-weight: inherit !important;
+    line-height: inherit !important;
+    color: inherit !important;
+    text-decoration: none !important;
+  }
+
+  /**
+   * Fix centering issues in Android 4.4.
+   */
+  div[style*=3D"margin: 16px 0;"] {
+    margin: 0 !important;
+  }
+
+  body {
+    width: 100% !important;
+    height: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  /**
+   * Collapse table borders to avoid space between cells.
+   */
+  table {
+    border-collapse: collapse !important;
+  }
+
+  a {
+    color: #898A8D;
+  }
+
+  .image-reset-bullets,
+  .image-reset-bullets .email-bullet-link {
+      color: #000000;
+  }
+
+  /* Give the ChatGPT logo pill consistent breathing room in light mode. */
+  .email-logo-pill {
+      background-color: #ffffff;
+      border-radius: 12px;
+      padding: 13px;
+      display: inline-block;
+  }
+
+  img {
+    height: auto;
+    line-height: 100%;
+    text-decoration: none;
+    border: 0;
+    outline: none;
+  }
+  /* Composer image sizing (mobile default) */
+  .composer-img {
+      width: 83px !important;
+      height: auto !important;
+      padding: 16px !important;
+  }
+
+  h1 {
+      font-size: 34px;
+      line-height: 41px;
+      font-weight: 400;
+      letter-spacing: 0.4px;
+      margin: 0;
+  }
+  h2 {
+      font-size: 18px;
+      font-weight: 400;
+      margin: 0;
+      line-height: 150%;
+      letter-spacing: -0.2px;
+  }
+  p {
+      font-size: 16px;
+      line-height: 130%;
+      font-weight: 500;
+      margin: 0;
+  }
+  p + p {
+      margin-top: 16px;
+  }
+  /* Intro blocks (H1/H2) sizing */
+  .intro-block {
+      width: 345px !important;
+      max-width: 345px !important;
+  }
+  /* Composer card sizing */
+  .composer-card {
+      width: 377px !important;
+      max-width: 377px !important;
+  }
+  /* Button styling */
+  a.button {
+      background-color: #000000 !important; /* default black */
+      border-radius: 24px !important; /* make button curvy */
+      padding: 11.5px 24px 11.5px !important; /* bigger size */
+      font-size: 16px !important; /* revert text size */
+      line-height: 24px !important;
+  }
+
+  a.button:active {
+      background-color: #000000 !important; /* dark gray on click */
+      border-radius: 36px !important;
+  }
+  /* CTA button hover state (supported clients only) */
+  a.button-invert:hover,
+  a.button-invert:focus {
+      background-color: #000000 !important;
+      background-image: none !important;
+      color: #FFFFFF !important;
+      border-color: #FFFFFF !important;
+  }
+  a.button-invert:hover span,
+  a.button-invert:focus span {
+      color: #FFFFFF !important;
+  }
+
+  /* Ensure hover keeps text legible even with dark-mode overrides. */
+  a.button-invert:hover,
+  a.button-invert:focus {
+      color: #FFFFFF !important;
+      -webkit-text-fill-color: #FFFFFF !important;
+  }
+  a.button-invert:hover span,
+  a.button-invert:focus span {
+      color: #FFFFFF !important;
+      -webkit-text-fill-color: #FFFFFF !important;
+  }
+  /* Badges: use real rows so the stacked layout survives across email clie=
+nts */
+  .badges {
+      width: 100% !important;
+      max-width: 128px !important;
+  }
+  .badges .badge {
+      width: 100% !important;
+      vertical-align: bottom !important;
+  }
+  .badges .badge img {
+      width: 120px !important;
+      max-width: 120px !important;
+      height: auto !important;
+      margin: 0 auto !important;
+  }
+
+  /* Desktop: larger typography */
+  @media screen and (min-width:480px) {
+      h1 {
+          font-size: 34px !important;
+          line-height: 41px !important;
+          letter-spacing: 0.4px;
+          font-weight: 400 !important;
+      }
+      h2 {
+        font-size: 18px;
+        font-weight: 400;
+        margin: 0;
+        line-height: 150%;
+        letter-spacing: -0.2px;
+      }
+      /* Header cell: increase side padding on desktop only */
+      td.header-td {
+          padding-left: 57px !important;
+          padding-right: 57px !important;
+      }
+      /* Composer image sizing for desktop */
+      .composer-img {
+          width: 98px !important;
+      }
+     =20
+     =20
+      /* Body content cells: increase side padding on desktop */
+      td.content-td {
+          padding-left: 60px !important;
+          padding-right: 60px !important;
+      }
+      td.footer-td {
+          padding-left: 56px !important;
+          padding-right: 56px !important;
+      }
+      p {
+          font-size: 16px !important;
+          line-height: 130% !important;
+          font-weight: 400;
+      }
+      td {
+          font-size: 10px !important;
+          line-height: 16px !important;
+          font-weight: 400;
+      }
+     =20
+      a.button {
+          font-size: 16px !important;
+          line-height: 24px !important;
+      }
+      .footer-row td {
+          vertical-align: bottom !important;
+          padding-left: 0 !important;
+      }
+      /* Composer card width on desktop */
+      .composer-card {
+          width: 400px !important;
+          max-width: 400px !important;
+      }
+      /* Intro blocks width on desktop */
+      .intro-block {
+          width: 360px !important;
+          max-width: 360px !important;
+      }
+  }
+  /* Mobile stacking helper for columns */
+  @media screen and (max-width:480px) {
+      /* Ensure footer badges bottom-align with copyright on mobile */
+      td.header-td {
+          padding-left: 21px !important;
+          padding-right: 21px !important;
+      }
+      /* Body content cells: smaller side padding on mobile */
+      td.content-td {
+          padding-left: 24px !important;
+          padding-right: 24px !important;
+      }
+      td.footer-td {
+          padding-left: 20px !important;
+          padding-right: 20px !important;
+      }
+      .footer-row td {
+          vertical-align: bottom !important;
+          padding-left: 0 !important;
+      }
+  }
+
+ =20
+  /* Dark mode: keep the template-authored canvas consistent across all sec=
+tions. */
+  @media (prefers-color-scheme: dark) {
+      body.generic,
+      .wrapperMod,
+      .heroMod03 {
+          background-color: #000000 !important;
+      }
+      body {
+          background-color: #000000 !important;
+          color: #ffffff !important;
+      }
+      .email-shell {
+          background-color: #000000 !important;
+      }
+      .content-td {
+          background-color: #000000 !important;
+      }
+      h1, h2, p {
+          color: #ffffff !important;
+      }
+      .heroMod03 h1,
+      .heroMod03 h2,
+      .heroMod03 p,
+      .box h1,
+      .box h2,
+      .box p,
+      .box a {
+          color: #FFFFFF !important;
+          -webkit-text-fill-color: #FFFFFF !important;
+      }
+      .prompt-card-table {
+          background: #000000 !important;
+          box-shadow: none !important;
+      }
+      .prompt-card-border {
+          border-color: #FFFFFF !important;
+      }
+      .prompt-card-text,
+      .prompt-card-text h2 {
+          color: #FFFFFF !important;
+      }
+      .email-header-td {
+          background-color: #000000 !important;
+          padding-top: 8px !important;
+          padding-bottom: 8px !important;
+      }
+      .email-header-inner {
+          padding-top: 16px !important;
+          padding-bottom: 16px !important;
+      }
+      .email-footer-surface {
+          background-color: #1f1f1f !important;
+          border-radius: 16px !important;
+          padding: 24px !important;
+      }
+      .email-footer-row {
+          background-color: #000000 !important;
+      }
+      .email-footer-logo-cell {
+          padding-bottom: 12px !important;
+      }
+      .email-logo-pill {
+          background-color: #ffffff !important;
+          border-radius: 12px !important;
+          padding: 4px !important;
+          display: inline-block !important;
+      }
+      .email-header-logo-pill {
+          border-radius: 16px !important;
+          padding: 12px !important;
+      }
+      .email-logo-pill img {
+          background-color: transparent !important;
+      }
+      .email-footer-logo-img {
+          width: 90px !important;
+          height: auto !important;
+      }
+      .email-footer-copy {
+          color: #ffffff !important;
+          padding-left: 0 !important;
+      }
+      .email-footer-copy a {
+          color: #ffffff !important;
+      }
+      .email-footer-copy .email-footer-copyright {
+          color: #a0a0a0 !important;
+      }
+      .image-reset-bullets,
+      .image-reset-bullets .email-bullet-link,
+      .image-reset-bullets .email-bullet-link strong {
+          color: #FFFFFF !important;
+          -webkit-text-fill-color: #FFFFFF !important;
+      }
+      a.button-invert, span.whats-new-button {
+          background-color: #000000 !important;
+          background-image: none !important;
+          color: #FFFFFF !important;
+          border-color: #000000 !important;
+          -webkit-text-fill-color: currentColor !important;
+      }
+      a.button-invert span, span.whats-new-button span {
+          color: inherit !important;
+          -webkit-text-fill-color: currentColor !important;
+      }
+      a.email-feedback-chip {
+          background-color: #2F2F2F !important;
+          color: #ECECEC !important;
+          border-color: #000000 !important;
+          -webkit-text-fill-color: #ECECEC !important;
+      }
+  }
+
+  /* Dark mode fallback for clients that use data-ogsc/data-ogsb */
+  [data-ogsc] body,
+  [data-ogsb] body {
+      background-color: #000000 !important;
+      color: #ffffff !important;
+  }
+  [data-ogsc] body.generic,
+  [data-ogsb] body.generic,
+  [data-ogsc] .wrapperMod,
+  [data-ogsb] .wrapperMod,
+  [data-ogsc] .heroMod03,
+  [data-ogsb] .heroMod03 {
+      background-color: #000000 !important;
+  }
+  [data-ogsc] .email-shell,
+  [data-ogsb] .email-shell {
+      background-color: #000000 !important;
+  }
+  [data-ogsc] .content-td,
+  [data-ogsb] .content-td {
+      background-color: #000000 !important;
+  }
+  [data-ogsc] h1,
+  [data-ogsb] h1,
+  [data-ogsc] h2,
+  [data-ogsb] h2,
+  [data-ogsc] p,
+  [data-ogsb] p {
+      color: #FFFFFF !important;
+      -webkit-text-fill-color: #FFFFFF !important;
+  }
+  [data-ogsc] .heroMod03 h1,
+  [data-ogsb] .heroMod03 h1,
+  [data-ogsc] .heroMod03 h2,
+  [data-ogsb] .heroMod03 h2,
+  [data-ogsc] .heroMod03 p,
+  [data-ogsb] .heroMod03 p,
+  [data-ogsc] .box h1,
+  [data-ogsb] .box h1,
+  [data-ogsc] .box h2,
+  [data-ogsb] .box h2,
+  [data-ogsc] .box p,
+  [data-ogsb] .box p,
+  [data-ogsc] .box a,
+  [data-ogsb] .box a {
+      color: #FFFFFF !important;
+      -webkit-text-fill-color: #FFFFFF !important;
+  }
+  [data-ogsc] .prompt-card-table,
+  [data-ogsb] .prompt-card-table {
+      background: #000000 !important;
+      box-shadow: none !important;
+  }
+  [data-ogsc] .prompt-card-border,
+  [data-ogsb] .prompt-card-border {
+      border-color: #FFFFFF !important;
+  }
+  [data-ogsc] .prompt-card-text,
+  [data-ogsb] .prompt-card-text,
+  [data-ogsc] .prompt-card-text h2,
+  [data-ogsb] .prompt-card-text h2 {
+      color: #FFFFFF !important;
+  }
+  [data-ogsc] .email-header-td,
+  [data-ogsb] .email-header-td {
+      background-color: #000000 !important;
+      padding-top: 8px !important;
+      padding-bottom: 8px !important;
+  }
+  [data-ogsc] .email-footer-surface,
+  [data-ogsb] .email-footer-surface {
+      background-color: #1f1f1f !important;
+      border-radius: 16px !important;
+      padding: 24px !important;
+  }
+  [data-ogsc] .email-footer-row,
+  [data-ogsb] .email-footer-row {
+      background-color: #000000 !important;
+  }
+  [data-ogsc] .email-header-inner,
+  [data-ogsb] .email-header-inner {
+      padding-top: 16px !important;
+      padding-bottom: 16px !important;
+  }
+  [data-ogsc] .email-footer-logo-cell,
+  [data-ogsb] .email-footer-logo-cell {
+      padding-bottom: 12px !important;
+  }
+  [data-ogsc] .email-logo-pill,
+  [data-ogsb] .email-logo-pill {
+      background-color: #ffffff !important;
+      border-radius: 12px !important;
+      padding: 4px !important;
+      display: inline-block !important;
+  }
+  [data-ogsc] .email-header-logo-pill,
+  [data-ogsb] .email-header-logo-pill {
+      border-radius: 16px !important;
+      padding: 12px !important;
+  }
+  [data-ogsc] .email-logo-pill img,
+  [data-ogsb] .email-logo-pill img {
+      background-color: transparent !important;
+  }
+  [data-ogsc] .email-footer-logo-img,
+  [data-ogsb] .email-footer-logo-img {
+      width: 90px !important;
+      height: auto !important;
+  }
+  [data-ogsc] .email-footer-copy,
+  [data-ogsb] .email-footer-copy {
+      color: #ffffff !important;
+      padding-left: 0 !important;
+  }
+  [data-ogsc] .email-footer-copy a,
+  [data-ogsb] .email-footer-copy a {
+      color: #ffffff !important;
+  }
+  [data-ogsc] .email-footer-copy .email-footer-copyright,
+  [data-ogsb] .email-footer-copy .email-footer-copyright {
+      color: #a0a0a0 !important;
+  }
+  [data-ogsc] .image-reset-bullets,
+  [data-ogsb] .image-reset-bullets,
+  [data-ogsc] .image-reset-bullets .email-bullet-link,
+  [data-ogsb] .image-reset-bullets .email-bullet-link,
+  [data-ogsc] .image-reset-bullets .email-bullet-link strong,
+  [data-ogsb] .image-reset-bullets .email-bullet-link strong {
+      color: #FFFFFF !important;
+      -webkit-text-fill-color: #FFFFFF !important;
+  }
+  [data-ogsc] a.button-invert,
+  [data-ogsb] a.button-invert,
+  [data-ogsc] span.whats-new-button,
+  [data-ogsb] span.whats-new-button {
+      background-color: #000000 !important;
+      background-image: none !important;
+      color: #FFFFFF !important;
+      border-color: #000000 !important;
+      -webkit-text-fill-color: currentColor !important;
+  }
+  [data-ogsc] a.button-invert span,
+  [data-ogsb] a.button-invert span,
+  [data-ogsc] span.whats-new-button span,
+  [data-ogsb] span.whats-new-button span {
+      color: inherit !important;
+      -webkit-text-fill-color: currentColor !important;
+  }
+  [data-ogsc] a.email-feedback-chip,
+  [data-ogsb] a.email-feedback-chip {
+      background-color: #2F2F2F !important;
+      color: #ECECEC !important;
+      border-color: #000000 !important;
+      -webkit-text-fill-color: #ECECEC !important;
+  }
+ =20
+  a.email-feedback-chip:hover,
+  a.email-feedback-chip:focus {
+      background-color: #f3f3f3 !important;
+      background-image: linear-gradient(#f3f3f3, #f3f3f3) !important;
+      border-color: #b4b4b4 !important;
+      color: #0d0d0d !important;
+      -webkit-text-fill-color: #0d0d0d !important;
+  }
+
+
+  /* RTL mirroring */
+  [dir=3D"rtl"] body,
+  [dir=3D"rtl"] table,
+  [dir=3D"rtl"] td,
+  [dir=3D"rtl"] a {
+      direction: rtl !important;
+  }
+  [dir=3D"rtl"] h1,
+  [dir=3D"rtl"] h2,
+  [dir=3D"rtl"] p {
+      text-align: right !important;
+  }
+ =20
+
+  </style>
+
+
+
+</head>
+<body dir=3D"ltr" class=3D"generic" bgcolor=3D"#FFFFFF" style=3D"background=
+-color: #FFFFFF;">
+
+  <div class=3D"preheader" style=3D"display: none; max-width: 0; max-height=
+: 600; overflow: hidden; font-size: 1px; line-height: 1px; color: #fff; opa=
+city: 0;">
+    Pelajari dan pahami langkah selanjutnya dalam satu obrolan.
+   =20
+  </div>
+
+  <!-- start body -->
+  <table border=3D"0" cellpadding=3D"0" cellspacing=3D"0" width=3D"100%" di=
+r=3D"ltr" class=3D"wrapperMod" bgcolor=3D"#FFFFFF" style=3D"background-colo=
+r: #FFFFFF;">
+    <!-- start body block -->
+    <tr>
+      <td align=3D"center">
+        <!--[if (gte mso 9)|(IE)]>
+        <table align=3D"center" border=3D"0" cellpadding=3D"0" cellspacing=
+=3D"0" width=3D"360">
+        <tr>
+        <td align=3D"center" valign=3D"top" width=3D"360">
+        <![endif]-->
+        <table border=3D"0" cellpadding=3D"0" cellspacing=3D"0" width=3D"10=
+0%" class=3D"email-shell heroMod03" bgcolor=3D"#FFFFFF" style=3D"width: 100=
+%; max-width: 600px; background-color:#FFFFFF;">
+         =20
+                        <!-- header image -->
+           =20
+           =20
+           =20
+           =20
+            <tr>
+                <td valign=3D"top" class=3D"header-td email-header-td" styl=
+e=3D"padding: 42px 24px 42px 24px;">
+                    <table align=3D"center" width=3D"100%" border=3D"0" cel=
+lpadding=3D"0" cellspacing=3D"0" class=3D"email-header-surface" style=3D"mi=
+n-width:100%; background-color:transparent;">
+                        <tbody><tr>
+                            <td valign=3D"top" align=3D"center" class=3D"em=
+ail-header-inner" style=3D"padding-top: 0; padding-bottom: 0;">
+
+                               =20
+	                                <a href=3D"https://r.openai.com/ls/click?u=
+pn=3Du001.I-2FaYIbqhsKngReUOKrmuweHw7Fh75qLKlFhai32cOrtkKoOg5S7VyJ6nyNDTerZ=
+crPgZ8gm3CE49uz7GukPzngj5Ssp-2B9Un43mi5kvXdnfn2mw3ilBhX3T4awW6G3M0zj9FmFkEZ=
+do1jHE8P3fAyG9eIhZnKT4FEsJtIH7gpjU95YbhwmSqqyxytn-2B8cC9m9jkhL3QaCpumIPsAr9=
+NH3aQs2MCYFo-2F8B9DX9Nw-2BbSEhyTRvoioJiOLJ46wcVbuMcRmkGYIYc1AcjbngkRpcdZDK3=
+YjR1P-2BsMAkrlCBZGpoSSlHeL38zHo0WzKPGdrBxla5l7aG-2FRVcrBflmhD2g1JqBGcPZMp3K=
+-2B4vCbsmLK-2B54-3DhOIl_yfsGH4ZCeh8ujz4-2FcF8XBvWb5GNI-2FmVJ9q1zidkSNtcq55O=
+-2BD6ovd-2BwGjkRSXB4CV6bm6uqWfwf47HSJWs58BK-2BAcoaR5q82nEUBexcOIa4OuOstB-2B=
+omFrl7pAaWBsslIdf1ihTHk9Gq0-2B3j-2FBqMpx138U6x4kzTyXxs8mJQTY5DWP0c13hvSb0jo=
+VEHxoC4a9h9hR-2BEzKmRRPnRdBdDHn2lJTzyl4Y-2FbB6Ne90pmEAqX1aazCKMM68xiqRhY5lO=
+5MJjLzcclsLoVleIYh8-2FLCtpVU0trrgkI3KZg08EM7Dg8-2Bx1Gdy-2BqfOpeSew5WPw6W7co=
+xXfM66WtNhtFbk2UIL8wEhMtfU-2FIjk7bSfWvvI-2FWH-2BorrdJ1BRdOiGvotDf7jKkOH7XGM=
+qtMcbqRkbkh78IlNqIeUjp3QMDjNTkvaJyB-2BakVVvCC5xpAHM9-2FbgkOdTdvATvRyMJTF5h5=
+pbnEq5bWWz9YYpAq85YanCOsCB1wbBjx9hpSOXt86wEhhWe0HRcGy8XhgWFwWXKgXVpH9-2BNLu=
+aQ4MjmkDEW9y3090Ds5gL-2BNmugDkD6xFdysy3ckgnlkyDUI-2BtfWviBxQQZPhG2eOYf4QFP-=
+2FnH0ZUVtayo6pi-2F0jBJ-2FxSgC0YuesSvfTabIoD7I83ZoR-2BsM90-2FhuzopHebiMVfLqr=
+b47U3Mhpj2F-2BsBRFGEh-2BqWItSQA3Jl3tphYFvoiydXKCP-2BzC7rcYPovXNY443uG-2FpQW=
+US6TBGkIeK0p8Z-2B5pMTLxDDNIItikpXJSKXSAA9zAmW2jgDzxkrKW0hfkN2g7LOk6g2w9N1BH=
+3sPHcOyJEZZp0JrkeKAIDd5IMhQy2fOoLm7tB7Jg-3D-3D" target=3D"_blank" class=3D"=
+email-logo-pill email-header-logo-pill" style=3D"display:inline-block; back=
+ground-color:#ffffff; background-image:linear-gradient(#ffffff,#ffffff); bo=
+rder-radius:12px; padding:4px;">
+                                  <img alt=3D"ChatGPT" src=3D"https://persi=
+stent.oaistatic.com/chatgpt/icons/chatgpt_logo.png" width=3D"103" style=3D"=
+display:block; margin:0 auto; width:103px; height:auto; max-width:100%; bor=
+der:0; background-color:#ffffff; background-image:linear-gradient(#ffffff,#=
+ffffff); border-radius:10px;">
+                                </a>
+                               =20
+                            </td>
+                        </tr>
+                        </tbody>
+                    </table>
+                </td>
+            </tr>
+         =20
+
+         =20
+ =20
+ =20
+<tr>
+  <td align=3D"center" class=3D"content-td" style=3D"padding: 26px 24px 0 2=
+4px; background-color:#FFFFFF;">
+    <table role=3D"presentation" border=3D"0" cellpadding=3D"0" cellspacing=
+=3D"0" width=3D"100%" style=3D"max-width: 480px;">
+      <tr>
+        <td align=3D"center" style=3D"padding:0;">
+          <h1 class=3D"onboarding-section-title" style=3D"margin:0; text-al=
+ign:center; color:#000000; font-family:'OpenAI Sans', Helvetica, Arial, san=
+s-serif; font-size:34px; line-height:41px; font-weight:400; letter-spacing:=
+0.4px;">
+            Jawaban dan penjelasan, semua di satu tempat
+          </h1>
+        </td>
+      </tr>
+    </table>
+  </td>
+</tr>
+
+
+<tr>
+  <td align=3D"center" class=3D"content-td" style=3D"padding: 16px 24px 0 2=
+4px; background-color:#FFFFFF;">
+    <table role=3D"presentation" border=3D"0" cellpadding=3D"0" cellspacing=
+=3D"0" width=3D"100%" style=3D"max-width: 520px;">
+      <tr>
+        <td align=3D"center" style=3D"padding:0;">
+          <p class=3D"onboarding-section-body" style=3D"margin:0; text-alig=
+n:center; color:#000000; font-family:'OpenAI Sans', Helvetica, Arial, sans-=
+serif; font-size:16px; line-height:150%; font-weight:400; letter-spacing:-0=
+.2px;">
+            Ajukan pertanyaan ke ChatGPT seperti Anda biasa bertanya, baik =
+saat mencari sesuatu maupun memutuskan langkah selanjutnya.
+          </p>
+        </td>
+      </tr>
+    </table>
+  </td>
+</tr>
+
+ =20
+ =20
+ =20
+ =20
+<tr>
+  <td align=3D"center" class=3D"content-td" style=3D"padding: 24px 24px 28p=
+x 24px; background-color:#FFFFFF;">
+    <table border=3D"0" cellpadding=3D"0" cellspacing=3D"0" align=3D"center=
+" role=3D"presentation">
+      <tr>
+        <td align=3D"center">
+          <!--[if mso]><v:roundrect xmlns:v=3D"urn:schemas-microsoft-com:vm=
+l" href=3D"https://chatgpt.com/?mfr=3De.s.f4d68e0a1bd0c6ec83ea75e5435f75db2=
+761b47ee66a14f632058454e600f65e&amp;entry_id=3Deb191f70-31fc-4d30-9191-1ab9=
+4f0961d3&amp;deep_link_id=3Df056a4d4-47bc-4269-9246-cee4c2e77f94&amp;auth_m=
+odal=3D1&amp;login_hint=3Dnecrology45%40gmail.com" style=3D"height:44px;v-t=
+ext-anchor:middle;width:200px;" arcsize=3D"50%" stroke=3D"t" strokecolor=3D=
+"#000000" strokeweight=3D"1px" fillcolor=3D"#000000"><w:anchorlock/><center=
+ style=3D"color:#FFFFFF;font-family:Helvetica,Arial,sans-serif;font-size:16=
+px;font-weight:400;letter-spacing:-0.32px;">Tanyakan sesuatu</center></v:ro=
+undrect><![endif]-->
+          <!--[if !mso]><!-- --><a href=3D"https://r.openai.com/ls/click?up=
+n=3Du001.I-2FaYIbqhsKngReUOKrmuwZSO4NkXeh7XGoFSaLpi7ctpO-2F2VMgPNW9j-2FqKwd=
+QmjR2UkkPYD8XSZbXHLrvWuGeEP6AkKpXJnQWZ9SdqQ1pl62vLV57KagwfQjj-2FYAEUHTErZvq=
+UoNNIl27N5HCtb0Q-2FwfcXyfL0ehJcTz5kFcS0NPd82MS6GSuLlsT5POzQUHgY0IwBvTMIxN9d=
+RfitlLwiDCLly4tEofYWZIroE2QtXGtv6wleWksDLyqMKF9vcYG-2FGGi9xy-2F-2F-2FHFtKRH=
+z6wCAQivq6Wq3i3URGA9M7kvxYv1T5xQDGhFB7hkfnGRZ8Sah5pbIcOAhgG-2BzinIgDo-2FL1E=
+WTz1lVWwvuqJ7qw9ZHZZtuVqfBQjUoZ2UbRkyAfuaQy2E4OTbqxjwv6A3U1aEbUIt2PSpRyXBm0=
+EvTutDiTYVIPA7sIlDrs3Wiy76SIXkHlRER0c3BfUEoyVRfcMvA-3D-3DgwKZ_yfsGH4ZCeh8uj=
+z4-2FcF8XBvWb5GNI-2FmVJ9q1zidkSNtcq55O-2BD6ovd-2BwGjkRSXB4CV6bm6uqWfwf47HSJ=
+Ws58BK-2BAcoaR5q82nEUBexcOIa4OuOstB-2BomFrl7pAaWBsslIdf1ihTHk9Gq0-2B3j-2FBq=
+Mpx138U6x4kzTyXxs8mJQTY5DWP0c13hvSb0joVEHxoC4a9h9hR-2BEzKmRRPnRdBdDHn2lJTzy=
+l4Y-2FbB6Ne90pmEAqX1aazCKMM68xiqRhY5lO5MJjLzcclsLoVleIYh8-2FLCtpVU0trrgkI3K=
+Zg08EM7Dg8-2Bx1Gdy-2BqfOpeSew5WPw6W7coxXfM66WtNhtFbk2UIL8wEhMtfU-2FIjk7bSfW=
+vvI-2FWH-2BorrdJ1BRdOiGvotDf7jKkOH7XGMqtMcbqRkbkh78IlNqIeUjp3QMDjNTkvaJyB-2=
+BakVVvCC5xpAHM9-2FbgkOdTdvATvRyMJTF5h5pbnEq5bWWz9YYpAq85YanCOsCB1wbBjx9hpSO=
+Xt86wEhhWe0HRcGy8XhgWFwWXKgXVpH9-2BNLuaQ4MjmkDEW9y3090Ds5gL-2BNmugDkD6xFdys=
+y3ckgnlkyDUI-2BtfWviBxQQZPhG2eOYf4QFP-2FnH0ZUVtayo6pi-2F0jBJ-2FxSgC0YuesSvf=
+TabIoD7I83ZoR-2BsM90-2FhuzopHebiMVfLqrb47U3Mhpj2grc2D6-2BqOMu6-2F6of9LFFSKG=
+HTvZ-2BBljadioa3-2FsnkjM0H7KZKUyRyEbJdfsY7qFZefzVPCS0qPPZmHIJS1BeDtcxC5sL7R=
+BUpF0g-2BNT3uSXu22It0YyN0dkZs4H1p9rJnvHVFTd2BhyUc1Duuz-2Fnz4kTVJW0FlB0Tf2hy=
+pB4TQ-3D-3D" target=3D"_blank" class=3D"button-invert" style=3D"font-size:1=
+6px; line-height:20px; font-family:'OpenAI Sans', Helvetica, Arial, sans-se=
+rif; font-weight:400; background-color:#000000; text-decoration:none; paddi=
+ng:12px 24px; color:#FFFFFF; border:1px solid #000000; border-radius:24px; =
+display:inline-block; mso-padding-alt:0;"><span style=3D"mso-text-raise:10p=
+t;">Tanyakan sesuatu</span></a><!--<![endif]-->
+        </td>
+      </tr>
+    </table>
+  </td>
+</tr>
+
+ =20
+ =20
+<tr>
+  <td align=3D"center" class=3D"content-td" style=3D"padding: 44px 24px 0 2=
+4px; background-color:#FFFFFF;">
+    <table role=3D"presentation" border=3D"0" cellpadding=3D"0" cellspacing=
+=3D"0" width=3D"100%" style=3D"max-width: 480px;">
+      <tr>
+        <td align=3D"center" style=3D"padding:0;">
+          <h1 class=3D"onboarding-section-title" style=3D"margin:0; text-al=
+ign:center; color:#000000; font-family:'OpenAI Sans', Helvetica, Arial, san=
+s-serif; font-size:34px; line-height:41px; font-weight:400; letter-spacing:=
+0.4px;">
+            Coba salah satu berikut
+          </h1>
+        </td>
+      </tr>
+    </table>
+  </td>
+</tr>
+
+
+<tr>
+  <td align=3D"center" class=3D"content-td" style=3D"padding: 16px 24px 24p=
+x 24px; background-color:#FFFFFF;">
+    <table role=3D"presentation" border=3D"0" cellpadding=3D"0" cellspacing=
+=3D"0" width=3D"100%" style=3D"max-width: 520px;">
+      <tr>
+        <td align=3D"center" style=3D"padding:0;">
+          <p class=3D"onboarding-section-body" style=3D"margin:0; text-alig=
+n:center; color:#000000; font-family:'OpenAI Sans', Helvetica, Arial, sans-=
+serif; font-size:16px; line-height:150%; font-weight:400; letter-spacing:-0=
+.2px;">
+            Berikut beberapa cara sehari-hari orang menggunakan ChatGPT unt=
+uk mencari tahu berbagai hal:
+          </p>
+        </td>
+      </tr>
+    </table>
+  </td>
+</tr>
+
+ =20
+   =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+   =20
+ =20
+ =20
+ =20
+ =20
+ =20
+   =20
+ =20
+<tr>
+  <td align=3D"center" class=3D"content-td onboarding-card-section" style=
+=3D"padding: 8px 24px 0 24px; background-color:#FFFFFF;">
+    <table role=3D"presentation" border=3D"0" cellpadding=3D"0" cellspacing=
+=3D"0" width=3D"100%" class=3D"onboarding-card-shell" style=3D"max-width:55=
+2px;">
+      <tr>
+        <td style=3D"padding:0;">
+          <a href=3D"https://r.openai.com/uni/ls/click?upn=3Du001.I-2FaYIbq=
+hsKngReUOKrmuwejRK4r-2FhohtLcN3t-2FloTfi0e-2FnN5NcBGeKpU3hse-2B9GVL3Fv-2Bom=
+NJ8rWtKpA-2B15pRpcxKkJ-2FPbzPjmQyLrbEwTeH5nJcsFEpUQMSO2wEXaqrImEcRhH8b-2Fgm=
+7dMNHPTyqpTFmjTxXC1piXiB5qmDeqVnwgbdxiaYCmUcnBOTJe0gg0cYHyALoWAuU5esZmpQ2Ik=
+12cnNSk3AiCKm5gl2gttwoQQEAeJ6zYxX3SGYo1lIlKq5dRKgdKzkq078wN-2B7hSqVYSPmJuqk=
+yusFebMDD8FmTofh5PIy1IQr3IvSVkhgl6MOhtYD9bpYdegNtkuCeizbWBeKy2VjM2bo-2BZXyX=
+ONBcu0Mgwka6mOwruWdcd-2FpeCfRsQALG7Sb-2BUuML8JpB0ank3EPZmVEZxAlCz-2FIKb-2Fr=
+KqsY3qnZUYcndMPsv444c5BEGphqOIqw5EZWp-2BJR0pDo1EIZiTDkdWX1-2BcfVfMUrU2QHJ4q=
+nrU2pvRTaaQgpelBx3k7AhlILML-2FXCr7IsT7xH8CjYZVl1Iyb-2BV5UKYSPSfQ6jDPjnqqN1N=
+OuiRBfgEx-2BRHWLxRFzPXBj6zFjlbZPSxDBXqHFyJMMqC-2BckI-3DNiek_yfsGH4ZCeh8ujz4=
+-2FcF8XBvWb5GNI-2FmVJ9q1zidkSNtcq55O-2BD6ovd-2BwGjkRSXB4CV6bm6uqWfwf47HSJWs=
+58BK-2BAcoaR5q82nEUBexcOIa4OuOstB-2BomFrl7pAaWBsslIdf1ihTHk9Gq0-2B3j-2FBqMp=
+x138U6x4kzTyXxs8mJQTY5DWP0c13hvSb0joVEHxoC4a9h9hR-2BEzKmRRPnRdBdDHn2lJTzyl4=
+Y-2FbB6Ne90pmEAqX1aazCKMM68xiqRhY5lO5MJjLzcclsLoVleIYh8-2FLCtpVU0trrgkI3KZg=
+08EM7Dg8-2Bx1Gdy-2BqfOpeSew5WPw6W7coxXfM66WtNhtFbk2UIL8wEhMtfU-2FIjk7bSfWvv=
+I-2FWH-2BorrdJ1BRdOiGvotDf7jKkOH7XGMqtMcbqRkbkh78IlNqIeUjp3QMDjNTkvaJyB-2Ba=
+kVVvCC5xpAHM9-2FbgkOdTdvATvRyMJTF5h5pbnEq5bWWz9YYpAq85YanCOsCB1wbBjx9hpSOXt=
+86wEhhWe0HRcGy8XhgWFwWXKgXVpH9-2BNLuaQ4MjmkDEW9y3090Ds5gL-2BNmugDkD6xFdysy3=
+ckgnlkyDUI-2BtfWviBxQQZPhG2eOYf4QFP-2FnH0ZUVtayo6pi-2F0jBJ-2FxSgC0YuesSvfTa=
+bIoD7I83ZoR-2BsM90-2FhuzopHebiMVfLqrb47U3MhpiaBjlHP0hIi-2BUcognZQHFnpuYfm-2=
+BlYxw9ucmI3C1S1JiiWRhm44h7ukzxouX5dP8RU3m5nDjVlZxJ9ud0jn7ZLI81FXZhpzleVKeiJ=
+2prmwKK-2Bwu2-2FsWi7VxYhgvYoEAVGCZ3c7tflmXkeK5gKjP-2FLDuj7bm-2FtzhIyc3b4kjL=
+sew-3D-3D" target=3D"_blank" style=3D"display:block; text-decoration:none; =
+color:inherit;" universal=3D"true">
+            <table role=3D"presentation" border=3D"0" cellpadding=3D"0" cel=
+lspacing=3D"0" width=3D"100%" class=3D"onboarding-card-surface" style=3D"bo=
+rder-collapse:separate !important; border-spacing:0; border:1px solid #E5E7=
+EB; border-radius:24px; background-color:#FFFFFF;">
+              <tr>
+                <td class=3D"onboarding-card-padding" style=3D"padding:18px=
+;">
+                  <table role=3D"presentation" border=3D"0" cellpadding=3D"=
+0" cellspacing=3D"0" width=3D"100%" dir=3D"ltr">
+                    <tr>
+                      <td valign=3D"middle" width=3D"104" class=3D"onboardi=
+ng-card-media-cell" style=3D"width:104px; min-width:104px; vertical-align:m=
+iddle;">
+                       =20
+                        <table role=3D"presentation" border=3D"0" cellpaddi=
+ng=3D"0" cellspacing=3D"0" width=3D"104" class=3D"onboarding-card-media-fra=
+me" style=3D"width:104px; background-color:#FFE4F2; border-radius:22px; ove=
+rflow:hidden;">
+                          <tr>
+                            <td align=3D"center" valign=3D"middle" class=3D=
+"onboarding-card-media-fill onboarding-card-media-fill-icon onboarding-card=
+-media-fill-icon-full-frame" style=3D"padding:0px; font-size:0; line-height=
+:0;">
+                             =20
+                              <img src=3D"https://persistent.oaistatic.com/=
+notifications/email_content/free-onboarding/new-user-onboarding-email-learn=
+ing-stain-removal-icon.png" width=3D"104" height=3D"104" alt=3D"" align=3D"=
+center" class=3D"onboarding-card-icon-art onboarding-card-icon-art-full-fra=
+me" style=3D"display:block; margin:0 auto; width:104px; height:104px; max-w=
+idth:104px; border:0; background-color:transparent; object-fit:contain;">
+                             =20
+                            </td>
+                          </tr>
+                        </table>
+                       =20
+                      </td>
+                      <td width=3D"20" class=3D"onboarding-card-gap" style=
+=3D"width:20px; min-width:20px; font-size:1px; line-height:1px;">&nbsp;</td=
+>
+                      <td valign=3D"middle" dir=3D"ltr" class=3D"onboarding=
+-card-copy-cell" style=3D"vertical-align:middle; text-align:left;">
+                        <p class=3D"onboarding-card-copy" style=3D"margin:0=
+; display:block; color:#000000 !important; -webkit-text-fill-color:#000000 =
+!important; font-family:'OpenAI Sans', Helvetica, Arial, sans-serif !import=
+ant; font-size:20px; line-height:26px; font-weight:400; letter-spacing:-0.4=
+px; text-align:left; text-decoration:none; mso-line-height-rule:exactly;">
+                          Bagaimana cara menghilangkan noda membandel ini d=
+ari pakaian saya?
+                        </p>
+                      </td>
+                     =20
+                      <td valign=3D"middle" align=3D"right" width=3D"40" cl=
+ass=3D"onboarding-card-arrow-cell" style=3D"width:40px; min-width:40px; pad=
+ding-left:16px; vertical-align:middle;">
+                        <img src=3D"https://cdn.mcauto-images-production.se=
+ndgrid.net/d4ef4a73d51fe844/53e215ea-a410-4b4f-b55d-10e00d42bd2e/139x139.pn=
+g" width=3D"32" alt=3D"" class=3D"onboarding-card-arrow-img" style=3D"displ=
+ay:block; width:32px; height:32px; border:0;">
+                      </td>
+                     =20
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </a>
+        </td>
+      </tr>
+    </table>
+  </td>
+</tr>
+ =20
+   =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+   =20
+ =20
+ =20
+ =20
+ =20
+ =20
+   =20
+ =20
+<tr>
+  <td align=3D"center" class=3D"content-td onboarding-card-section" style=
+=3D"padding: 8px 24px 0 24px; background-color:#FFFFFF;">
+    <table role=3D"presentation" border=3D"0" cellpadding=3D"0" cellspacing=
+=3D"0" width=3D"100%" class=3D"onboarding-card-shell" style=3D"max-width:55=
+2px;">
+      <tr>
+        <td style=3D"padding:0;">
+          <a href=3D"https://r.openai.com/uni/ls/click?upn=3Du001.I-2FaYIbq=
+hsKngReUOKrmuwejRK4r-2FhohtLcN3t-2FloTfi0e-2FnN5NcBGeKpU3hse-2B9GVL3Fv-2Bom=
+NJ8rWtKpA-2B15pS3FuyButIDTBZ5qFAfr83SIO4-2B65xKVU7ORddBTLcosYCdJsksDXSZNBsF=
+jMi1jJLm9jTeTc-2BKR3ZM2znnZauv-2FOEhLB9qzmxyBLgDQwmM-2BA7dfL-2Fn4cgsUwQ-2BP=
+WV6aIKlPPFEiERklgx5KrcjX4GHe883QMdSt8GTQyn2pjUhyI0AKgSKQJSKJRYB1uwNVwhFaz25=
+BCkyZnoPGkNcQSXy59Ybb5sftQUCtWS6GFdtrjtoZQsthoQz7Y2Y4zoRozkiE974o2y1-2FO4y4=
+EjOLi7VK2xvMbyYcjlQ8CiqeAZRWOFtYgsQwQ0qliY1XnePB5kijO-2FFrUqHMwCh9aKn7Dwl8O=
+m2YKINlYXeZe2CGNtXWO5b3XKhwTXrI6UFPket48bJ1v0LBZvFjHpZU0NM7TBtryM6BBvLxxLIN=
+Cp7nO-2BLjG2iwyx4u3Rw1doqUoo8ygjb68NUSnVjwCRjJ4DtCyY6J6GXlLFwMLOvg8RaQ7f4Zd=
+fdZ446qBia3OQc1eZNhqw-3D-3Dak1L_yfsGH4ZCeh8ujz4-2FcF8XBvWb5GNI-2FmVJ9q1zidk=
+SNtcq55O-2BD6ovd-2BwGjkRSXB4CV6bm6uqWfwf47HSJWs58BK-2BAcoaR5q82nEUBexcOIa4O=
+uOstB-2BomFrl7pAaWBsslIdf1ihTHk9Gq0-2B3j-2FBqMpx138U6x4kzTyXxs8mJQTY5DWP0c1=
+3hvSb0joVEHxoC4a9h9hR-2BEzKmRRPnRdBdDHn2lJTzyl4Y-2FbB6Ne90pmEAqX1aazCKMM68x=
+iqRhY5lO5MJjLzcclsLoVleIYh8-2FLCtpVU0trrgkI3KZg08EM7Dg8-2Bx1Gdy-2BqfOpeSew5=
+WPw6W7coxXfM66WtNhtFbk2UIL8wEhMtfU-2FIjk7bSfWvvI-2FWH-2BorrdJ1BRdOiGvotDf7j=
+KkOH7XGMqtMcbqRkbkh78IlNqIeUjp3QMDjNTkvaJyB-2BakVVvCC5xpAHM9-2FbgkOdTdvATvR=
+yMJTF5h5pbnEq5bWWz9YYpAq85YanCOsCB1wbBjx9hpSOXt86wEhhWe0HRcGy8XhgWFwWXKgXVp=
+H9-2BNLuaQ4MjmkDEW9y3090Ds5gL-2BNmugDkD6xFdysy3ckgnlkyDUI-2BtfWviBxQQZPhG2e=
+OYf4QFP-2FnH0ZUVtayo6pi-2F0jBJ-2FxSgC0YuesSvfTabIoD7I83ZoR-2BsM90-2FhuzopHe=
+biMVfLqrb47U3MhpggL22NDf7Zc8YtxwcRaZ63Yyaox6zXm-2FtqnbrgYBiTaeqJ57vI5FNkj7-=
+2B42sShf6Z7EyZEjOjFkNYsrSkkZQBytDR3-2F8SAHyH1cpJsANvejmGfqJRWINKXsxVFsSJjrW=
+dXBd3RF0RcZGDtJM8uXwldEbt37yGdw6TSejrVpJxOHQ-3D-3D" target=3D"_blank" style=
+=3D"display:block; text-decoration:none; color:inherit;" universal=3D"true"=
+>
+            <table role=3D"presentation" border=3D"0" cellpadding=3D"0" cel=
+lspacing=3D"0" width=3D"100%" class=3D"onboarding-card-surface" style=3D"bo=
+rder-collapse:separate !important; border-spacing:0; border:1px solid #E5E7=
+EB; border-radius:24px; background-color:#FFFFFF;">
+              <tr>
+                <td class=3D"onboarding-card-padding" style=3D"padding:18px=
+;">
+                  <table role=3D"presentation" border=3D"0" cellpadding=3D"=
+0" cellspacing=3D"0" width=3D"100%" dir=3D"ltr">
+                    <tr>
+                      <td valign=3D"middle" width=3D"104" class=3D"onboardi=
+ng-card-media-cell" style=3D"width:104px; min-width:104px; vertical-align:m=
+iddle;">
+                       =20
+                        <table role=3D"presentation" border=3D"0" cellpaddi=
+ng=3D"0" cellspacing=3D"0" width=3D"104" class=3D"onboarding-card-media-fra=
+me" style=3D"width:104px; background-color:#FFE4F2; border-radius:22px; ove=
+rflow:hidden;">
+                          <tr>
+                            <td align=3D"center" valign=3D"middle" class=3D=
+"onboarding-card-media-fill onboarding-card-media-fill-icon onboarding-card=
+-media-fill-icon-full-frame" style=3D"padding:0px; font-size:0; line-height=
+:0;">
+                             =20
+                              <img src=3D"https://persistent.oaistatic.com/=
+notifications/email_content/free-onboarding/new-user-onboarding-email-learn=
+ing-skincare-routine-icon.png" width=3D"104" height=3D"104" alt=3D"" align=
+=3D"center" class=3D"onboarding-card-icon-art onboarding-card-icon-art-full=
+-frame" style=3D"display:block; margin:0 auto; width:104px; height:104px; m=
+ax-width:104px; border:0; background-color:transparent; object-fit:contain;=
+">
+                             =20
+                            </td>
+                          </tr>
+                        </table>
+                       =20
+                      </td>
+                      <td width=3D"20" class=3D"onboarding-card-gap" style=
+=3D"width:20px; min-width:20px; font-size:1px; line-height:1px;">&nbsp;</td=
+>
+                      <td valign=3D"middle" dir=3D"ltr" class=3D"onboarding=
+-card-copy-cell" style=3D"vertical-align:middle; text-align:left;">
+                        <p class=3D"onboarding-card-copy" style=3D"margin:0=
+; display:block; color:#000000 !important; -webkit-text-fill-color:#000000 =
+!important; font-family:'OpenAI Sans', Helvetica, Arial, sans-serif !import=
+ant; font-size:20px; line-height:26px; font-weight:400; letter-spacing:-0.4=
+px; text-align:left; text-decoration:none; mso-line-height-rule:exactly;">
+                          Bantu saya menyusun rutinitas skincare yang baik
+                        </p>
+                      </td>
+                     =20
+                      <td valign=3D"middle" align=3D"right" width=3D"40" cl=
+ass=3D"onboarding-card-arrow-cell" style=3D"width:40px; min-width:40px; pad=
+ding-left:16px; vertical-align:middle;">
+                        <img src=3D"https://cdn.mcauto-images-production.se=
+ndgrid.net/d4ef4a73d51fe844/53e215ea-a410-4b4f-b55d-10e00d42bd2e/139x139.pn=
+g" width=3D"32" alt=3D"" class=3D"onboarding-card-arrow-img" style=3D"displ=
+ay:block; width:32px; height:32px; border:0;">
+                      </td>
+                     =20
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </a>
+        </td>
+      </tr>
+    </table>
+  </td>
+</tr>
+ =20
+   =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+ =20
+   =20
+ =20
+ =20
+ =20
+ =20
+ =20
+   =20
+ =20
+<tr>
+  <td align=3D"center" class=3D"content-td onboarding-card-section" style=
+=3D"padding: 8px 24px 0 24px; background-color:#FFFFFF;">
+    <table role=3D"presentation" border=3D"0" cellpadding=3D"0" cellspacing=
+=3D"0" width=3D"100%" class=3D"onboarding-card-shell" style=3D"max-width:55=
+2px;">
+      <tr>
+        <td style=3D"padding:0;">
+          <a href=3D"https://r.openai.com/uni/ls/click?upn=3Du001.I-2FaYIbq=
+hsKngReUOKrmuwejRK4r-2FhohtLcN3t-2FloTfi0e-2FnN5NcBGeKpU3hse-2B9GVL3Fv-2Bom=
+NJ8rWtKpA-2B15pYUWRnEBy9FSq4DC74m3ms6p2l6CHongh00AACdBwZIDa0kvTWHFApcQFFIHa=
+KulY6x-2FDGMrzbf8CIAnNisHm9rxdpG-2B-2BRwQuyT4Ah13y1P4VUkt10zcS1AI-2FQOacx39=
+4AKtgkxR86jcqy56b2erUqDi5CdQUMc4J6-2Bh2BA59CKS6PYKSCac6sAwagkaOzXhhK8CkXFa4=
+rlsC4-2Fpt7ru44KenQ-2FBe47EKXc60wi-2BB9gP2CUot2MHau6ECxoZnLMl5Mo08NBwYILFCh=
+z0x4pTwt-2F7D9xpTWdhs6bYpSs35Htn2K-2FsKU-2B9YIqomJmj4YH-2B6VihBzKuyFW8zaH31=
+-2FH45FannX5uXB-2BUvG5QOJjOkcdLVCzupnKw9eUvJHh1DlS-2BBqgP5GodU-2BI3FpUPrXiW=
+2mADzwTX0KZIHf71Vint6dyRcSIiLTho8850-2BOhX8gMDp18BgZIle3PxfvQEachRbamkAdDrZ=
+APCFVdsIRZR7W7-2FvxM40WIsbCxZ7fpeeeFJUQ-3D-3DqlV2_yfsGH4ZCeh8ujz4-2FcF8XBvW=
+b5GNI-2FmVJ9q1zidkSNtcq55O-2BD6ovd-2BwGjkRSXB4CV6bm6uqWfwf47HSJWs58BK-2BAco=
+aR5q82nEUBexcOIa4OuOstB-2BomFrl7pAaWBsslIdf1ihTHk9Gq0-2B3j-2FBqMpx138U6x4kz=
+TyXxs8mJQTY5DWP0c13hvSb0joVEHxoC4a9h9hR-2BEzKmRRPnRdBdDHn2lJTzyl4Y-2FbB6Ne9=
+0pmEAqX1aazCKMM68xiqRhY5lO5MJjLzcclsLoVleIYh8-2FLCtpVU0trrgkI3KZg08EM7Dg8-2=
+Bx1Gdy-2BqfOpeSew5WPw6W7coxXfM66WtNhtFbk2UIL8wEhMtfU-2FIjk7bSfWvvI-2FWH-2Bo=
+rrdJ1BRdOiGvotDf7jKkOH7XGMqtMcbqRkbkh78IlNqIeUjp3QMDjNTkvaJyB-2BakVVvCC5xpA=
+HM9-2FbgkOdTdvATvRyMJTF5h5pbnEq5bWWz9YYpAq85YanCOsCB1wbBjx9hpSOXt86wEhhWe0H=
+RcGy8XhgWFwWXKgXVpH9-2BNLuaQ4MjmkDEW9y3090Ds5gL-2BNmugDkD6xFdysy3ckgnlkyDUI=
+-2BtfWviBxQQZPhG2eOYf4QFP-2FnH0ZUVtayo6pi-2F0jBJ-2FxSgC0YuesSvfTabIoD7I83Zo=
+R-2BsM90-2FhuzopHebiMVfLqrb47U3MhpgIlcoI-2FxNJ-2B9MZ6hPFORf3hXELFf8Ftz1ErUI=
+N5u1ms8Y6mZhcuZ01BXs0uXS3fXCDquxa9PQvqbKfNTFDzUact7qal7uCaSdNlI48INs0V5NdSJ=
+qwRN1mPRkhbAb5EpxkPAXn05vcc-2FkIWU3sLsqf0jIINXK6O7PoXbCfmgNKjQ-3D-3D" targe=
+t=3D"_blank" style=3D"display:block; text-decoration:none; color:inherit;" =
+universal=3D"true">
+            <table role=3D"presentation" border=3D"0" cellpadding=3D"0" cel=
+lspacing=3D"0" width=3D"100%" class=3D"onboarding-card-surface" style=3D"bo=
+rder-collapse:separate !important; border-spacing:0; border:1px solid #E5E7=
+EB; border-radius:24px; background-color:#FFFFFF;">
+              <tr>
+                <td class=3D"onboarding-card-padding" style=3D"padding:18px=
+;">
+                  <table role=3D"presentation" border=3D"0" cellpadding=3D"=
+0" cellspacing=3D"0" width=3D"100%" dir=3D"ltr">
+                    <tr>
+                      <td valign=3D"middle" width=3D"104" class=3D"onboardi=
+ng-card-media-cell" style=3D"width:104px; min-width:104px; vertical-align:m=
+iddle;">
+                       =20
+                        <table role=3D"presentation" border=3D"0" cellpaddi=
+ng=3D"0" cellspacing=3D"0" width=3D"104" class=3D"onboarding-card-media-fra=
+me" style=3D"width:104px; background-color:#FFE4F2; border-radius:22px; ove=
+rflow:hidden;">
+                          <tr>
+                            <td align=3D"center" valign=3D"middle" class=3D=
+"onboarding-card-media-fill onboarding-card-media-fill-icon onboarding-card=
+-media-fill-icon-full-frame" style=3D"padding:0px; font-size:0; line-height=
+:0;">
+                             =20
+                              <img src=3D"https://persistent.oaistatic.com/=
+notifications/email_content/free-onboarding/new-user-onboarding-email-learn=
+ing-inflation-explanation-icon.png" width=3D"104" height=3D"104" alt=3D"" a=
+lign=3D"center" class=3D"onboarding-card-icon-art onboarding-card-icon-art-=
+full-frame" style=3D"display:block; margin:0 auto; width:104px; height:104p=
+x; max-width:104px; border:0; background-color:transparent; object-fit:cont=
+ain;">
+                             =20
+                            </td>
+                          </tr>
+                        </table>
+                       =20
+                      </td>
+                      <td width=3D"20" class=3D"onboarding-card-gap" style=
+=3D"width:20px; min-width:20px; font-size:1px; line-height:1px;">&nbsp;</td=
+>
+                      <td valign=3D"middle" dir=3D"ltr" class=3D"onboarding=
+-card-copy-cell" style=3D"vertical-align:middle; text-align:left;">
+                        <p class=3D"onboarding-card-copy" style=3D"margin:0=
+; display:block; color:#000000 !important; -webkit-text-fill-color:#000000 =
+!important; font-family:'OpenAI Sans', Helvetica, Arial, sans-serif !import=
+ant; font-size:20px; line-height:26px; font-weight:400; letter-spacing:-0.4=
+px; text-align:left; text-decoration:none; mso-line-height-rule:exactly;">
+                          Jelaskan inflasi seolah saya baru belajar ekonomi
+                        </p>
+                      </td>
+                     =20
+                      <td valign=3D"middle" align=3D"right" width=3D"40" cl=
+ass=3D"onboarding-card-arrow-cell" style=3D"width:40px; min-width:40px; pad=
+ding-left:16px; vertical-align:middle;">
+                        <img src=3D"https://cdn.mcauto-images-production.se=
+ndgrid.net/d4ef4a73d51fe844/53e215ea-a410-4b4f-b55d-10e00d42bd2e/139x139.pn=
+g" width=3D"32" alt=3D"" class=3D"onboarding-card-arrow-img" style=3D"displ=
+ay:block; width:32px; height:32px; border:0;">
+                      </td>
+                     =20
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </a>
+        </td>
+      </tr>
+    </table>
+  </td>
+</tr>
+ =20
+
+ =20
+ =20
+<tr>
+  <td align=3D"center" class=3D"content-td" style=3D"padding: 48px 24px 0 2=
+4px; background-color:#FFFFFF;">
+    <table role=3D"presentation" border=3D"0" cellpadding=3D"0" cellspacing=
+=3D"0" width=3D"100%" style=3D"max-width: 480px;">
+      <tr>
+        <td align=3D"center" style=3D"padding:0;">
+          <h1 class=3D"onboarding-section-title" style=3D"margin:0; text-al=
+ign:center; color:#000000; font-family:'OpenAI Sans', Helvetica, Arial, san=
+s-serif; font-size:34px; line-height:41px; font-weight:400; letter-spacing:=
+0.4px;">
+            Ada pertanyaan lain?
+          </h1>
+        </td>
+      </tr>
+    </table>
+  </td>
+</tr>
+
+
+<tr>
+  <td align=3D"center" class=3D"content-td" style=3D"padding: 16px 24px 0 2=
+4px; background-color:#FFFFFF;">
+    <table role=3D"presentation" border=3D"0" cellpadding=3D"0" cellspacing=
+=3D"0" width=3D"100%" style=3D"max-width: 520px;">
+      <tr>
+        <td align=3D"center" style=3D"padding:0;">
+          <p class=3D"onboarding-section-body" style=3D"margin:0; text-alig=
+n:center; color:#000000; font-family:'OpenAI Sans', Helvetica, Arial, sans-=
+serif; font-size:16px; line-height:150%; font-weight:400; letter-spacing:-0=
+.2px;">
+            Mulailah dengan apa pun yang ada di pikiran Anda. ChatGPT dapat=
+ membantu mengubah pertanyaan singkat menjadi jawaban, penjelasan, atau lan=
+gkah selanjutnya yang lebih jelas.
+          </p>
+        </td>
+      </tr>
+    </table>
+  </td>
+</tr>
+
+ =20
+ =20
+ =20
+ =20
+<tr>
+  <td align=3D"center" class=3D"content-td" style=3D"padding: 24px 24px 28p=
+x 24px; background-color:#FFFFFF;">
+    <table border=3D"0" cellpadding=3D"0" cellspacing=3D"0" align=3D"center=
+" role=3D"presentation">
+      <tr>
+        <td align=3D"center">
+          <!--[if mso]><v:roundrect xmlns:v=3D"urn:schemas-microsoft-com:vm=
+l" href=3D"https://chatgpt.com/?mfr=3De.s.f4d68e0a1bd0c6ec83ea75e5435f75db2=
+761b47ee66a14f632058454e600f65e&amp;entry_id=3Deb191f70-31fc-4d30-9191-1ab9=
+4f0961d3&amp;deep_link_id=3D9aa14287-2d8d-4d1a-b35f-adfeed5b1aac&amp;auth_m=
+odal=3D1&amp;login_hint=3Dnecrology45%40gmail.com" style=3D"height:44px;v-t=
+ext-anchor:middle;width:200px;" arcsize=3D"50%" stroke=3D"t" strokecolor=3D=
+"#FFFFFF" strokeweight=3D"1px" fillcolor=3D"#F3F3F3"><w:anchorlock/><center=
+ style=3D"color:#000000;font-family:Helvetica,Arial,sans-serif;font-size:16=
+px;font-weight:400;letter-spacing:-0.32px;">Coba sekarang</center></v:round=
+rect><![endif]-->
+          <!--[if !mso]><!-- --><a href=3D"https://r.openai.com/ls/click?up=
+n=3Du001.I-2FaYIbqhsKngReUOKrmuwZSO4NkXeh7XGoFSaLpi7ctpO-2F2VMgPNW9j-2FqKwd=
+QmjR2UkkPYD8XSZbXHLrvWuGeEP6AkKpXJnQWZ9SdqQ1pl62vLV57KagwfQjj-2FYAEUHTErZvq=
+UoNNIl27N5HCtb0Q-2FwfcXyfL0ehJcTz5kFcS0NPd82MS6GSuLlsT5POzQUHgY0IwBvTMIxN9d=
+RfitlLwmCIxIC2HqjqYF6NMjpNnJpjs-2F6hVzVDe2VS9g04eAgNHCSPcVtt9vh-2FHLu6gZcVN=
+L29NlLIqRhU9AR-2FbXIx98q8Y-2FwGlfnY0f-2FYU31So8lZpUXiCvmtf8kXL9bVoy-2BW2Ueu=
+6V4aztGUeJcuSNK0kmmHJ1ucSoBcFDBADpqoQerlRZKQVL4KrL0nXa1cidpVR09TTH1Nen6Vccq=
+GGbIwtk0wFirFEBq2nn5T4dxoQPE4KkSYLR9WOc8W9973anSRDw-3D-3DEzp7_yfsGH4ZCeh8uj=
+z4-2FcF8XBvWb5GNI-2FmVJ9q1zidkSNtcq55O-2BD6ovd-2BwGjkRSXB4CV6bm6uqWfwf47HSJ=
+Ws58BK-2BAcoaR5q82nEUBexcOIa4OuOstB-2BomFrl7pAaWBsslIdf1ihTHk9Gq0-2B3j-2FBq=
+Mpx138U6x4kzTyXxs8mJQTY5DWP0c13hvSb0joVEHxoC4a9h9hR-2BEzKmRRPnRdBdDHn2lJTzy=
+l4Y-2FbB6Ne90pmEAqX1aazCKMM68xiqRhY5lO5MJjLzcclsLoVleIYh8-2FLCtpVU0trrgkI3K=
+Zg08EM7Dg8-2Bx1Gdy-2BqfOpeSew5WPw6W7coxXfM66WtNhtFbk2UIL8wEhMtfU-2FIjk7bSfW=
+vvI-2FWH-2BorrdJ1BRdOiGvotDf7jKkOH7XGMqtMcbqRkbkh78IlNqIeUjp3QMDjNTkvaJyB-2=
+BakVVvCC5xpAHM9-2FbgkOdTdvATvRyMJTF5h5pbnEq5bWWz9YYpAq85YanCOsCB1wbBjx9hpSO=
+Xt86wEhhWe0HRcGy8XhgWFwWXKgXVpH9-2BNLuaQ4MjmkDEW9y3090Ds5gL-2BNmugDkD6xFdys=
+y3ckgnlkyDUI-2BtfWviBxQQZPhG2eOYf4QFP-2FnH0ZUVtayo6pi-2F0jBJ-2FxSgC0YuesSvf=
+TabIoD7I83ZoR-2BsM90-2FhuzopHebiMVfLqrb47U3MhpiNYS8TmrCckyWYjImTNgKDdZCGSVJ=
+eIjpwEDbPqFk3ooo529Zgnl-2Bpa37hxjzjpBd4h7mmMfc5iaBjCnVtQA-2Bf4AQGWIJNGSAnHc=
+h3p2U23d1BO8FjRW1IAe90bwS7WqlS53ZwfvJfFmoZ9AtyTsbZr1qc-2FxoJSrrUsi7fa6ik9w-=
+3D-3D" target=3D"_blank" style=3D"font-size:16px; line-height:20px; font-fa=
+mily:'OpenAI Sans', Helvetica, Arial, sans-serif; font-weight:400; backgrou=
+nd-color:#F3F3F3; text-decoration:none; padding:12px 24px; color:#000000; b=
+order:1px solid #FFFFFF; border-radius:24px; display:inline-block; mso-padd=
+ing-alt:0;"><span style=3D"mso-text-raise:10pt;">Coba sekarang</span></a><!=
+--<![endif]-->
+        </td>
+      </tr>
+    </table>
+  </td>
+</tr>
+
+
+         =20
+
+
+  <tr>
+   =20
+    <td align=3D"center" class=3D"content-td email-feedback-section" style=
+=3D"padding:0 24px 64px 24px; background-color:transparent;">
+      <table role=3D"presentation" border=3D"0" cellpadding=3D"0" cellspaci=
+ng=3D"0" align=3D"center" width=3D"100%" style=3D"max-width:552px; width:10=
+0%;">
+        <tr>
+          <td align=3D"center" style=3D"padding:0;">
+            <p style=3D"color:#0d0d0d; font-family:'OpenAI Sans',Helvetica,=
+Arial,sans-serif; font-size:15px; line-height:24px; font-weight:500; text-a=
+lign:center; margin:0 0 12px 0;">
+              Apakah email ini berguna?
+            </p>
+            <a class=3D"email-feedback-chip" clicktracking=3Doff href=3D"ht=
+tps://chatgpt.com/backend-api/notifications/feedback?token=3DeyJhbGciOiJIUz=
+I1NiIsInR5cCI6IkpXVCJ9.eyJhY2NvdW50X3VzZXJfaWQiOiJ1c2VyLVRLWThoTWxmU09wQkQw=
+Y25KbjhLcVVrMCIsInNvbGljaXRhdGlvbl9pZCI6IjZhZWUzOWVmOWJkODgxOTE5Mzg0NDQ0OWI=
+zYjk3NjNiIiwic3VibWlzc2lvbl9pZCI6IjFhYTRjZjdhLWFjYzMtNDdhMi05NDFkLTg4MDZhMT=
+k4MjBhMSIsInByb2R1Y2VyX3N5c3RlbSI6ImNhbXBhaWducyIsInByb2R1Y2VyX3JlZmVyZW5jZ=
+V9pZCI6Im5ldy11c2VyLW9uYm9hcmRpbmctZW1haWwtc2VyaWVzIiwiY29udGVudF9yZWZlcmVu=
+Y2VfaWQiOiJvbmJvYXJkaW5nLXYyLWxlYXJuaW5nLWV2ZXJ5ZGF5IiwiY2hhbm5lbCI6ImVtYWl=
+sIiwic3VyZmFjZSI6ImVtYWlsLmZvb3RlciIsInF1ZXN0aW9uX2lkIjoibm90aWZpY2F0aW9uX3=
+VzZWZ1bG5lc3NfdjAiLCJvcHRpb25faWQiOiJ1c2VmdWwiLCJhbGxvd2VkX29wdGlvbl9pZHMiO=
+lsidXNlZnVsIiwibm90X3VzZWZ1bCJdLCJpYXQiOjE3OTQwMDk3ODIsImV4cCI6MTc5NDYwMjA5=
+M30.a5A_6UiSlfBy_3GeLo2wUZzaq_cb0WCl-XQ4-6chWd8&entry_id=3Deb191f70-31fc-4d=
+30-9191-1ab94f0961d3&deep_link_id=3D8a847bd3-187b-4811-a5ac-b6907e5cd545&au=
+th_modal=3D1&login_hint=3Dnecrology45%40gmail.com&utm_campaign=3DEML_FE_NTF=
+_RES_learning_everyday_REC_EX&utm_medium=3Demail&utm_source=3Dsendgrid" sty=
+le=3D"display:inline-block; box-sizing:border-box; min-width:104px; margin:=
+0 4px; padding:11px 18px; background-color:#f3f3f3; border:1px solid #fffff=
+f; border-radius:999px; color:#0d0d0d; font-family:'OpenAI Sans',Helvetica,=
+Arial,sans-serif; font-size:15px; line-height:20px; font-weight:500; letter=
+-spacing:-0.01em; text-align:center; text-decoration:none;">
+              Berguna
+            </a>
+            <a class=3D"email-feedback-chip" clicktracking=3Doff href=3D"ht=
+tps://chatgpt.com/backend-api/notifications/feedback?token=3DeyJhbGciOiJIUz=
+I1NiIsInR5cCI6IkpXVCJ9.eyJhY2NvdW50X3VzZXJfaWQiOiJ1c2VyLVRLWThoTWxmU09wQkQw=
+Y25KbjhLcVVrMCIsInNvbGljaXRhdGlvbl9pZCI6IjZhZWUzOWVmOWJkODgxOTE5Mzg0NDQ0OWI=
+zYjk3NjNiIiwic3VibWlzc2lvbl9pZCI6Ijk4ZTQyMDc2LWM5NjItNDc3Mi05M2EwLTRmNTczYT=
+RmOGUxOSIsInByb2R1Y2VyX3N5c3RlbSI6ImNhbXBhaWducyIsInByb2R1Y2VyX3JlZmVyZW5jZ=
+V9pZCI6Im5ldy11c2VyLW9uYm9hcmRpbmctZW1haWwtc2VyaWVzIiwiY29udGVudF9yZWZlcmVu=
+Y2VfaWQiOiJvbmJvYXJkaW5nLXYyLWxlYXJuaW5nLWV2ZXJ5ZGF5IiwiY2hhbm5lbCI6ImVtYWl=
+sIiwic3VyZmFjZSI6ImVtYWlsLmZvb3RlciIsInF1ZXN0aW9uX2lkIjoibm90aWZpY2F0aW9uX3=
+VzZWZ1bG5lc3NfdjAiLCJvcHRpb25faWQiOiJub3RfdXNlZnVsIiwiYWxsb3dlZF9vcHRpb25fa=
+WRzIjpbInVzZWZ1bCIsIm5vdF91c2VmdWwiXSwiaWF0IjoxNzk0MDA5NzgyLCJleHAiOjE3OTQ2=
+MDIwOTN9.YcDincYtgnGJMvhXtQDGscSivyjvJT21W0vP43GKFcM&entry_id=3Deb191f70-31=
+fc-4d30-9191-1ab94f0961d3&deep_link_id=3D96d58d97-5926-477c-892a-7a8269f370=
+7c&auth_modal=3D1&login_hint=3Dnecrology45%40gmail.com&utm_campaign=3DEML_F=
+E_NTF_RES_learning_everyday_REC_EX&utm_medium=3Demail&utm_source=3Dsendgrid=
+" style=3D"display:inline-block; box-sizing:border-box; min-width:104px; ma=
+rgin:0 4px; padding:11px 18px; background-color:#f3f3f3; border:1px solid #=
+ffffff; border-radius:999px; color:#0d0d0d; font-family:'OpenAI Sans',Helve=
+tica,Arial,sans-serif; font-size:15px; line-height:20px; font-weight:500; l=
+etter-spacing:-0.01em; text-align:center; text-decoration:none;">
+              Tidak membantu
+            </a>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+        </table>
+        <!--[if (gte mso 9)|(IE)]>
+        </td>
+        </tr>
+        </table>
+        <![endif]-->
+      </td>
+    </tr>
+    <!-- end body block -->
+
+        <!-- start footer -->
+   =20
+   =20
+   =20
+   =20
+   =20
+   =20
+   =20
+   =20
+   =20
+   =20
+   =20
+   =20
+   =20
+   =20
+   =20
+   =20
+   =20
+   =20
+   =20
+   =20
+   =20
+   =20
+    <tr>
+      <td align=3D"center" class=3D"email-footer-row" style=3D"padding:12px=
+ 0;">
+        <!--[if mso]>
+        <table role=3D"presentation" border=3D"0" cellpadding=3D"0" cellspa=
+cing=3D"0" width=3D"600"><tr><td>
+        <![endif]-->
+        <table role=3D"presentation" border=3D"0" cellpadding=3D"0" cellspa=
+cing=3D"0" width=3D"100%" style=3D"max-width:600px;">
+          <tr>
+            <td align=3D"center" class=3D"footer-td email-footer-surface" s=
+tyle=3D"background-color:#ededed; border-radius:12px; padding:24px;">
+              <table role=3D"presentation" border=3D"0" cellpadding=3D"0" c=
+ellspacing=3D"0" width=3D"100%">
+                <tr>
+                 =20
+                   =20
+                    <td align=3D"left" class=3D"email-footer-logo-cell" sty=
+le=3D"padding-bottom:12px;">
+	                      <a href=3D"https://r.openai.com/ls/click?upn=3Du001.=
+I-2FaYIbqhsKngReUOKrmuweHw7Fh75qLKlFhai32cOrtkKoOg5S7VyJ6nyNDTerZcrPgZ8gm3C=
+E49uz7GukPzngj5Ssp-2B9Un43mi5kvXdnfnn1d6m-2FKzD6VrAtoUFa6OIpemxEYqXsL-2F0ZI=
+A-2FNFoGniALPZdBza8VgoNWU4tas2w4ING6SDRIdR0lBloPLpNUIP952dvh6aJCUPyNIiicF1b=
+5DfJlFd3-2BUjg35-2BRqKD32xcPkOMIf9K-2FURdU32zzehcsUd-2Fvuhs9oKGLvnJ4zeq-2FG=
+VImcz-2B4dVESvp7QY6Wijsbn1EF1Fnpdf6DJsSNZnLXNKa5Gy6YyjOoackfywWKFRoZ9UhuXO5=
+0yWHXxMWWA-3D2GnN_yfsGH4ZCeh8ujz4-2FcF8XBvWb5GNI-2FmVJ9q1zidkSNtcq55O-2BD6o=
+vd-2BwGjkRSXB4CV6bm6uqWfwf47HSJWs58BK-2BAcoaR5q82nEUBexcOIa4OuOstB-2BomFrl7=
+pAaWBsslIdf1ihTHk9Gq0-2B3j-2FBqMpx138U6x4kzTyXxs8mJQTY5DWP0c13hvSb0joVEHxoC=
+4a9h9hR-2BEzKmRRPnRdBdDHn2lJTzyl4Y-2FbB6Ne90pmEAqX1aazCKMM68xiqRhY5lO5MJjLz=
+cclsLoVleIYh8-2FLCtpVU0trrgkI3KZg08EM7Dg8-2Bx1Gdy-2BqfOpeSew5WPw6W7coxXfM66=
+WtNhtFbk2UIL8wEhMtfU-2FIjk7bSfWvvI-2FWH-2BorrdJ1BRdOiGvotDf7jKkOH7XGMqtMcbq=
+Rkbkh78IlNqIeUjp3QMDjNTkvaJyB-2BakVVvCC5xpAHM9-2FbgkOdTdvATvRyMJTF5h5pbnEq5=
+bWWz9YYpAq85YanCOsCB1wbBjx9hpSOXt86wEhhWe0HRcGy8XhgWFwWXKgXVpH9-2BNLuaQ4Mjm=
+kDEW9y3090Ds5gL-2BNmugDkD6xFdysy3ckgnlkyDUI-2BtfWviBxQQZPhG2eOYf4QFP-2FnH0Z=
+UVtayo6pi-2F0jBJ-2FxSgC0YuesSvfTabIoD7I83ZoR-2BsM90-2FhuzopHebiMVfLqrb47U3M=
+hpjHh20v8sYAqCl-2B6FwVXMxQq0QYOdtcYGGxIyK6X45j6xQOFNYLiGuhpZb13rYhhjh7stxJ4=
+vUnmo9Xx4AX0p38Q2Uax-2F0TeprHrsgB3ArhxCP0QebzBBrHriE-2FdgKMOGL-2FvzKMAAPpNO=
+dhDJU-2BMaZUBQnhLT-2B2SMl-2FsFiIHfsKkQ-3D-3D" target=3D"_blank" style=3D"di=
+splay:inline-block;">
+                        <img src=3D"https://cdn.mcauto-images-production.se=
+ndgrid.net/d4ef4a73d51fe844/23791e46-5717-4e4f-a33c-0cc5ba7cf5aa/176x45.png=
+" width=3D"88" height=3D"23" alt=3D"Logo ChatGPT" class=3D"email-footer-log=
+o-img" style=3D"display:block;border:0;">
+                       =20
+                      </a>
+                    </td>
+                   =20
+                 =20
+                </tr>
+                <tr>
+                  <td>
+                    <table role=3D"presentation" border=3D"0" cellpadding=
+=3D"0" cellspacing=3D"0" width=3D"100%">
+                      <tr class=3D"footer-row">
+                        <td valign=3D"bottom" align=3D"left" class=3D"email=
+-footer-copy" style=3D"font-size:10px; line-height:1.8; color:#000; width:6=
+0%; padding-right:12px; vertical-align: bottom; padding-left: 0;">
+                          OpenAI<br/>
+                         =20
+                         =20
+                         =20
+                            <span dir=3D"ltr">1455 3rd Street</span><br/>Sa=
+n Francisco, CA 94158<br/>
+                         =20
+                         =20
+                         =20
+                            <a href=3D"https://r.openai.com/asm/unsubscribe=
+/?user_id=3D108370056&amp;data=3Dipmq0fOXBA4eAe8FdqHqXPpD2qRnjk6FjbwzR0_VBg=
+9oMDAwdTAwMNEybBJJr8JlErNbsz-BCimhSMKRFi6pwFP9_lFtIgDP1WQSY748lXy8LRgH0RMct=
+RiUdKY92wSrqDtat-QVySKU9ymDfWwU7THWZt_4fXHlTjnBUMb0jB0UqPj8fjjuNfUhBuApZatk=
+XXmmXZPVhHuqSJNbuCKqz8DT1LTIjnUnA_NcM1-S-41fSj57bI2D6eVI4goVqY6LTmXIwDRSo-J=
+efq9QKxNsQCE1bxn8HbJLK4zfJNRgnFrG_UM3RZd4_s9KZvbX35PSIjPDmJGfuC-Eraenpez9UY=
+tdJHpDwedqM3nK_mNazyXE71AREZ7gSyhLzOX3Ke_wBbCZT09q2-f2egDcf2wnYzKwLou6Si0QY=
+g1n6w2QFKQ2RApy_nI21gAHlW8AxBtXML9TUp_8gXKU3CeScSpn7ygeUhbdLFrIq8pM8Th4swuo=
+5284qdYkaedvFaABS5-MeruwgLESrKkqzfCMEBIBSXMDteShLePM8BCGBHGnjWO62_ZMQ8llh_p=
+lJrRW_c19jmh7dWop5Qqg7CL5X2AQ6CjnJmESLIGaXJCltnZAa3H7Lg5bB49X8j6YBoPR_-rXZX=
+n-CLgq055rlUaa9lk4AisivcBlmOP67rnC09XJhYV_sRNzOg0Uq869ljKmhXQRxdD7fDoJZJwQc=
+vfmt_SKYGRNwzYWZ91_Y5WVxHP6m364qNxpr5kVFa0YQq0qF3bPDQmyBulmdEnxgIYy_H6nhwS9=
+lOKpFk237ps60CFruU1rndAFS_xS8T1ZvAkIcm3lFhSXx3GTfSqO7vpzaUbvFLHvZetJSMcojvD=
+9CM8KHgr9xm4c7zVwNYmownOs0MJc3ZClAIj7mpsXu9FFqbpeZqEjvCTRaGaO-QmOPjIV_1Zgad=
+O4u8Qe7v8ZI1CPycNYypCVvxOwl4nZGRXhLJ-Gdi4GkOrrHuLikp2dgdGpWP_-tS9PjMyxvrLZO=
+1Of4ruct551PYWw8fMBLvjhJXn4tNLV1_BlAbo5j8WmlAfWqDo0WozLOSWnEg=3D=3D" target=
+=3D"_blank" style=3D"color:#5D5D5D; text-decoration:underline;">Batalkan la=
+ngganan</a><br/>
+                         =20
+                          <a href=3D"https://r.openai.com/ls/click?upn=3Du0=
+01.I-2FaYIbqhsKngReUOKrmuwdFPmDaqS0juGoYmsKbfgYfwqExqW26D5AgK66Z85ve44Wnp0H=
+w3nl7gYerZVcyzc6edbwwTd8-2FT5BYLRqmWCaDibKXztJqUOTzSNmmReezsFzg7VMlo9LeS08m=
+cYk1xK9n19QtkEwX7uVLjBkcgTcsAKNg-2FWLHvuruurL2tdJ92T_nC_yfsGH4ZCeh8ujz4-2Fc=
+F8XBvWb5GNI-2FmVJ9q1zidkSNtcq55O-2BD6ovd-2BwGjkRSXB4CV6bm6uqWfwf47HSJWs58BK=
+-2BAcoaR5q82nEUBexcOIa4OuOstB-2BomFrl7pAaWBsslIdf1ihTHk9Gq0-2B3j-2FBqMpx138=
+U6x4kzTyXxs8mJQTY5DWP0c13hvSb0joVEHxoC4a9h9hR-2BEzKmRRPnRdBdDHn2lJTzyl4Y-2F=
+bB6Ne90pmEAqX1aazCKMM68xiqRhY5lO5MJjLzcclsLoVleIYh8-2FLCtpVU0trrgkI3KZg08EM=
+7Dg8-2Bx1Gdy-2BqfOpeSew5WPw6W7coxXfM66WtNhtFbk2UIL8wEhMtfU-2FIjk7bSfWvvI-2F=
+WH-2BorrdJ1BRdOiGvotDf7jKkOH7XGMqtMcbqRkbkh78IlNqIeUjp3QMDjNTkvaJyB-2BakVVv=
+CC5xpAHM9-2FbgkOdTdvATvRyMJTF5h5pbnEq5bWWz9YYpAq85YanCOsCB1wbBjx9hpSOXt86wE=
+hhWe0HRcGy8XhgWFwWXKgXVpH9-2BNLuaQ4MjmkDEW9y3090Ds5gL-2BNmugDkD6xFdysy3ckgn=
+lkyDUI-2BtfWviBxQQZPhG2eOYf4QFP-2FnH0ZUVtayo6pi-2F0jBJ-2FxSgC0YuesSvfTabIoD=
+7I83ZoR-2BsM90-2FhuzopHebiMVfLqrb47U3MhpjJtMar0DiRzKn2lYgJvTzJ28XabloTR-2BT=
+3I65KgAkBijK0pa9h7EMMWFvCzzNTnf1G665QSjWm25UsxvncejUZccbXuBs4z3gOe38nlXrJVj=
+GBMXFl62tsbhULZ4EdtfIHNJ9ivS47Lb2oqgZtf8XxGNovDG-2BJsSq3XZnyQBKYxg-3D-3D" t=
+arget=3D"_blank" style=3D"color:#5D5D5D; text-decoration:underline;">Privas=
+i</a> &middot; <a href=3D"https://r.openai.com/ls/click?upn=3Du001.I-2FaYIb=
+qhsKngReUOKrmuwYaDqPngOSPu6GkRbe5tnRM9OIAhQskX37vJyi-2FSYhQOr9lRzEvgKCKRJWl=
+b8moVw90HEp4XeZxqxufdVYUYqZd1gLaFtnevcmbTscVMlCWP-2BhBDWYkQJF1lOwk8wdWUb6dw=
+Js-2B-2BurUwbkhi17Zm5UM-3Drooj_yfsGH4ZCeh8ujz4-2FcF8XBvWb5GNI-2FmVJ9q1zidkS=
+Ntcq55O-2BD6ovd-2BwGjkRSXB4CV6bm6uqWfwf47HSJWs58BK-2BAcoaR5q82nEUBexcOIa4Ou=
+OstB-2BomFrl7pAaWBsslIdf1ihTHk9Gq0-2B3j-2FBqMpx138U6x4kzTyXxs8mJQTY5DWP0c13=
+hvSb0joVEHxoC4a9h9hR-2BEzKmRRPnRdBdDHn2lJTzyl4Y-2FbB6Ne90pmEAqX1aazCKMM68xi=
+qRhY5lO5MJjLzcclsLoVleIYh8-2FLCtpVU0trrgkI3KZg08EM7Dg8-2Bx1Gdy-2BqfOpeSew5W=
+Pw6W7coxXfM66WtNhtFbk2UIL8wEhMtfU-2FIjk7bSfWvvI-2FWH-2BorrdJ1BRdOiGvotDf7jK=
+kOH7XGMqtMcbqRkbkh78IlNqIeUjp3QMDjNTkvaJyB-2BakVVvCC5xpAHM9-2FbgkOdTdvATvRy=
+MJTF5h5pbnEq5bWWz9YYpAq85YanCOsCB1wbBjx9hpSOXt86wEhhWe0HRcGy8XhgWFwWXKgXVpH=
+9-2BNLuaQ4MjmkDEW9y3090Ds5gL-2BNmugDkD6xFdysy3ckgnlkyDUI-2BtfWviBxQQZPhG2eO=
+Yf4QFP-2FnH0ZUVtayo6pi-2F0jBJ-2FxSgC0YuesSvfTabIoD7I83ZoR-2BsM90-2FhuzopHeb=
+iMVfLqrb47U3MhphVjELIPRSD-2BQCUva4DI-2BDGfsNh6qkdUPBz9l937fPmno5WwYP7vW97ni=
+TQXMMuu3x3fYOKP-2FCUj0ceQur-2FtFHNgHvlopTTjQuDDGGqJ5RnC5H-2Bnr-2FZmkLxGI2FC=
+6eusQIE5lQ6yv-2F-2FYn7VcYtgpCOhcvZARgrYKEhxaeGkEqsOtw-3D-3D" target=3D"_bla=
+nk" style=3D"color:#5D5D5D; text-decoration:underline;">Ketentuan</a><br/>
+                          <span class=3D"email-footer-copyright" style=3D"c=
+olor:#888; display:block; margin-top: 1.8em;">OpenAI =C2=A9 2015=E2=80=9320=
+26</span>
+                        </td>
+                       =20
+                          <td valign=3D"bottom" width=3D"40%" style=3D"widt=
+h:40%; text-align:center; vertical-align: bottom;">
+                           =20
+                             =20
+                             =20
+                             =20
+                              <table role=3D"presentation" border=3D"0" cel=
+lpadding=3D"0" cellspacing=3D"0" class=3D"badges" style=3D"width:100%; max-=
+width:128px;">
+                               =20
+                                <tr>
+                                  <td class=3D"badge" style=3D"text-align:c=
+enter; padding:0 4px 8px 4px;">
+                                    <a href=3D"https://r.openai.com/ls/clic=
+k?upn=3Du001.I-2FaYIbqhsKngReUOKrmuwYBa-2BGFcXGeGbwcZIhpg-2FH1pc6X2duY0-2Fz=
+3LF-2BpeGLeWmkTfxpouE7rs0nUGSMQpqUhry-2FFbVqtt-2F2iMOVVLfE-2BB8Rd-2FEm1jvc0=
+cer3MMzSamrNKRkB2cBC4cNmdghgUm4-2B-2FylOBrUwdVEFvmnjv2V9Qa-2BM6sfHvJzetg4Bn=
+XTOGGapsUj7xle9n5gr8xlbCaELhQ5Y-2FjgE7Ed2nQkHhKV0G9GRWT9ztFEZdGofPFenMnSEY0=
+qCftkqSHtxg36ZkhoZPjIvV6Yiv3h5bT45X900j1L8q6rfQsJEGQ4GFETM-2BngxV-2Fn2vqZLH=
+Oj95588dVA-3D-3DtmEm_yfsGH4ZCeh8ujz4-2FcF8XBvWb5GNI-2FmVJ9q1zidkSNtcq55O-2B=
+D6ovd-2BwGjkRSXB4CV6bm6uqWfwf47HSJWs58BK-2BAcoaR5q82nEUBexcOIa4OuOstB-2BomF=
+rl7pAaWBsslIdf1ihTHk9Gq0-2B3j-2FBqMpx138U6x4kzTyXxs8mJQTY5DWP0c13hvSb0joVEH=
+xoC4a9h9hR-2BEzKmRRPnRdBdDHn2lJTzyl4Y-2FbB6Ne90pmEAqX1aazCKMM68xiqRhY5lO5MJ=
+jLzcclsLoVleIYh8-2FLCtpVU0trrgkI3KZg08EM7Dg8-2Bx1Gdy-2BqfOpeSew5WPw6W7coxXf=
+M66WtNhtFbk2UIL8wEhMtfU-2FIjk7bSfWvvI-2FWH-2BorrdJ1BRdOiGvotDf7jKkOH7XGMqtM=
+cbqRkbkh78IlNqIeUjp3QMDjNTkvaJyB-2BakVVvCC5xpAHM9-2FbgkOdTdvATvRyMJTF5h5pbn=
+Eq5bWWz9YYpAq85YanCOsCB1wbBjx9hpSOXt86wEhhWe0HRcGy8XhgWFwWXKgXVpH9-2BNLuaQ4=
+MjmkDEW9y3090Ds5gL-2BNmugDkD6xFdysy3ckgnlkyDUI-2BtfWviBxQQZPhG2eOYf4QFP-2Fn=
+H0ZUVtayo6pi-2F0jBJ-2FxSgC0YuesSvfTabIoD7I83ZoR-2BsM90-2FhuzopHebiMVfLqrb47=
+U3MhpinUIcan7LyNrT5A3Na8q7OYIWh4TiWDhkMRwTX4-2BSMHtk4LP5vKX9OxPKE0D6-2F-2B5=
+g6RvYGQ1-2F1axGVqrCLkV0rgFDfSqe8VcsyEVUC2YOPlCmWb9XS7lyQsfirmd7BDhVSfPraV-2=
+F07nw6d2raf3uoU6BEQhSXvVUPwD2jDxOWsrw-3D-3D" target=3D"_blank" style=3D"dis=
+play:inline-block;">
+                                      <img src=3D"http://cdn.mcauto-images-=
+production.sendgrid.net/d4ef4a73d51fe844/f0bb62f0-5199-4600-a341-38aa871bde=
+57/240x80.png" width=3D"120" alt=3D"Dapatkan di Google Play" style=3D"displ=
+ay:block; border:0; width:120px; height:auto;">
+                                    </a>
+                                  </td>
+                                </tr>
+                               =20
+                                <tr>
+                                  <td class=3D"badge" style=3D"text-align:c=
+enter; padding:0 4px;">
+                                    <a href=3D"https://r.openai.com/ls/clic=
+k?upn=3Du001.I-2FaYIbqhsKngReUOKrmuwYWte-2BeK-2FyKj-2FOqgK2UtFoGAaO7eBUt8so=
+Q5BGC2EfVtC95MFGma9I8358veyKD4kqF4Nj8PacCpDP2IetLfT5UaDD8yQuGRIrvCj70blaVO4=
+yGHm9jASdiQ1elYpX77vlK-2FEo7MYwE5r4TsrvafUDYlbv3HTVlCdlHBLUPxZz3i3eH7domruM=
+siq3dVSDBI7w-3D-3DzrCn_yfsGH4ZCeh8ujz4-2FcF8XBvWb5GNI-2FmVJ9q1zidkSNtcq55O-=
+2BD6ovd-2BwGjkRSXB4CV6bm6uqWfwf47HSJWs58BK-2BAcoaR5q82nEUBexcOIa4OuOstB-2Bo=
+mFrl7pAaWBsslIdf1ihTHk9Gq0-2B3j-2FBqMpx138U6x4kzTyXxs8mJQTY5DWP0c13hvSb0joV=
+EHxoC4a9h9hR-2BEzKmRRPnRdBdDHn2lJTzyl4Y-2FbB6Ne90pmEAqX1aazCKMM68xiqRhY5lO5=
+MJjLzcclsLoVleIYh8-2FLCtpVU0trrgkI3KZg08EM7Dg8-2Bx1Gdy-2BqfOpeSew5WPw6W7cox=
+XfM66WtNhtFbk2UIL8wEhMtfU-2FIjk7bSfWvvI-2FWH-2BorrdJ1BRdOiGvotDf7jKkOH7XGMq=
+tMcbqRkbkh78IlNqIeUjp3QMDjNTkvaJyB-2BakVVvCC5xpAHM9-2FbgkOdTdvATvRyMJTF5h5p=
+bnEq5bWWz9YYpAq85YanCOsCB1wbBjx9hpSOXt86wEhhWe0HRcGy8XhgWFwWXKgXVpH9-2BNLua=
+Q4MjmkDEW9y3090Ds5gL-2BNmugDkD6xFdysy3ckgnlkyDUI-2BtfWviBxQQZPhG2eOYf4QFP-2=
+FnH0ZUVtayo6pi-2F0jBJ-2FxSgC0YuesSvfTabIoD7I83ZoR-2BsM90-2FhuzopHebiMVfLqrb=
+47U3Mhpio0aSjDIlX48bd2rlyra1Xq9SiUMqNpuAzTd6Orohlxh0id6mtz2Py7xesAJiugK4dZT=
+rgFHk2Hn-2BRBO9Ue7U-2FJO4BcFeeTUdKfxo7ASCSA2-2BqIHzXwTw479z9t60qL0aeEQc8C-2=
+FDdpliBsTlW-2BEaUTRiXphBGW7kyOOyLBMYgCw-3D-3D" target=3D"_blank" style=3D"d=
+isplay:inline-block;">
+                                      <img src=3D"http://cdn.mcauto-images-=
+production.sendgrid.net/d4ef4a73d51fe844/7556e4e9-fd26-44ce-b5db-098b33274c=
+20/240x80.png" width=3D"120" alt=3D"Unduh di App Store" style=3D"display:bl=
+ock; border:0; width:120px; height:auto;">
+                                    </a>
+                                  </td>
+                                </tr>
+                               =20
+                              </table>
+                           =20
+                          </td>
+                       =20
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+        <!--[if mso]></td></tr></table><![endif]-->
+      </td>
+    </tr>
+    <!-- end footer -->
+
+  </table>
+  <!-- end body -->
+
+<img src=3D"https://r.openai.com/wf/open?upn=3Du001.co8kyEjudSy-2FzLwoyqqEz=
+f8GRmVHb-2B0OydsSibOqFSkSECpOO50HG5R5RkuGNavA9fG7zjbbn5a0zDCF1IApmH6NU-2F22=
+hiDfeyZB0Mxu4wUe-2BYX96F1o5N8vAIbfCx0DTkcJLnblCxI-2BlH-2B3GnWZuBfeMQISY7I-2=
+FiLynxiJOaMk1aZAFgw-2BuZjRjFNvTrLrZNOEgeJvp2WZU11K7mo-2F-2FOIbaABi0gkiUv3gF=
+-2FAfS1ZVSBUBnlsbjcOl6d1r6f-2FqvtFWhDVzMotgcC5wzCmGm2vxDxFcoEM1fDKQ-2FULell=
+sYMAVZL94G9rDTpl6XPzPgmhDQ8m8cgTFy8uHxenBjB9pxSRwiG1-2BW1xPs6PjoUpfvGUF6XYQ=
+4mo5JKsci4VhcsAZBpMw4A-2BWz6HpHBxO26UIKtjtdGXMoN0txiWyPJeY1ARpkJGi69jqkAUBH=
+0sLE3-2F8b5qtnDmdRS69WlW1CIu-2FqNadlu-2BAsyQie7VUrEv00mgNunBBzTV63AzQ6aNrTa=
+iwhdLJaNz0gG9FL0DYDphKYfx30tmtalfwu9dVNxd-2FrLkCfshm77PyumQIgRQRp37HXemkWgt=
+tjQw0wDzfE369DzKaj8pjdEiGRehXEeBXsI3I9HTuFDkP7t-2BnrhZQ8LdS1J-2F-2BBq1ja5Oo=
+h-2FRpRDJIMmSS2NLRgLIlQcGLZYoKtAQERTrODbnFq5GVvXVZHTH6Qw6izwWRMPxerBVu0OpGT=
+OQw710td-2FByLkE0N4BdrHc8YHMfrsNbp9BX1pe2BLmnoAVZs0fr-2F4HMFCI4nIQE3kVbJkNE=
+YcGN5bgx0jg9UQ7PDXPmy1wDSS3gMpFgUV-2B9jjlhicxKSCTpeGJeSigQ-3D-3D" alt=3D"" =
+width=3D"1" height=3D"1" border=3D"0" style=3D"height:1px !important;width:=
+1px !important;border-width:0 !important;margin-top:0 !important;margin-bot=
+tom:0 !important;margin-right:0 !important;margin-left:0 !important;padding=
+-top:0 !important;padding-bottom:0 !important;padding-right:0 !important;pa=
+dding-left:0 !important;"/></body>
+</html>

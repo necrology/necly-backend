@@ -280,3 +280,42 @@ func TestDisabledReaderFailsClosed(t *testing.T) {
 		t.Fatalf("error = %v, want ErrNotConfigured", err)
 	}
 }
+
+// TestReproChatGPTLoginCodeIsRejectedByPasswordResetFilter pins the production
+// bug: a real ChatGPT "temporary login code" mail is discarded because its
+// boilerplate contains the sentence "please reset your password", which the
+// password-change filter treats as a password-reset message.
+func TestReproChatGPTLoginCodeIsRejectedByPasswordResetFilter(t *testing.T) {
+	fixtures := map[string]string{
+		"openai_login_code_en_with_reset_boilerplate.eml": "314159",
+		"openai_login_code_en_second.eml":                 "271828",
+		"openai_login_code_id_with_reset_boilerplate.eml": "161803",
+		"openai_login_code_id_tm1.eml":                    "141421",
+	}
+	since := time.Now().Add(-72 * time.Hour)
+	for name, want := range fixtures {
+		raw, err := os.ReadFile("testdata/" + name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		msg, ok := parseMessage(raw, "chatgpt.account@example.test", since)
+		t.Logf("%s -> ok=%v code_match=%v", name, ok, ok && msg.Code == want)
+		if !ok {
+			t.Errorf("%s: login code mail was rejected", name)
+		} else if msg.Code != want {
+			t.Errorf("%s: code = %q, want %q", name, msg.Code, want)
+		}
+	}
+}
+
+// TestMarketingMailIsStillRejected guards the fix from over-accepting: a
+// ChatGPT help-centre newsletter that carries no login code must not produce one.
+func TestMarketingMailIsStillRejected(t *testing.T) {
+	raw, err := os.ReadFile("testdata/openai_marketing_help_center.eml")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	if _, ok := parseMessage(raw, "chatgpt.account@example.test", time.Now().Add(-72*time.Hour)); ok {
+		t.Fatal("marketing mail must not yield an OTP")
+	}
+}
