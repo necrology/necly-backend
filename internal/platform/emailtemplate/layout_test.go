@@ -35,7 +35,9 @@ func TestRenderLayout_Basic(t *testing.T) {
 	if !strings.Contains(html, `color:#111827`) {
 		t.Error("HTML should have primary text color")
 	}
-	if !strings.Contains(html, `color:#6b7280`) {
+	// Secondary/muted text must stay readable on white. #6b7280 was too light for
+	// the footer at 11-12px, so the palette now uses #4b5563 (WCAG AA at 13px).
+	if !strings.Contains(html, `color:#4b5563`) {
 		t.Error("HTML should have secondary text color")
 	}
 	if !strings.Contains(html, `#4f46e5`) {
