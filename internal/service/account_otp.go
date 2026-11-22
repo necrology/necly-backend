@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/necly/services/internal/domain"
+	"github.com/necly/services/internal/platform/emailtemplate"
 	"github.com/necly/services/internal/platform/mailer"
 	"github.com/necly/services/internal/platform/otpinbox"
 	"github.com/necly/services/internal/platform/rediscache"
@@ -399,10 +400,29 @@ func (s *OrderDeliveryService) buildAccessCodeMessage(order *domain.Order, item 
 	}
 	body.WriteString("Email ini tidak menerima balasan.\n\n")
 	body.WriteString("— NECLY Services\n")
+	productName := ""
+	durationName := ""
+	if item != nil {
+		productName = item.ProductName
+		durationName = item.DurationName
+	}
+	html := renderEmailHTML(func() (string, error) {
+		return emailtemplate.RenderAccessCodeEmail(emailtemplate.AccessCodeEmailInput{
+			CustomerName:  order.Customer.Name,
+			OrderNumber:   order.Number,
+			ProductName:   productName,
+			DurationName:  durationName,
+			AccountEmails: emails,
+			AccessCode:    code,
+			ExpiresAt:     expiresAt,
+			FrontendURL:   s.frontendURL,
+		})
+	})
 	return mailer.Message{
 		To:      order.Customer.Email,
-		Subject: "Kode akses OTP pesanan " + order.Number,
+		Subject: "Kode akses OTP pesanan " + order.Number + " — berlaku " + fmt.Sprintf("%d", int(AccessCodeTTL/time.Minute)) + " menit",
 		Body:    body.String(),
+		HTML:    html,
 	}
 }
 
