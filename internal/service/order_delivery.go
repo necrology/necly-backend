@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/necly/services/internal/domain"
+	"github.com/necly/services/internal/platform/emailtemplate"
 	"github.com/necly/services/internal/platform/mailer"
 	"github.com/necly/services/internal/platform/rediscache"
 )
@@ -676,11 +677,52 @@ func (s *OrderDeliveryService) buildMessage(order *domain.Order, item *domain.Or
 	s.writeUsageInstructions(&body, item, accessCode != "")
 	body.WriteString("\nEmail ini tidak menerima balasan. Semua kendala ditangani melalui halaman Laporan Kendala.\n")
 	body.WriteString("— NECLY Services\n")
-	return mailer.Message{
+	msg := mailer.Message{
 		To:      order.Customer.Email,
 		Subject: "Akses pesanan " + order.Number + " — " + item.ProductName,
 		Body:    body.String(),
 	}
+	if html, err := emailtemplate.RenderDeliveryEmail(emailtemplate.DeliveryEmailInput{
+		CustomerName:    order.Customer.Name,
+		OrderNumber:     order.Number,
+		ProductName:     productNameOf(item),
+		DurationName:    durationNameOf(item),
+		Quantity:        quantityOf(item),
+		AccessExpiresAt: accessExpiresAt,
+		Accounts:        deliveryAccountViews(accounts),
+		FrontendURL:     s.frontendURL,
+	}); err != nil {
+		log.Printf("order delivery: render html for order %s failed: %v", order.ID, err)
+	} else {
+		msg.HTML = html
+	}
+	return msg
+}
+
+// quantityOf guards the template input against a nil item.
+func quantityOf(item *domain.OrderItem) int {
+	if item == nil {
+		return 0
+	}
+	return item.Quantity
+}
+
+// deliveryAccountViews maps the service struct onto the template package so the
+// template stays free of domain/service imports.
+func deliveryAccountViews(accounts []deliveryAccount) []emailtemplate.DeliveryAccountView {
+	if len(accounts) == 0 {
+		return nil
+	}
+	out := make([]emailtemplate.DeliveryAccountView, 0, len(accounts))
+	for _, account := range accounts {
+		out = append(out, emailtemplate.DeliveryAccountView{
+			Label:        account.Label,
+			Username:     account.Username,
+			Password:     account.Password,
+			Instructions: account.Instructions,
+		})
+	}
+	return out
 }
 
 // buildReplacementMessage is deliberately separate from the first-delivery
@@ -702,7 +744,23 @@ func (s *OrderDeliveryService) buildReplacementMessage(order *domain.Order, item
 	if item != nil {
 		subject += " — " + item.ProductName
 	}
-	return mailer.Message{To: order.Customer.Email, Subject: subject, Body: body.String()}
+	msg := mailer.Message{To: order.Customer.Email, Subject: subject, Body: body.String()}
+	if html, err := emailtemplate.RenderReplacementEmail(emailtemplate.ReplacementEmailInput{
+		CustomerName:    order.Customer.Name,
+		OrderNumber:     order.Number,
+		ProductName:     productNameOf(item),
+		DurationName:    durationNameOf(item),
+		Quantity:        quantityOf(item),
+		AccessExpiresAt: accessExpiresAt,
+		Accounts:        deliveryAccountViews(accounts),
+		Reason:          reason,
+		FrontendURL:     s.frontendURL,
+	}); err != nil {
+		log.Printf("order replacement: render html for order %s failed: %v", order.ID, err)
+	} else {
+		msg.HTML = html
+	}
+	return msg
 }
 
 func writeDeliverySummary(body *strings.Builder, order *domain.Order, item *domain.OrderItem, accessExpiresAt time.Time) {
