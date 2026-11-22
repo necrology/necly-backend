@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/necly/services/internal/domain"
+	"github.com/necly/services/internal/platform/emailtemplate"
 	"github.com/necly/services/internal/platform/mailer"
 	"github.com/necly/services/internal/platform/otpinbox"
 	"github.com/necly/services/internal/platform/rediscache"
@@ -399,11 +400,45 @@ func (s *OrderDeliveryService) buildAccessCodeMessage(order *domain.Order, item 
 	}
 	body.WriteString("Email ini tidak menerima balasan.\n\n")
 	body.WriteString("— NECLY Services\n")
-	return mailer.Message{
+	msg := mailer.Message{
 		To:      order.Customer.Email,
 		Subject: "Kode akses OTP pesanan " + order.Number,
 		Body:    body.String(),
 	}
+	// The HTML version is the one customers actually read. It is rendered from
+	// the same data as the plain-text body, and a rendering failure must never
+	// block delivery: the plain-text body is always complete on its own.
+	if html, err := emailtemplate.RenderAccessCodeEmail(emailtemplate.AccessCodeEmailInput{
+		CustomerName:  order.Customer.Name,
+		OrderNumber:   order.Number,
+		ProductName:   productNameOf(item),
+		DurationName:  durationNameOf(item),
+		AccountEmails: emails,
+		AccessCode:    code,
+		ExpiresAt:     expiresAt,
+		FrontendURL:   s.frontendURL,
+	}); err != nil {
+		log.Printf("account access: render html for order %s item %s failed: %v", order.ID, item.ID, err)
+	} else {
+		msg.HTML = html
+	}
+	return msg
+}
+
+// productNameOf and durationNameOf keep the template input safe when the item
+// is nil, which the delivery tests exercise.
+func productNameOf(item *domain.OrderItem) string {
+	if item == nil {
+		return ""
+	}
+	return item.ProductName
+}
+
+func durationNameOf(item *domain.OrderItem) string {
+	if item == nil {
+		return ""
+	}
+	return item.DurationName
 }
 
 const accessCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"

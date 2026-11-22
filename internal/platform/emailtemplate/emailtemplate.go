@@ -96,8 +96,9 @@ func RenderAccessCodeEmail(input AccessCodeEmailInput) (string, error) {
 		},
 		{
 			Number:      2,
-			Title:       "Masukkan email akun dan kata sandi di form login biasa",
-			Description: "Buka platform layanan yang bersangkutan, lalu ketik email akun dan kata sandi di form login biasa.",
+			Title:       "WAJIB — Masukkan email akun dan kata sandi di form login biasa",
+			Description: "Buka platform layanan yang bersangkutan (misalnya chatgpt.com), lalu ketik email akun dan kata sandi di form login biasa, kemudian tekan Log in. Langkah ini tidak boleh dilewati: tanpa login memakai kata sandi, kode OTP tidak akan pernah dikirim ke email akun.",
+			IsWarning:   true,
 		},
 		{
 			Number:      3,
@@ -117,8 +118,8 @@ func RenderAccessCodeEmail(input AccessCodeEmailInput) (string, error) {
 		},
 		{
 			Number:      6,
-			Title:       "Masukkan email akun + kode akses lalu ambil OTP",
-			Description: "Ketik email akun dan salin kode akses besar dari email ini ke kolom yang tersedia, lalu tekan tombol ambil OTP.",
+			Title:       "Masukkan email akun + kode akses Necly, lalu ambil OTP",
+			Description: "Ketik email akun dan salin kode akses Necly dari kotak besar di atas (10 karakter, bukan kode OTP) ke kolom yang tersedia, lalu tekan tombol ambil OTP.",
 		},
 		{
 			Number:      7,
@@ -133,11 +134,17 @@ func RenderAccessCodeEmail(input AccessCodeEmailInput) (string, error) {
 	}
 
 	layoutData := LayoutData{
-		Title:     "Kode Akses OTP",
+		Title:     "Kode Akses untuk Ambil OTP",
 		Greeting:  fmt.Sprintf("Halo %s,", input.CustomerName),
 		IntroText: "Anda meminta kode akses untuk mengambil OTP login akun langganan Anda. Gunakan kode di bawah ini bersama email akun di halaman Ambil OTP Necly.",
+		MandatoryBox: &WarningBoxData{
+			Title: "WAJIB — OTP hanya terbit kalau Anda login pakai KATA SANDI",
+			Message: "Kode OTP baru dikirim ke email akun setelah Anda memasukkan email dan kata sandi akun di form login biasa platform.\n" +
+				"• Login lewat \"Continue with Google\" / \"Sign in with Apple\" / SSO lain TIDAK mengirim kode OTP.\n" +
+				"• Urutan benar: isi email + kata sandi di platform, tekan Log in, tunggu email kode verifikasi, lalu kembali ke halaman Ambil OTP Necly.",
+		},
 		CodeCard: &CodeCardData{
-			Label:        "Kode Akses OTP",
+			Label:        "Kode Akses Necly (bukan OTP 6 digit)",
 			Code:         input.AccessCode,
 			ExpiresAt:    input.ExpiresAt,
 			ExpiresLabel: "Masa berlaku",

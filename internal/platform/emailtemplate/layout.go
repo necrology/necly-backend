@@ -37,6 +37,10 @@ type LayoutData struct {
 	Greeting string
 	// IntroText is the introductory paragraph before the main content.
 	IntroText string
+	// MandatoryBox is optional: if non-nil, renders a prominent "you must do
+	// this" box directly after the intro and before the access code, so the
+	// requirement cannot be missed or read as a side note.
+	MandatoryBox *WarningBoxData
 	// CodeCard is optional: if non-nil, renders the large access code card.
 	CodeCard *CodeCardData
 	// SummaryTable is optional: if non-nil, renders the order/account summary table.
@@ -156,6 +160,13 @@ func RenderLayout(config LayoutConfig, data LayoutData) (string, error) {
 		b.WriteString("</p>\n")
 	}
 
+	// Mandatory Box — placed before the access code on purpose: the customer
+	// must understand that a password login is what triggers the OTP email.
+	if data.MandatoryBox != nil {
+		b.WriteString(renderWarningBox(data.MandatoryBox))
+		b.WriteString("\n")
+	}
+
 	// Code Card
 	if data.CodeCard != nil {
 		b.WriteString(renderCodeCard(data.CodeCard))
@@ -197,10 +208,10 @@ func RenderLayout(config LayoutConfig, data LayoutData) (string, error) {
 
 	// Footer
 	b.WriteString("<tr><td style=\"padding:16px 24px 24px 24px;border-top:1px solid #e5e7eb;\">")
-	b.WriteString(`<p style="margin:0 0 8px 0;color:#6b7280;font-size:12px;line-height:1.5;">`)
+	b.WriteString(`<p style="margin:0 0 8px 0;color:#4b5563;font-size:13px;line-height:1.6;">`)
 	b.WriteString(fmt.Sprintf("© %d %s. Seluruh hak cipta dilindungi.", config.CurrentYear, html.EscapeString(config.CompanyName)))
 	b.WriteString("</p>")
-	b.WriteString(`<p style="margin:0;color:#9ca3af;font-size:11px;line-height:1.5;">`)
+	b.WriteString(`<p style="margin:0;color:#4b5563;font-size:13px;line-height:1.6;">`)
 	b.WriteString("Email ini dikirim otomatis dan tidak menerima balasan. ")
 	b.WriteString(fmt.Sprintf("Jika Anda mengalami kendala, kunjungi <a href=\"%s/laporan-kendala\" style=\"color:#4f46e5;text-decoration:underline;\">Laporan Kendala</a>.", html.EscapeString(config.SupportURL)))
 	b.WriteString("</p>")
@@ -241,7 +252,7 @@ func renderCodeCard(card *CodeCardData) string {
 	if card.ExpiresLabel != "" {
 		expiresLabel = card.ExpiresLabel
 	}
-	wib := card.ExpiresAt.In(time.FixedZone("WIB", 7*3600)).Format("02 Jan 2006 15:04")
+	wib := formatWIB(card.ExpiresAt)
 
 	b.WriteString(`<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:24px;">`)
 	b.WriteString("<tr><td class=\"card-padding\" style=\"padding:24px;background-color:#eef2ff;border-radius:8px;border:1px solid #e0e7ff;\">")
@@ -256,7 +267,7 @@ func renderCodeCard(card *CodeCardData) string {
 	b.WriteString("</code>")
 	b.WriteString("</div>")
 	// Expires
-	b.WriteString(fmt.Sprintf(`<p style="margin:12px 0 0 0;color:#6b7280;font-size:13px;"><strong>%s:</strong> %s WIB</p>`, html.EscapeString(expiresLabel), html.EscapeString(wib)))
+	b.WriteString(fmt.Sprintf(`<p style="margin:14px 0 0 0;color:#3730a3;font-size:15px;font-weight:600;"><strong>%s:</strong> %s WIB</p>`, html.EscapeString(expiresLabel), html.EscapeString(wib)))
 	b.WriteString("</td></tr></table>")
 	return b.String()
 }
@@ -317,7 +328,7 @@ func renderStepsTable(table *StepsTableData) string {
 		}
 		// Text link
 		if step.TextLinkLabel != "" && step.TextLinkURL != "" {
-			b.WriteString(fmt.Sprintf(`<p style="margin:8px 0 0 0;color:#4f46e5;font-size:13px;"><a href="%s" style="color:#4f46e5;text-decoration:underline;">%s</a></p>`, html.EscapeString(step.TextLinkURL), html.EscapeString(step.TextLinkLabel)))
+			b.WriteString(fmt.Sprintf(`<p style="margin:8px 0 0 0;color:#4f46e5;font-size:14px;word-break:break-all;"><a href="%s" style="color:#4f46e5;text-decoration:underline;">%s</a></p>`, html.EscapeString(step.TextLinkURL), html.EscapeString(step.TextLinkLabel)))
 		}
 		b.WriteString("</td>")
 		b.WriteString("</tr></table>")
@@ -339,7 +350,7 @@ func renderWarningBox(box *WarningBoxData) string {
 	if box.Title != "" {
 		b.WriteString(fmt.Sprintf(`<p style="margin:0 0 4px 0;color:#b45309;font-size:14px;font-weight:600;">%s</p>`, html.EscapeString(box.Title)))
 	}
-	b.WriteString(fmt.Sprintf(`<p style="margin:0;color:#92400e;font-size:14px;line-height:1.6;">%s</p>`, html.EscapeString(box.Message)))
+	b.WriteString(fmt.Sprintf(`<p style="margin:0;color:#92400e;font-size:14px;line-height:1.6;">%s</p>`, escapeMultiline(box.Message)))
 	b.WriteString("</td></tr></table>")
 	b.WriteString("</td></tr></table>")
 	return b.String()
@@ -364,4 +375,21 @@ func renderHelpBox(box *HelpBoxData) string {
 	}
 	b.WriteString("</td></tr></table>")
 	return b.String()
+}
+
+// formatWIB renders a timestamp in Western Indonesian Time using Indonesian
+// month abbreviations, so the email does not mix "Dec" into Indonesian prose.
+func formatWIB(t time.Time) string {
+	names := []string{"Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"}
+	local := t.In(time.FixedZone("WIB", 7*3600))
+	return fmt.Sprintf("%02d %s %d %02d:%02d", local.Day(), names[int(local.Month())-1], local.Year(), local.Hour(), local.Minute())
+}
+
+// escapeMultiline escapes HTML but keeps author-intended line breaks visible as
+// <br> elements, so bullet-style messages written with "\n" stay readable
+// instead of collapsing into one dense paragraph.
+func escapeMultiline(s string) string {
+	escaped := html.EscapeString(s)
+	escaped = strings.ReplaceAll(escaped, "\r\n", "\n")
+	return strings.ReplaceAll(escaped, "\n", "<br>")
 }
