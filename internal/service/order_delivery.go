@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/necly/services/internal/domain"
+	"github.com/necly/services/internal/platform/emailtemplate"
 	"github.com/necly/services/internal/platform/mailer"
 	"github.com/necly/services/internal/platform/rediscache"
 )
@@ -676,10 +677,23 @@ func (s *OrderDeliveryService) buildMessage(order *domain.Order, item *domain.Or
 	s.writeUsageInstructions(&body, item, accessCode != "")
 	body.WriteString("\nEmail ini tidak menerima balasan. Semua kendala ditangani melalui halaman Laporan Kendala.\n")
 	body.WriteString("— NECLY Services\n")
+	html := renderEmailHTML(func() (string, error) {
+		return emailtemplate.RenderDeliveryEmail(emailtemplate.DeliveryEmailInput{
+			CustomerName:    order.Customer.Name,
+			OrderNumber:     order.Number,
+			ProductName:     productNameOf(item),
+			DurationName:    durationNameOf(item),
+			Quantity:        quantityOf(item),
+			AccessExpiresAt: accessExpiresAt,
+			Accounts:        deliveryAccountViews(accounts),
+			FrontendURL:     s.frontendURL,
+		})
+	})
 	return mailer.Message{
 		To:      order.Customer.Email,
 		Subject: "Akses pesanan " + order.Number + " — " + item.ProductName,
 		Body:    body.String(),
+		HTML:    html,
 	}
 }
 
@@ -702,7 +716,63 @@ func (s *OrderDeliveryService) buildReplacementMessage(order *domain.Order, item
 	if item != nil {
 		subject += " — " + item.ProductName
 	}
-	return mailer.Message{To: order.Customer.Email, Subject: subject, Body: body.String()}
+	html := renderEmailHTML(func() (string, error) {
+		return emailtemplate.RenderReplacementEmail(emailtemplate.ReplacementEmailInput{
+			CustomerName:    order.Customer.Name,
+			OrderNumber:     order.Number,
+			ProductName:     productNameOf(item),
+			DurationName:    durationNameOf(item),
+			Quantity:        quantityOf(item),
+			AccessExpiresAt: accessExpiresAt,
+			Accounts:        deliveryAccountViews(accounts),
+			Reason:          reason,
+			FrontendURL:     s.frontendURL,
+		})
+	})
+	return mailer.Message{To: order.Customer.Email, Subject: subject, Body: body.String(), HTML: html}
+}
+
+// renderEmailHTML keeps a template failure from turning a valid plain-text
+// email into a broken or empty HTML part. The renderer error is deliberately
+// not logged: it can contain the credential values passed to the template.
+func renderEmailHTML(render func() (string, error)) string {
+	html, err := render()
+	if err != nil || strings.TrimSpace(html) == "" {
+		return ""
+	}
+	return html
+}
+
+func deliveryAccountViews(accounts []deliveryAccount) []emailtemplate.DeliveryAccountView {
+	views := make([]emailtemplate.DeliveryAccountView, 0, len(accounts))
+	for _, account := range accounts {
+		views = append(views, emailtemplate.DeliveryAccountView{
+			Label: account.Label, Username: account.Username,
+			Password: account.Password, Instructions: account.Instructions,
+		})
+	}
+	return views
+}
+
+func productNameOf(item *domain.OrderItem) string {
+	if item == nil {
+		return ""
+	}
+	return item.ProductName
+}
+
+func durationNameOf(item *domain.OrderItem) string {
+	if item == nil {
+		return ""
+	}
+	return item.DurationName
+}
+
+func quantityOf(item *domain.OrderItem) int {
+	if item == nil {
+		return 0
+	}
+	return item.Quantity
 }
 
 func writeDeliverySummary(body *strings.Builder, order *domain.Order, item *domain.OrderItem, accessExpiresAt time.Time) {
@@ -776,6 +846,8 @@ func (s *OrderDeliveryService) writeUsageInstructions(body *strings.Builder, ite
 	} else {
 		fmt.Fprintf(body, "%d. Pilih menu Masuk/Login, lalu masukkan email/username dan kata sandi di atas.\n", step)
 	}
+	step++
+	body.WriteString(fmt.Sprintf("%d. Login WAJIB memakai kata sandi akun di atas. JANGAN login lewat Google, Apple, atau SSO pihak ketiga.\n", step))
 	step++
 	body.WriteString(fmt.Sprintf("%d. Jangan mengubah kata sandi, email, atau profil akun karena akun digunakan bersama.\n", step))
 	step++
