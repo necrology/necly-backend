@@ -1,14 +1,21 @@
 // Package mailer sends transactional email (password reset links, report
-// notifications).
+// notifications, OTP access codes, delivery credentials).
 //
 // When no SMTP host is configured the package falls back to a log-only sender
 // so a self-hosted deployment without mail credentials keeps working: nothing
 // is silently dropped, every message is written to the server log instead.
+//
+// The mailer supports multipart/alternative (text/plain + text/html) for rich
+// transactional emails. The Message struct carries both Body (plain text) and
+// HTML (HTML). When HTML is non-empty, a multipart/alternative message is
+// constructed with text/plain first, then text/html.
 package mailer
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
@@ -19,11 +26,14 @@ import (
 	"time"
 )
 
-// Message is a single plain-text transactional email.
+// Message is a transactional email with optional HTML alternative.
+// Both Body (text/plain) and HTML (text/html) should be provided for
+// best compatibility. If HTML is empty, only text/plain is sent.
 type Message struct {
 	To      string
 	Subject string
-	Body    string
+	Body    string // text/plain version (required)
+	HTML    string // text/html version (optional)
 }
 
 // Mailer delivers transactional email.
@@ -95,7 +105,7 @@ type logMailer struct{}
 func (m *logMailer) Enabled() bool { return false }
 
 func (m *logMailer) Send(_ context.Context, msg Message) error {
-	log.Printf("mailer: email suppressed (no SMTP configured) to=%q subject=%q\n%s", msg.To, msg.Subject, msg.Body)
+	log.Printf("mailer: email suppressed (no SMTP configured) to=%q subject=%q\n--- TEXT ---\n%s\n--- HTML ---\n%s", msg.To, msg.Subject, msg.Body, msg.HTML)
 	return nil
 }
 
@@ -165,6 +175,8 @@ func (m *smtpMailer) Send(ctx context.Context, msg Message) error {
 
 // render builds the raw RFC 5322 message. Header values are stripped of CR/LF
 // so a future caller cannot smuggle extra headers through a subject or address.
+// If HTML is non-empty, constructs multipart/alternative with text/plain
+// first, then text/html (per RFC 2046). Otherwise sends text/plain only.
 func (m *smtpMailer) render(msg Message) []byte {
 	from := m.cfg.From
 	if m.cfg.FromName != "" {
@@ -174,17 +186,153 @@ func (m *smtpMailer) render(msg Message) []byte {
 	var b strings.Builder
 	fmt.Fprintf(&b, "From: %s\r\n", headerValue(from))
 	fmt.Fprintf(&b, "To: %s\r\n", headerValue(msg.To))
-	fmt.Fprintf(&b, "Subject: %s\r\n", headerValue(msg.Subject))
+	// RFC 2047 encoding for subject if non-ASCII
+	fmt.Fprintf(&b, "Subject: %s\r\n", encodeRFC2047(headerValue(msg.Subject)))
 	fmt.Fprintf(&b, "Date: %s\r\n", time.Now().UTC().Format(time.RFC1123Z))
 	// Transactional mail from this store never accepts replies. Mark it as
 	// auto-generated and suppress common out-of-office/auto-reply handlers.
 	b.WriteString("Auto-Submitted: auto-generated\r\n")
 	b.WriteString("X-Auto-Response-Suppress: All\r\n")
 	b.WriteString("MIME-Version: 1.0\r\n")
-	b.WriteString("Content-Type: text/plain; charset=\"UTF-8\"\r\n")
-	b.WriteString("\r\n")
-	b.WriteString(strings.ReplaceAll(msg.Body, "\n", "\r\n"))
+
+	if msg.HTML != "" {
+		// multipart/alternative
+		boundary := generateBoundary(msg.Body, msg.HTML)
+		fmt.Fprintf(&b, "Content-Type: multipart/alternative; boundary=\"%s\"\r\n", boundary)
+		b.WriteString("\r\n")
+
+		// Part 1: text/plain
+		fmt.Fprintf(&b, "--%s\r\n", boundary)
+		b.WriteString("Content-Type: text/plain; charset=\"UTF-8\"\r\n")
+		b.WriteString("Content-Transfer-Encoding: quoted-printable\r\n")
+		b.WriteString("\r\n")
+		plainPart := quotedPrintableEncode(msg.Body)
+		b.WriteString(plainPart)
+		if !strings.HasSuffix(plainPart, "\r\n") {
+			b.WriteString("\r\n")
+		}
+
+		// Part 2: text/html
+		fmt.Fprintf(&b, "--%s\r\n", boundary)
+		b.WriteString("Content-Type: text/html; charset=\"UTF-8\"\r\n")
+		b.WriteString("Content-Transfer-Encoding: quoted-printable\r\n")
+		b.WriteString("\r\n")
+		htmlPart := quotedPrintableEncode(msg.HTML)
+		b.WriteString(htmlPart)
+		if !strings.HasSuffix(htmlPart, "\r\n") {
+			b.WriteString("\r\n")
+		}
+
+		// End boundary
+		fmt.Fprintf(&b, "--%s--\r\n", boundary)
+	} else {
+		// text/plain only
+		b.WriteString("Content-Type: text/plain; charset=\"UTF-8\"\r\n")
+		b.WriteString("Content-Transfer-Encoding: quoted-printable\r\n")
+		b.WriteString("\r\n")
+		b.WriteString(quotedPrintableEncode(msg.Body))
+	}
+
 	return []byte(b.String())
+}
+
+// generateBoundary generates a random MIME boundary string that does not
+// appear in either the plain text or HTML body.
+func generateBoundary(plainText, htmlText string) string {
+	const prefix = "=_necly_"
+	for {
+		buf := make([]byte, 16)
+		if _, err := rand.Read(buf); err != nil {
+			// Fallback to timestamp-based if rand fails
+			return fmt.Sprintf("%s%x", prefix, time.Now().UnixNano())
+		}
+		boundary := prefix + fmt.Sprintf("%x", buf)
+		// Ensure boundary doesn't appear in either body
+		if !strings.Contains(plainText, boundary) && !strings.Contains(htmlText, boundary) {
+			return boundary
+		}
+		// Extremely unlikely collision; retry
+	}
+}
+
+// quotedPrintableEncode encodes a string using quoted-printable encoding (RFC 2045).
+// Lines are limited to 76 octets, with soft line breaks represented as "=\r\n".
+// Real line breaks in the input are preserved as literal CRLF (normalized from
+// LF where needed). A trailing space/tab before either a real or a soft line
+// break is encoded as =20/=09 so it cannot be stripped by a mail client.
+func quotedPrintableEncode(s string) string {
+	var b strings.Builder
+	lineLen := 0
+	softBreak := func() {
+		b.WriteString("=\r\n")
+		lineLen = 0
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+
+		// Preserve real line breaks as literal CRLF, never as =0D=0A.
+		if c == '\r' && i+1 < len(s) && s[i+1] == '\n' {
+			b.WriteString("\r\n")
+			lineLen = 0
+			i++
+			continue
+		}
+		if c == '\n' {
+			b.WriteString("\r\n")
+			lineLen = 0
+			continue
+		}
+
+		// '=' and any non-printable or non-ASCII byte are encoded as =XX.
+		if c == '=' || c < 32 || c > 126 {
+			if lineLen > 72 { // leave room for =XX plus the soft-break '='
+				softBreak()
+			}
+			fmt.Fprintf(&b, "=%02X", c)
+			lineLen += 3
+			continue
+		}
+
+		// A space or tab directly before a line break (real or soft) would be
+		// stripped by some clients, so encode it explicitly.
+		if c == ' ' || c == '\t' {
+			nextIsBreak := i+1 >= len(s) || s[i+1] == '\r' || s[i+1] == '\n'
+			if nextIsBreak || lineLen >= 75 {
+				if lineLen > 72 {
+					softBreak()
+				}
+				fmt.Fprintf(&b, "=%02X", c)
+				lineLen += 3
+				continue
+			}
+		}
+
+		if lineLen >= 75 { // leave the 76th octet for the soft-break '='
+			softBreak()
+		}
+		b.WriteByte(c)
+		lineLen++
+	}
+	return b.String()
+}
+
+// encodeRFC2047 encodes a header value using RFC 2047 (encoded-word) if it contains non-ASCII.
+// Uses =?UTF-8?B?...?= format (base64 encoding).
+func encodeRFC2047(s string) string {
+	// Check if string contains non-ASCII
+	needsEncoding := false
+	for i := 0; i < len(s); i++ {
+		if s[i] > 127 {
+			needsEncoding = true
+			break
+		}
+	}
+	if !needsEncoding {
+		return s
+	}
+	// Use UTF-8 base64 encoding: =?UTF-8?B?...?=
+	encoded := base64.StdEncoding.EncodeToString([]byte(s))
+	return "=?UTF-8?B?" + encoded + "?="
 }
 
 func headerValue(value string) string {
