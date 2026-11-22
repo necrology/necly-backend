@@ -1,0 +1,412 @@
+Delivered-To: chatgpt.account@example.test
+Received: by 2002:a05:6000:ad2:b0:499:e3cd:8971 with SMTP id di18csp9134wrb;
+        Wed, 18 Nov 2026 04:40:28 -0800 (PST)
+X-Received: by 2002:a05:620a:4551:b0:949:8acb:5df8 with SMTP id af79cd13be357-9498b975e82mr919743485a.37.1795005628628;
+        Wed, 18 Nov 2026 04:40:28 -0800 (PST)
+ARC-Seal: i=1; a=rsa-sha256; t=1795005628; cv=none;
+        d=google.com; s=arc-20260327;
+        b=rP8YVbmvy3QJXozgAqVeEHXyTqSh7LRr0XBQ25GpQw0J5pti/viygP3WEaxw1eFq8O
+         ShnE8pd4Mg+U55b8SWa/+F04B0ejFVETx+M+aubme3zPGqlb0ZB0TGW9U3dEPHtmX0HD
+         6p/K/eRWW0BZ0M0VjWm1sivMxDzA86f8fISYly7x3ArDxZA+Hthkga01lcQajN5XGeJ9
+         FK21CpTyKxkMSCW9QXetvPqd5yhKy4q0TBnLcbmJZGiDfnad06N5oEuWyX7v6PpjoA6G
+         DR6ZQ55Xth0EO0LWHJFebkMx6OtaI5MyeWUFImKJZjp8eB9YH/jgXMv5+rKug43g+m3K
+         ImHQ==
+ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=google.com; s=arc-20260327;
+        h=to:reply-to:subject:message-id:mime-version:from:date
+         :content-transfer-encoding:dkim-signature:dkim-signature;
+        bh=HQFhoVCTmaDqwM7eL9HKlrBBByfrFkyE7BEr6m1GnsY=;
+        fh=wc6oolYX/g2USfCn0dC091zTo6DJaO1QNcj8EaV6vb8=;
+        b=od62ytZqRh4IB2AOY5kxSdjUtkcQam2kLnCOlH/48oO6y0KT4zahpsRnzecucZM0OO
+         hLmxiPgOl7titbrpuu959D/gHp1jCy7LWn6ZvCyX82C+i4jFJjNF0a42MkTQMVXwcYyA
+         SBeB/8ZBrd02WZ842x9Zw8HP5ilIeE+mQhxxgbHkAIKbs2Zi0SPVa/LXCkp21qrLKU08
+         VtXrFSpki70Ak/X0ucYdQweyYvuS+UPh5ENcbAi7kn/W41SEaKmS/WH84AWjmZ7xbXY5
+         kUOIrAzuqLQqgpXwcxGivSLyNCORnQKNhDgSHKrE33xcFdU/lpcjKQ9D1cZEDaFcJKTb
+         RSYQ==;
+        dara=google.com
+ARC-Authentication-Results: i=1; mx.google.com;
+       dkim=pass header.i=@tm.openai.com header.s=s1 header.b=Lqzf5gzB;
+       dkim=pass header.i=@sendgrid.info header.s=smtpapi header.b=fJfpobTB;
+       spf=pass (google.com: domain of bounces+20216706-daa5-necrology45=gmail.com@em7877.tm.openai.com designates 134.128.96.43 as permitted sender) smtp.mailfrom="bounces+20216706-daa5-necrology45=gmail.com@em7877.tm.openai.com";
+       dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=tm.openai.com
+Return-Path: <bounces+20216706-daa5-necrology45=gmail.com@em7877.tm.openai.com>
+Received: from o45.ptr3779.openai.com (o45.ptr3779.openai.com. [134.128.96.43])
+        by mx.google.com with ESMTPS id af79cd13be357-9499b836605si214645685a.409.2026.11.18.04.40.28
+        for <chatgpt.account@example.test>
+        (version=TLS1_3 cipher=TLS_AES_128_GCM_SHA256 bits=128/128);
+        Wed, 18 Nov 2026 04:40:28 -0800 (PST)
+Received-SPF: pass (google.com: domain of bounces+20216706-daa5-necrology45=gmail.com@em7877.tm.openai.com designates 134.128.96.43 as permitted sender) client-ip=134.128.96.43;
+Authentication-Results: mx.google.com;
+       dkim=pass header.i=@tm.openai.com header.s=s1 header.b=Lqzf5gzB;
+       dkim=pass header.i=@sendgrid.info header.s=smtpapi header.b=fJfpobTB;
+       spf=pass (google.com: domain of bounces+20216706-daa5-necrology45=gmail.com@em7877.tm.openai.com designates 134.128.96.43 as permitted sender) smtp.mailfrom="bounces+20216706-daa5-necrology45=gmail.com@em7877.tm.openai.com";
+       dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=tm.openai.com
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=tm.openai.com;
+	h=content-transfer-encoding:content-type:date:from:mime-version:subject:
+	reply-to:to:cc:content-type:date:feedback-id:from:subject:to;
+	s=s1; t=1795005628;
+	bh=HQFhoVCTmaDqwM7eL9HKlrBBByfrFkyE7BEr6m1GnsY=;
+	b=Lqzf5gzBU1stSCfg9cSUlNXWB7r+DY3hVtHTpmg2okfIkx88vghg26rRRns1HXNbU8H/
+	D84Pj2aa3GR9iNgY9hwdFHczglq2Jt9iAAUNxrVPOYp1lBVHoDP215WO7En4ClIPQ7zW4a
+	/x0v+YBEIRR49ChyBTsyJpNkhFXt8AcvAEtR+EFqBBYgeqHrOBWcxZGM5fSFZgM2G9DbJX
+	d8uaDgLVmHRHBNsGgHq5/vR2EwWzxJFCkX6xAmlwB7CynPPJVynsrlYkEdPFZVBcspNr9Y
+	GoZTwdqcwCc/4dNuLicl+4u/6qK7LNxCF3gpiWevOeJf/sSXn1ZgNnNfJ/jbd2IQ==
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=sendgrid.info;
+	h=content-transfer-encoding:content-type:date:from:mime-version:subject:
+	reply-to:to:cc:content-type:date:feedback-id:from:subject:to;
+	s=smtpapi; t=1795005628;
+	bh=HQFhoVCTmaDqwM7eL9HKlrBBByfrFkyE7BEr6m1GnsY=;
+	b=fJfpobTBEWMPWiRYJlF5GZQLvRcDNGeI1U+Aeoo8LkWWvhp0e0nS0PJWeo0UfeXY5gHg
+	EZL2tUuQdheOrXGt5MOEnJYm1JPs1c1AEODDK1OFzxVZsnhyyuzxnH5cBIXnJsRgxre0sc
+	nvaQIxus2yrOxkhPRvMb9lKmDn4DMMwvw=
+Received: by recvd-fb9cc649b-qx8hm with SMTP id recvd-fb9cc649b-qx8hm-1-6AFD9CBC-4
+	2026-11-18 12:40:28.340312787 +0000 UTC m=+1081864.999920509
+Received: from MjAyMTY3MDY (unknown)
+	by geopod-ismtpd-5 (SG) with HTTP
+	id W3oTpEnJSHWwNc5HzInVow
+	Wed, 18 Nov 2026 12:40:28.297 +0000 (UTC)
+Content-Transfer-Encoding: quoted-printable
+Content-Type: text/html; charset=us-ascii
+Date: Wed, 18 Nov 2026 12:40:28 +0000 (UTC)
+From: ChatGPT <noreply@tm.openai.com>
+Mime-Version: 1.0
+Message-ID: <W3oTpEnJSHWwNc5HzInVow@geopod-ismtpd-5>
+Subject: Your temporary ChatGPT login code
+Reply-To: noreply@tm.openai.com
+X-SG-EID: 
+ =?us-ascii?Q?u001=2E2cVJOEP6rValQfJKwZO1ZPPp2yIilXnDhherIW4DlflhhOzF6Fg0Pc6qI?=
+ =?us-ascii?Q?eysFaEU+wJE8zKXoYfJYNeD12VaVkkFJMBWsDnC?=
+ =?us-ascii?Q?q79auFIEw4z9Wokw1Sh3Aqy2TbwqVZJEEajfzo+?=
+ =?us-ascii?Q?KuO1fq3FvNXsPxv7fEWkUw2iBLtk+wmSVLL31wU?=
+ =?us-ascii?Q?0rdEtUYYBqKx9NULbC5RWotE9IIufP2RNza1LDv?=
+ =?us-ascii?Q?g8Wqh8vdQd6oClQiEFztbw=3D?=
+X-SG-ID: 
+ =?us-ascii?Q?u001=2ESdBcvi+Evd=2FbQef8eZF3BoMNuFmcP5rq+Py=2FzrrMdK6QuthCfWhsA2OXF?=
+ =?us-ascii?Q?d2ogPal5ecNFS2d9sR6gemXdd8Z7haYPWzNeVm8?=
+ =?us-ascii?Q?pN2N9SN6k4Eum9jYh4xkfkxsuh37bkeGjM=2FgfdM?=
+ =?us-ascii?Q?gilzX54sIoSxw=2FRaMEKGaTN5wT3Gp0FX6VR9ZcF?=
+ =?us-ascii?Q?oTi4ca+5HLVwjc7NlGBf8eGolutKzY++UKbAAtn?=
+ =?us-ascii?Q?Q=3D=3D?=
+To: chatgpt.account@example.test
+X-Entity-ID: u001.bVuJR+6WQkYgHBZFem2ybw==
+
+<!DOCTYPE html>
+<html>
+<head>
+ =20
+  <meta charset=3D"utf-8">
+  <meta http-equiv=3D"x-ua-compatible" content=3D"ie=3Dedge">
+  <title>Your temporary ChatGPT login code</title>
+  <meta name=3D"viewport" content=3D"width=3Ddevice-width, initial-scale=3D=
+1">
+  <style type=3D"text/css">
+  /**
+   * Google webfonts. Recommended to include the .woff version for cross-cl=
+ient compatibility.
+   */
+  @media screen {
+    @font-face {
+      font-family: Colfax;
+      src: url(https://openai-public.s3-us-west-2.amazonaws.com/beta/fonts/=
+ColfaxAIRegular.woff2);
+      font-weight: normal;
+    }
+
+    @font-face {
+      font-family: Colfax;
+      src: url(https://openai-public.s3-us-west-2.amazonaws.com/beta/fonts/=
+ColfaxAIMedium.woff2);
+      font-weight: bold;
+    }
+  }
+
+  /**
+   * Avoid browser level font resizing.
+   * 1. Windows Mobile
+   * 2. iOS / OSX
+   */
+  body,
+  table,
+  td,
+  a {
+    -ms-text-size-adjust: 100%; /* 1 */
+    -webkit-text-size-adjust: 100%; /* 2 */
+    font-family: Colfax, Helvetica, Arial, sans-serif;
+  }
+
+  /**
+   * Remove extra space added to tables and cells in Outlook.
+   */
+  table,
+  td {
+    mso-table-rspace: 0pt;
+    mso-table-lspace: 0pt;
+  }
+
+  /**
+   * Better fluid images in Internet Explorer.
+   */
+  img {
+    -ms-interpolation-mode: bicubic;
+  }
+
+  /**
+   * Remove blue links for iOS devices.
+   */
+  a[x-apple-data-detectors] {
+    font-family: inherit !important;
+    font-size: inherit !important;
+    font-weight: inherit !important;
+    line-height: inherit !important;
+    color: inherit !important;
+    text-decoration: none !important;
+  }
+
+  /**
+   * Fix centering issues in Android 4.4.
+   */
+  div[style*=3D"margin: 16px 0;"] {
+    margin: 0 !important;
+  }
+
+  body {
+    width: 100% !important;
+    height: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  /**
+   * Collapse table borders to avoid space between cells.
+   */
+  table {
+    border-collapse: collapse !important;
+  }
+
+  a {
+    color: #10A37F;
+  }
+
+  img {
+    height: auto;
+    line-height: 100%;
+    text-decoration: none;
+    border: 0;
+    outline: none;
+  }
+
+  h1 {
+      font-size: 26px;
+      line-height: 1.4;
+      font-weight: 700;
+      margin: 0;
+  }
+  h2 {
+      font-size: 24px;
+      line-height: 1.4;
+      font-weight: 700;
+      margin: 0;
+  }
+  p {
+      margin: 0;
+  }
+  p + p {
+      margin-top: 16px;
+  }
+
+  @media only screen and (max-width: 480px) {
+    .prospect-generated-preview-wrapper {
+      padding: 0 12px 16px !important;
+    }
+
+    .prospect-generated-preview-media {
+      width: 96px !important;
+      min-width: 96px !important;
+      max-width: 96px !important;
+    }
+
+    .prospect-generated-preview-image {
+      width: 96px !important;
+      min-width: 96px !important;
+      max-width: 96px !important;
+      height: 96px !important;
+    }
+
+    .prospect-generated-preview-content {
+      padding: 12px !important;
+    }
+  }
+  </style>
+
+ =20
+</head>
+<body style=3D"background-color: #ffffff;">
+
+  <div class=3D"preheader" style=3D"display: none; max-width: 0; max-height=
+: 0; overflow: hidden; font-size: 1px; line-height: 1px; color: #fff; opaci=
+ty: 0;">
+      Enter this temporary verification code to continue: 271828.
+  </div>
+
+  <!-- start body -->
+  <table border=3D"0" cellpadding=3D"0" cellspacing=3D"0" width=3D"100%">
+    <!-- start body block -->
+    <tr>
+      <td align=3D"center">
+        <!--[if (gte mso 9)|(IE)]>
+        <table align=3D"center" border=3D"0" cellpadding=3D"0" cellspacing=
+=3D"0" width=3D"560">
+        <tr>
+        <td align=3D"center" valign=3D"top" width=3D"560">
+        <![endif]-->
+        <table align=3D"center" border=3D"0" cellpadding=3D"0" cellspacing=
+=3D"0" width=3D"100%" style=3D"width: 100%; max-width: 560px; background-co=
+lor: #fff;">
+           =20
+              <!-- header image -->
+              <tr>
+                  <td valign=3D"top" style=3D"padding: 27px 20px 24px 15px;=
+">
+                      <table align=3D"left" width=3D"100%" border=3D"0" cel=
+lpadding=3D"0" cellspacing=3D"0" style=3D"min-width:100%;">
+                          <tbody><tr>
+                              <td valign=3D"top" style=3D"padding-top: 0; p=
+adding-bottom: 0; text-align:left;">
+                                 =20
+
+<img align=3D"left" alt=3D"ChatGPT" src=3D"https://cdn.mcauto-images-produc=
+tion.sendgrid.net/d4ef4a73d51fe844/b7626bee-28ca-4e2f-b25b-7d81af34e7a1/206=
+x51.png" width=3D"206" height=3D"51" style=3D"width:140px; max-width:100%; =
+padding-bottom: 0; display: inline !important; vertical-align: bottom;">
+
+
+                              </td>
+                          </tr>
+                          </tbody></table>
+                  </td>
+              </tr>
+           =20
+
+         =20
+<tr>
+    <td align=3D"left" bgcolor=3D"#ffffff" style=3D"padding: 16px 24px; fon=
+t-size: 32px; line-height: 40px;">
+        <p>
+            ChatGPT Log-in Code
+        </p>
+    </td>
+</tr>
+<tr>
+    <td align=3D"left" bgcolor=3D"#ffffff" style=3D"padding: 16px 24px; fon=
+t-size: 16px; line-height: 24px;">
+        <p>
+            Hi there,
+        </p>
+        <p>
+            We noticed a suspicious log-in on your account. If that was you=
+, enter this code:
+        </p>
+        <h1 style=3D"padding: 16px 0;">271828</h1>
+        <p>
+            If you were not trying to log in to ChatGPT, please <a href=3D"=
+http://url3243.email.openai.com/ls/click?upn=3Du001.IQLfsj4kk-2BK7JhymNusRM=
+mfwoG2v3nTgHW39-2Fobue0v2VhH5-2BE0zo7ACY99-2FinDaFd7n4QXFQ88vaAvg4Yh-2FvnUD=
+Cf4-2BAFFfzo-2Fq7TrRncfLPouhbxwQ5rhmu-2BvEVX60kx0S_yfsGH4ZCeh8ujz4-2FcF8XBv=
+Wb5GNI-2FmVJ9q1zidkSNtev2HAS1ETmLKZcikLmJYNnKbAwWHc5FEWAB88jaPI48cgLrhX-2Fz=
+NIPHFoycaeIwLcKCNW3eS-2B-2BIgO-2F5qls9gwLvg4s9diPe2IzvFjrMP7Hc1e-2BP1xJPF3g=
+KRwbfBnyZXUvp1vFKUQ8CoFXTaU2Ho-2BIYW1W7yKqHK-2FPLBrz3xsCFI1iUb92EAw2goeBvPg=
+jf9sKn4z8KnmN9iWJ02Ei1vIHODpLhzU1ZxF38hZSxfDISTLeguadsAobwOb1TuHg-2BB9Z0CRu=
+4SzqMF7PRLhz9aTLXRbNZK28jrlQYhuwI2V-2FcrjGZqgWYKnSi3QTffZf8JmGPFbEQKg3q00B-=
+2FnbDKVVMOP1lhANeZJd6hTcBADM4sw-3D-3D">reset your password</a>.
+        </p>
+        <p>
+            For more information about why you received this email, please =
+see the help center article on <a href=3D"http://url3243.email.openai.com/l=
+s/click?upn=3Du001.IQLfsj4kk-2BK7JhymNusRMmfwoG2v3nTgHW39-2Fobue0s7ULBXAxde=
+-2BKPwzW37FVj17FoKWOB-2F5TvVjpa-2BHt1UDY-2B4OCAXKKxfkFqM5ETjhOMt48em1y8ViTY=
+j0tTMyBaCYfxj4pNqyq5h-2BD-2BBl5VMXVDu9ly97-2FikfP8zqZGcu-2F8-3DxpmV_yfsGH4Z=
+Ceh8ujz4-2FcF8XBvWb5GNI-2FmVJ9q1zidkSNtev2HAS1ETmLKZcikLmJYNnKbAwWHc5FEWAB8=
+8jaPI48cgLrhX-2FzNIPHFoycaeIwLcKCNW3eS-2B-2BIgO-2F5qls9gwLvg4s9diPe2IzvFjrM=
+P7Hc1e-2BP1xJPF3gKRwbfBnyZXUvp1vFKUQ8CoFXTaU2Ho-2BIYW1W7yKqHK-2FPLBrz3xsCFO=
+e4xrDyRMPc0M9QoB5A-2Fz9Bui5qwHdFaqvZRJAOQT8acpyGgYaBjPcFdRr-2Fw-2FPsgcpTamT=
+huxD6D5fyQa6CGtJIAg3TmySz5uP7Iz5-2FpsvvSVPbQih35SuOfPw-2BAT-2Fkd6bfiLMS7LOF=
+q8Rd9E8wP614dD-2FtNt-2BpuEnI3ERFcNopPKzqWO0NnyrGbAbf8qqgFA-3D-3D">One-Time =
+Passwords</a>.
+        </p>
+        <p>
+            Best,<br />
+            The ChatGPT team
+        </p>
+    </td>
+</tr>
+
+
+
+        </table>
+        <!--[if (gte mso 9)|(IE)]>
+        </td>
+        </tr>
+        </table>
+        <![endif]-->
+      </td>
+    </tr>
+    <!-- end body block -->
+
+    <!-- start footer -->
+    <tr>
+      <td align=3D"center" style=3D"padding: 24px;">
+        <!--[if (gte mso 9)|(IE)]>
+        <table align=3D"center" border=3D"0" cellpadding=3D"0" cellspacing=
+=3D"0" width=3D"600">
+        <tr>
+        <td align=3D"center" valign=3D"top" width=3D"600">
+        <![endif]-->
+        <table border=3D"0" cellpadding=3D"0" cellspacing=3D"0" width=3D"10=
+0%" style=3D"max-width: 560px;">
+           =20
+<tr>
+  <td align=3D"left" style=3D"padding: 4px 24px; font-size: 14px; line-heig=
+ht: 20px; color: #666;">
+    <p style=3D"margin: 0;">If you have any questions please contact us thr=
+ough our <a href=3D"http://url3243.email.openai.com/ls/click?upn=3Du001.IQL=
+fsj4kk-2BK7JhymNusRMmfwoG2v3nTgHW39-2Fobue0vS8iPJK05Qsdjl1qKLmoz-2FHYR-_yfs=
+GH4ZCeh8ujz4-2FcF8XBvWb5GNI-2FmVJ9q1zidkSNtev2HAS1ETmLKZcikLmJYNnKbAwWHc5FE=
+WAB88jaPI48cgLrhX-2FzNIPHFoycaeIwLcKCNW3eS-2B-2BIgO-2F5qls9gwLvg4s9diPe2Izv=
+FjrMP7Hc1e-2BP1xJPF3gKRwbfBnyZXUvp1vFKUQ8CoFXTaU2Ho-2BIYW1W7yKqHK-2FPLBrz3x=
+sCFDlSst4P4Z9biXMOPfAUJAGjcF9nkOIHAUSt-2BXh5p-2BO7nojOred7jvVnxworefa6s0bTV=
+MeozYcztJ-2Byw-2Fi5aTMHHLjriGgS0JVpsrTdeEeUYnp7rKjh8IUYQlQ8VYdtvP-2BTGLJmkH=
+I8guRzJJffA0N3BRNCEjVXf1s9jlZfBcRB56Zkbk4UmXU0yGgJoSqbsg-3D-3D">help center=
+</a></p>
+  </td>
+</tr>
+
+        </table>
+        <!--[if (gte mso 9)|(IE)]>
+        </td>
+        </tr>
+        </table>
+        <![endif]-->
+      </td>
+    </tr>
+    <!-- end footer -->
+
+  </table>
+  <!-- end body -->
+  <div class=3D"debug-string" style=3D"display: none; max-width: 0; max-hei=
+ght: 0; overflow: hidden; font-size: 1px; line-height: 1px; color: #ececf1;=
+ opacity: 0;">
+     =20
+  </div>
+
+<img src=3D"http://url3243.email.openai.com/wf/open?upn=3Du001.co8kyEjudSy-=
+2FzLwoyqqEzf8GRmVHb-2B0OydsSibOqFSkWbRKOypknMHV2THammWUTWQo4JVZAROuiJD0KgR5=
+F-2FPN-2FCVZAGcHq6iImnrAVlHbHBMjX0acRVwS29MEdtxSLZSIpQATxWjwHwxjYwTLMYhyhtq=
+4J5Sxwz2Pn-2FNzI4GMKml-2BQJYbvhPyl5-2FURXKCfAtxygInav5AYdtrwPgZwgJ-2B-2BFRv=
+DiAupo8mzkxzZfeQu21aQk1d6rJL9NnZUu9HHcMcMWWuSFDvHsnsPNRap8PWb08nKt6pO9u893O=
+ks1CWH9NZkGNfiwV2YQGwkJ-2Boep8RCiKUrBOOKV1ksAkPuFzxCIJG-2FAR-2FF27bNDbfgqQA=
+2sIl3mvXo4BGSlLzXm1V1mdmaojiGustPkqr8sn18hA-3D-3D" alt=3D"" width=3D"1" hei=
+ght=3D"1" border=3D"0" style=3D"height:1px !important;width:1px !important;=
+border-width:0 !important;margin-top:0 !important;margin-bottom:0 !importan=
+t;margin-right:0 !important;margin-left:0 !important;padding-top:0 !importa=
+nt;padding-bottom:0 !important;padding-right:0 !important;padding-left:0 !i=
+mportant;"/></body>
+</html>
