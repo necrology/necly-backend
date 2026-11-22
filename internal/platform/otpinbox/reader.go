@@ -456,7 +456,7 @@ var (
 	// immediately preceded by one of these words, it is a conditional clause
 	// (e.g., "if you were not trying to log in, please reset your password")
 	// and must not cause rejection of a nearby login code.
-	conditionalClauseRE = regexp.MustCompile(`(?i)\b(?:if|jika|bila|apabila|kalau|kalo|unless|seandainya)\b`)
+	conditionalClauseRE = regexp.MustCompile(`(?i)\b(?:if|jika|bila|apabila|kalau|kalo|jikalau|andaikan|misalnya|unless|seandainya)\b`)
 )
 
 // parseMessage is exported to tests through parseMessageForTest. It returns ok
