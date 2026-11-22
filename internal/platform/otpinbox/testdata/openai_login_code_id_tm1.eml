@@ -1,0 +1,318 @@
+Delivered-To: chatgpt.account@example.test
+Received: by 2002:a05:6000:642:b0:499:e3cd:8971 with SMTP id 2csp589048wrs;
+        Sat, 21 Nov 2026 09:06:31 -0800 (PST)
+X-Received: by 2002:a05:620a:260a:b0:949:7118:47ec with SMTP id af79cd13be357-949ba9d8a08mr941575885a.26.1795280791451;
+        Sat, 21 Nov 2026 09:06:31 -0800 (PST)
+ARC-Seal: i=1; a=rsa-sha256; t=1795280791; cv=none;
+        d=google.com; s=arc-20260327;
+        b=miAMUvumDGdUUm3w9uprjFKy+CkCmoIprp7m0/M5qNKZarjxEhnsXalF+KudoLtvhc
+         M93VIvGA1X/1pPkcJ4epq4mt/ESWminHbce6KP4kzcd5XgD52Q7Cv5HmUecM0L+neL8B
+         1omtwWbu/TESiZtLlNzIh1Y/axauEN1Ug78ryR7BomBRqYl1yNgErzq6O4AM9Z9D5E9r
+         HnSqD0eCb7M1bt0SCddRe5NJdkxcsf2fAX91LsooGIZpWvB+JdgB4EfdXGZu3ggWOetJ
+         TD0mpUYxq4es6pQ0ZKxQxj5m0z4PzI99AshCQAggdn0gt4NTbQSVILXaFM3BB0a9/0o1
+         4z1Q==
+ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=google.com; s=arc-20260327;
+        h=content-transfer-encoding:message-id:reply-to:to:from:subject
+         :mime-version:date:sender:dkim-signature:dkim-signature;
+        bh=kZQO0Ri/dEFBZCxHg+GSp7KPRybSuEk+p9DzNMInQRM=;
+        fh=wc6oolYX/g2USfCn0dC091zTo6DJaO1QNcj8EaV6vb8=;
+        b=p13QcWiLZLEkPEyFl4DAU9mBafL1s/0HudY3GI9WVqPizuDafJXjL435egpFilw84a
+         QOCbo7L8k1Mb4iK9z2myFYAbXXYahYO+S7GpH+XVcMDflg3/HL9YH2EV3KR/XQc0LmwV
+         27Dys2OLyno+tsSLSpNn2WaQRP7CN+Yt/rPzoy+QQ17U2F7j/pC1SzQP4RhC/mXPwEnT
+         7Ia7gijZguUFpBJcO3lJs1xvdpfuGB1DEwklppsi9DVJj7wFUuN7XDbQklGK50224TbX
+         pNLzjwTtQxRFifrcxZKMK3nkv+Ok4UvY9gxMRIvp7JZ0RmdA46vbSc56+Zfu7AuvE4Wd
+         SNqQ==;
+        dara=google.com
+ARC-Authentication-Results: i=1; mx.google.com;
+       dkim=pass header.i=@tm1.openai.com header.s=pdk2 header.b=Zrl7zwqH;
+       dkim=pass header.i=@mailgun.org header.s=mg header.b=FJIoIavu;
+       spf=pass (google.com: domain of bounce+2de839.b462b7-necrology45=gmail.com@tm1.openai.com designates 159.112.244.102 as permitted sender) smtp.mailfrom="bounce+2de839.b462b7-necrology45=gmail.com@tm1.openai.com";
+       dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=tm1.openai.com
+Return-Path: <bounce+2de839.b462b7-necrology45=gmail.com@tm1.openai.com>
+Received: from v5102.v5375b7fa.use4.send.mailgun.net (v5102.v5375b7fa.use4.send.mailgun.net. [159.112.244.102])
+        by mx.google.com with UTF8SMTPS id af79cd13be357-949bb437336si715945385a.294.2026.11.21.09.06.31
+        for <chatgpt.account@example.test>
+        (version=TLS1_2 cipher=ECDHE-ECDSA-AES128-GCM-SHA256 bits=128/128);
+        Sat, 21 Nov 2026 09:06:31 -0800 (PST)
+Received-SPF: pass (google.com: domain of bounce+2de839.b462b7-necrology45=gmail.com@tm1.openai.com designates 159.112.244.102 as permitted sender) client-ip=159.112.244.102;
+Authentication-Results: mx.google.com;
+       dkim=pass header.i=@tm1.openai.com header.s=pdk2 header.b=Zrl7zwqH;
+       dkim=pass header.i=@mailgun.org header.s=mg header.b=FJIoIavu;
+       spf=pass (google.com: domain of bounce+2de839.b462b7-necrology45=gmail.com@tm1.openai.com designates 159.112.244.102 as permitted sender) smtp.mailfrom="bounce+2de839.b462b7-necrology45=gmail.com@tm1.openai.com";
+       dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=tm1.openai.com
+DKIM-Signature: a=rsa-sha256; v=1; c=relaxed/relaxed; d=tm1.openai.com; q=dns/txt; s=pdk2; t=1795280791; x=1795287991;
+ h=Content-Type: Content-Transfer-Encoding: Message-Id: Reply-To: To: To: From: From: Subject: Subject: Mime-Version: Date: Sender: Sender: X-Feedback-Id;
+ bh=kZQO0Ri/dEFBZCxHg+GSp7KPRybSuEk+p9DzNMInQRM=;
+ b=Zrl7zwqHqnEQn+T3IS9/05r9jeJawp89/dNsKDILOLeXInZMzMAOhtK9QE5/VZ6vgwdRhNe2TSxCCOgUKF7RRN5e+kbr985tzoNHCIkxxEqLNJz2g8WnnurWQQPvIeoiBuSgiqs+d2sbokHXZMXDAHqMzuEH0F0KnDbM3lJgrrkk2m+J4afaIzwG7bqaHfdQw12awwtRDZ+XNwvWdzRvTBtPOYsfskzgCDiYt6c8qxuSW+DM2eUod8sVDwNQvtwcl/gGcxI1PJou9m4pL5oI7sdf4vHHI0LpRca4LnKcEMDjQxih5uGPJsbcFczMo7HVDKnEpV/gqj9jv2WLBdD27A==
+DKIM-Signature: a=rsa-sha256; v=1; c=relaxed/relaxed; d=mailgun.org; q=dns/txt; s=mg; t=1795280791; x=1795287991;
+ h=Content-Type: Content-Transfer-Encoding: Message-Id: Reply-To: To: To: From: From: Subject: Subject: Mime-Version: Date: Sender: Sender: X-Feedback-Id;
+ bh=kZQO0Ri/dEFBZCxHg+GSp7KPRybSuEk+p9DzNMInQRM=;
+ b=FJIoIavunOH7kCWE2XsQoZFG0DRtR9VAdvo7vacocvbJ51HNp8PDcMQMcTQzNA8jFpTWZkIaiHn3WE0metqGmxHO1aC72X7P0/3Rxq+xcCIz0HP1ln7YvD8Mpz/7bg2hAk/RxIzXr63EVssdPXEvCq+bp+8xjGlYZkzh2ePpAQM=
+X-Mailgun-Sid: WyIzODMwZSIsIm5lY3JvbG9neTQ1QGdtYWlsLmNvbSIsImI0NjJiNyJd
+X-Feedback-Id: noreply@tm1.openai.com:email-otp-passwordless-login:688bc5ffeaa327aec196a70f:mailgun
+Received: by f8711f3377d0b845a44bd93ff0a68cca4ff480b208195fc44a44dc594281536e with HTTP
+ id 6b01cf96b7423a45ea96be15; Sat, 21 Nov 2026 17:06:30 GMT
+X-Mailgun-Sending-Ip-Pool-Name: transactional emails
+X-Mailgun-Sending-Ip-Pool: 682375dbe1a722357625a2dd
+X-Mailgun-Sending-Ip: 159.112.244.102
+Sender: noreply@tm1.openai.com
+Date: Sat, 21 Nov 2026 17:06:30 +0000
+Mime-Version: 1.0
+Subject: Kode masuk ChatGPT sementara Anda
+From: ChatGPT <noreply@tm1.openai.com>
+To: chatgpt.account@example.test
+X-Mailgun-Tag: email-otp-passwordless-login
+X-Mailgun-Deliver-Within: 10m
+Reply-To: noreply@tm.openai.com
+Message-Id: <20261121170630.1a667f416141803e@tm1.openai.com>
+Content-Transfer-Encoding: quoted-printable
+Content-Type: text/html; charset="utf-8"
+
+<html>
+  <head>
+    <title>Kode masuk ChatGPT sementara Anda</title>
+    <meta name=3D"viewport" content=3D"width=3Ddevice-width, initial-scale=
+=3D1" />
+    <style type=3D"text/css">
+      @font-face {
+        font-family: "S=C3=B6hne";
+        src: url(https://cdn.openai.com/common/fonts/soehne/soehne-buch.wof=
+f2)
+            format("woff2");
+        font-style: normal;
+        font-weight: 400;
+        font-display: swap;
+      }
+      .ExternalClass,
+      .ExternalClass div,
+      .ExternalClass font,
+      .ExternalClass p,
+      .ExternalClass span,
+      .ExternalClass td,
+      img {
+        line-height: 100%;
+      }
+      #outlook a {
+        padding: 0;
+      }
+      .ExternalClass,
+      .ReadMsgBody {
+        width: 100%;
+      }
+      a,
+      blockquote,
+      body,
+      li,
+      p,
+      table,
+      td {
+        -webkit-text-size-adjust: 100%;
+        -ms-text-size-adjust: 100%;
+      }
+      table,
+      td {
+        mso-table-lspace: 0;
+        mso-table-rspace: 0;
+      }
+      img {
+        -ms-interpolation-mode: bicubic;
+        border: 0;
+        height: auto;
+        outline: 0;
+        text-decoration: none;
+      }
+      table {
+        border-collapse: collapse !important;
+      }
+      #bodyCell,
+      #bodyTable,
+      body {
+          height: 100% !important;
+          margin: 0;
+          padding: 0;
+          font-family: S=C3=B6hne, Roboto, Helvetica, Arial, sans-serif;
+        }
+
+      #bodyCell {
+        padding: 20px;
+      }
+      #bodyTable {
+        width: 560px;
+      }
+      @media only screen and (max-width: 480px) {
+        #bodyCell,
+        #bodyTable,
+        body {
+          width: 100% !important;
+        }
+        a,
+        blockquote,
+        body,
+        li,
+        p,
+        table,
+        td {
+          -webkit-text-size-adjust: none !important;
+        }
+        body {
+          min-width: 100% !important;
+        }
+        #bodyTable {
+          max-width: 560px !important;
+        }
+        #signIn {
+          max-width: 280px !important;
+        }
+      }
+    </style>
+    <!--[if mso]>
+        <style type=3D"text/css">
+          #bodyCell,
+          #bodyTable,
+          body {
+            font-family: Helvetica, Arial, sans-serif; !important
+          }
+        </style>
+    <![endif]-->
+
+  </head>
+  <body>
+    <center>
+      <table
+        style=3D"width: 560px;-webkit-text-size-adjust: 100%;-ms-text-size-=
+adjust: 100%;mso-table-lspace: 0pt;mso-table-rspace: 0pt;margin: 0;padding:=
+ 0;border-collapse: collapse !important;height: 100% !important;background-=
+color: #ffffff;"
+        align=3D"center"
+        border=3D"0"
+        cellpadding=3D"0"
+        cellspacing=3D"0"
+        height=3D"100%"
+        width=3D"100%"
+        id=3D"bodyTable"
+      >
+        <tr>
+          <td
+            align=3D"center"
+            valign=3D"top"
+            id=3D"bodyCell"
+            style=3D"-webkit-text-size-adjust: 100%;-ms-text-size-adjust: 1=
+00%;mso-table-lspace: 0pt;mso-table-rspace: 0pt;margin: 0;padding: 0 16px;h=
+eight: 100% !important;"
+          >
+            <div class=3D"top" style=3D"background-color: #ffffff;color:#20=
+2123; padding: 56px 0 32px 0;">
+              <p
+                style=3D"text-align: left;-webkit-text-size-adjust: 100%;-m=
+s-text-size-adjust: 100%; margin: 0;"
+              >
+               =20
+                <img
+                  src=3D"https://cdn.mcauto-images-production.sendgrid.net/=
+d4ef4a73d51fe844/b7626bee-28ca-4e2f-b25b-7d81af34e7a1/206x51.png"
+                  width=3D"206"
+                  height=3D"51"
+                  alt=3D"ChatGPT"
+                  title=3D""
+                  style=3D"height:36px;width:auto;-ms-interpolation-mode: b=
+icubic;border: 0;line-height: 100%;outline: none;text-decoration: none;"
+                >
+               =20
+              </p>
+            </div>
+            <table
+              class=3D"main"
+            >
+              <tr>
+                  <td style=3D"background-color: #ffffff;color:#353740; tex=
+t-align: left; line-height:1.5;">
+                      <p style=3D"font-size: 16px; line-height: 24px; margi=
+n: 0;">
+                        Masukkan kode verifikasi sementara ini untuk melanj=
+utkan:
+                      </p>
+
+                      <p style=3D"font-family: Menlo, Monaco, Lucida Consol=
+e, Arial; font-size: 24px; line-height: 28px; background-color: #F3F3F3; co=
+lor: #5D5D5D; border-radius: 16px; padding: 28px 24px; margin: 24px 0;">
+                        <!--[if mso]>
+                            <span style=3D"font-family: Lucida Console, Ari=
+al, sans-serif;">
+                        <![endif]-->
+                        141421
+                        <!--[if mso]>
+                            </span>
+                        <![endif]-->
+                      </p>
+
+                     =20
+
+                      <p style=3D"font-size: 16px; line-height: 24px; text-=
+align: left; margin: 0; margin-bottom: 24px;">
+                       =20
+                          Jika Anda tidak mencoba untuk masuk ke ChatGPT, h=
+arap <a href=3D"https://help.openai.com/en/articles/4936828-how-do-i-change=
+-my-account-password">reset kata sandi Anda</a>.
+                       =20
+                      </p>
+
+                      <p style=3D"-webkit-text-size-adjust: 100%;-ms-text-s=
+ize-adjust: 100%; margin: 0; color: #8F8F8F;">
+                        <br/>Salam hormat,<br/>Tim ChatGPT
+                      </p>
+                  </td>
+              </tr>
+
+              <tr>
+                <td>
+                    <p style=3D"height: 1px; width: 100%; background: #E5E5=
+E5; margin: 40px 0;"></p>
+                </td>
+              </tr>
+            </table>
+            <table
+              class=3D"footer"
+              style=3D"text-align: left;background: #ffffff;color:#6e6e80;w=
+idth: 100%;"
+            >
+                <tr>
+                    <td>
+                       =20
+                        <img
+                        src=3D"https://cdn.mcauto-images-production.sendgri=
+d.net/d4ef4a73d51fe844/b7626bee-28ca-4e2f-b25b-7d81af34e7a1/206x51.png"
+                        width=3D"206"
+                        height=3D"51"
+                        alt=3D"ChatGPT"
+                        title=3D""
+                        style=3D"width:64px;height:auto;-ms-interpolation-m=
+ode: bicubic;border: 0;line-height: 100%;outline: none;text-decoration: non=
+e;margin-bottom: 16px;"
+                    >
+                       =20
+
+                    </td>
+                </tr>
+                <tr>
+                    <td style=3D"font-size: 12px; line-height: 16px; paddin=
+g-bottom: 16px;">
+                        <p style=3D"margin: 0;">
+                           =20
+                                <a style=3D"color: #8F8F8F" href=3D"https:/=
+/chatgpt.com">ChatGPT</a>
+                           =20
+
+                        </p>
+                        <p style=3D"margin: 0;">
+                            <a style=3D"color: #8F8F8F" href=3D"https://hel=
+p.openai.com">Pusat bantuan</a>
+                        </p>
+                    </td>
+                </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    </center>
+  </body>
+</html>
