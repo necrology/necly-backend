@@ -1,0 +1,290 @@
+package emailtemplate
+
+import (
+	"fmt"
+	"strings"
+	"time"
+)
+
+// AccessCodeEmailInput holds data required to render the "Kode akses OTP" email.
+type AccessCodeEmailInput struct {
+	CustomerName  string
+	OrderNumber   string
+	ProductName   string
+	DurationName  string
+	AccountEmails []string
+	AccessCode    string
+	ExpiresAt     time.Time
+	FrontendURL   string
+	CompanyName   string
+}
+
+// DeliveryEmailInput holds data required to render the "Akses pesanan" email.
+type DeliveryEmailInput struct {
+	CustomerName    string
+	OrderNumber     string
+	ProductName     string
+	DurationName    string
+	Quantity        int
+	AccessExpiresAt time.Time
+	Accounts        []DeliveryAccountView
+	FrontendURL     string
+	CompanyName     string
+}
+
+// ReplacementEmailInput holds data required to render the "Akun pengganti" email.
+type ReplacementEmailInput struct {
+	CustomerName    string
+	OrderNumber     string
+	ProductName     string
+	DurationName    string
+	Quantity        int
+	AccessExpiresAt time.Time
+	Accounts        []DeliveryAccountView
+	Reason          string
+	FrontendURL     string
+	CompanyName     string
+}
+
+// DeliveryAccountView holds account credentials for email rendering.
+type DeliveryAccountView struct {
+	Label        string
+	Username     string
+	Password     string
+	Instructions string
+}
+
+// RenderAccessCodeEmail renders the "Kode akses OTP" email HTML.
+func RenderAccessCodeEmail(input AccessCodeEmailInput) (string, error) {
+	company := input.CompanyName
+	if company == "" {
+		company = "NECLY Services"
+	}
+	supportURL := input.FrontendURL
+	if supportURL == "" {
+		supportURL = "https://necly.example"
+	}
+
+	layoutCfg := LayoutConfig{
+		CompanyName:   company,
+		SupportURL:    supportURL,
+		PreheaderText: fmt.Sprintf("Kode akses OTP untuk pesanan %s — %s", input.OrderNumber, input.ProductName),
+		CurrentYear:   time.Now().Year(),
+	}
+
+	emailsListStr := strings.Join(input.AccountEmails, ", ")
+
+	summaryRows := []SummaryRow{
+		{Label: "Nomor pesanan", Value: input.OrderNumber},
+		{Label: "Produk", Value: input.ProductName},
+		{Label: "Durasi", Value: input.DurationName},
+		{Label: "Email akun", Value: emailsListStr},
+	}
+
+	otpURL := supportURL + "/otp"
+	laporanURL := supportURL + "/laporan-kendala"
+
+	steps := []Step{
+		{
+			Number:        1,
+			Title:         "Buka halaman Ambil OTP",
+			Description:   "Buka halaman Ambil OTP di situs Necly melalui tombol atau tautan di bawah ini.",
+			ButtonLabel:   "Buka Halaman Ambil OTP",
+			ButtonURL:     otpURL,
+			TextLinkLabel: otpURL,
+			TextLinkURL:   otpURL,
+		},
+		{
+			Number:      2,
+			Title:       "Masukkan email akun dan kata sandi di form login biasa",
+			Description: "Buka platform layanan yang bersangkutan, lalu ketik email akun dan kata sandi di form login biasa.",
+		},
+		{
+			Number:      3,
+			Title:       "JANGAN login pakai Google / Apple / SSO",
+			Description: "Jangan pernah memilih \"Continue with Google\", \"Sign in with Apple\", atau login via SSO pihak ketiga. Jalur tersebut tidak mengirim kode OTP ke email akun.",
+			IsWarning:   true,
+		},
+		{
+			Number:      4,
+			Title:       "Tunggu email kode verifikasi masuk (10–60 detik)",
+			Description: "Setelah kata sandi diterima platform, sistem akan mengirim kode OTP ke email akun. Tunggu selama 10 hingga 60 detik sampai email masuk.",
+		},
+		{
+			Number:      5,
+			Title:       "Kembali ke halaman Ambil OTP",
+			Description: "Kembali ke halaman Ambil OTP Necly yang sudah dibuka pada Langkah 1.",
+		},
+		{
+			Number:      6,
+			Title:       "Masukkan email akun + kode akses lalu ambil OTP",
+			Description: "Ketik email akun dan salin kode akses besar dari email ini ke kolom yang tersedia, lalu tekan tombol ambil OTP.",
+		},
+		{
+			Number:      7,
+			Title:       "Salin kode OTP 6 digit dan tempel di platform",
+			Description: "Kode OTP 6 digit terbaru akan muncul di layar. Salin kode tersebut, lalu tempel di kolom verifikasi platform layanan.",
+		},
+		{
+			Number:      8,
+			Title:       "Ambil ulang jika kode belum muncul",
+			Description: "Jika kode tidak muncul setelah 60 detik, tekan tombol ambil ulang (resend) di platform layanan, lalu ulangi Langkah 5 dan 6.",
+		},
+	}
+
+	layoutData := LayoutData{
+		Title:     "Kode Akses OTP",
+		Greeting:  fmt.Sprintf("Halo %s,", input.CustomerName),
+		IntroText: "Anda meminta kode akses untuk mengambil OTP login akun langganan Anda. Gunakan kode di bawah ini bersama email akun di halaman Ambil OTP Necly.",
+		CodeCard: &CodeCardData{
+			Label:        "Kode Akses OTP",
+			Code:         input.AccessCode,
+			ExpiresAt:    input.ExpiresAt,
+			ExpiresLabel: "Masa berlaku",
+		},
+		SummaryTable: &SummaryTableData{Rows: summaryRows},
+		StepsTable: &StepsTableData{
+			Title: "Cara mengambil OTP langkah demi langkah",
+			Steps: steps,
+		},
+		HelpBox: &HelpBoxData{
+			Title:       "Pusat Laporan Kendala",
+			Message:     "Jika Anda mengalami kesulitan atau kode tidak kunjung masuk, buat laporan kendala dengan menyertakan nomor pesanan Anda.",
+			ButtonLabel: "Buka Laporan Kendala",
+			ButtonURL:   laporanURL,
+			Note:        "Pastikan Anda menyertakan nomor pesanan " + input.OrderNumber + " dalam laporan.",
+		},
+		FooterNote: "Jangan bagikan kode akses ini kepada siapa pun. Jika Anda tidak meminta kode ini, abaikan email ini.",
+	}
+
+	return RenderLayout(layoutCfg, layoutData)
+}
+
+// RenderDeliveryEmail renders the "Akses pesanan" email HTML.
+func RenderDeliveryEmail(input DeliveryEmailInput) (string, error) {
+	company := input.CompanyName
+	if company == "" {
+		company = "NECLY Services"
+	}
+	supportURL := input.FrontendURL
+	if supportURL == "" {
+		supportURL = "https://necly.example"
+	}
+
+	layoutCfg := LayoutConfig{
+		CompanyName:   company,
+		SupportURL:    supportURL,
+		PreheaderText: fmt.Sprintf("Akses pesanan %s (%s) sudah aktif", input.OrderNumber, input.ProductName),
+		CurrentYear:   time.Now().Year(),
+	}
+
+	summaryRows := []SummaryRow{
+		{Label: "Nomor pesanan", Value: input.OrderNumber},
+		{Label: "Produk", Value: input.ProductName},
+		{Label: "Durasi", Value: input.DurationName},
+		{Label: "Jumlah akses", Value: fmt.Sprintf("%d", input.Quantity)},
+		{Label: "Masa akses", Value: "sampai " + input.AccessExpiresAt.Format("02 January 2006")},
+	}
+
+	// Build summary table or custom representation for accounts
+	// For delivery email, we can include account credentials in the summary or custom text/boxes.
+	// Let's create account rows or text.
+	var accountsSummary strings.Builder
+	for i, acc := range input.Accounts {
+		if i > 0 {
+			accountsSummary.WriteString("\n\n")
+		}
+		accountsSummary.WriteString(fmt.Sprintf("Akun %d — %s\n", i+1, acc.Label))
+		accountsSummary.WriteString(fmt.Sprintf("Email/username: %s\n", acc.Username))
+		accountsSummary.WriteString(fmt.Sprintf("Kata sandi: %s\n", acc.Password))
+		if acc.Instructions != "" {
+			accountsSummary.WriteString(fmt.Sprintf("Catatan: %s", acc.Instructions))
+		}
+	}
+
+	laporanURL := supportURL + "/laporan-kendala"
+
+	layoutData := LayoutData{
+		Title:        "Akses Pesanan Aktif",
+		Greeting:     fmt.Sprintf("Halo %s,", input.CustomerName),
+		IntroText:    "Akses untuk pesanan Anda sudah aktif. Berikut detail pesanan dan akun langganan yang dapat Anda gunakan.",
+		SummaryTable: &SummaryTableData{Rows: summaryRows},
+		WarningBox: &WarningBoxData{
+			Title:   "PERINGATAN PENTING: Jangan ubah kata sandi / profil",
+			Message: "Jangan mengubah kata sandi, email, atau profil akun karena akun ini digunakan bersama sesuai paket yang dibeli. Pelanggaran dapat menyebabkan pencabutan garansi akses.",
+		},
+		HelpBox: &HelpBoxData{
+			Title:       "Pusat Laporan Kendala",
+			Message:     "Jika Anda mengalami kendala saat login atau menggunakan akun, laporkan segera melalui halaman Laporan Kendala.",
+			ButtonLabel: "Buka Laporan Kendala",
+			ButtonURL:   laporanURL,
+			Note:        "Sertakan selalu nomor pesanan " + input.OrderNumber + " saat membuat laporan.",
+		},
+		FooterNote: accountsSummary.String(),
+	}
+
+	return RenderLayout(layoutCfg, layoutData)
+}
+
+// RenderReplacementEmail renders the "Akun pengganti" email HTML.
+func RenderReplacementEmail(input ReplacementEmailInput) (string, error) {
+	company := input.CompanyName
+	if company == "" {
+		company = "NECLY Services"
+	}
+	supportURL := input.FrontendURL
+	if supportURL == "" {
+		supportURL = "https://necly.example"
+	}
+
+	layoutCfg := LayoutConfig{
+		CompanyName:   company,
+		SupportURL:    supportURL,
+		PreheaderText: fmt.Sprintf("Akun pengganti untuk pesanan %s — %s", input.OrderNumber, input.ProductName),
+		CurrentYear:   time.Now().Year(),
+	}
+
+	summaryRows := []SummaryRow{
+		{Label: "Nomor pesanan", Value: input.OrderNumber},
+		{Label: "Produk", Value: input.ProductName},
+		{Label: "Durasi", Value: input.DurationName},
+		{Label: "Alasan penggantian", Value: input.Reason},
+		{Label: "Masa akses baru", Value: "sampai " + input.AccessExpiresAt.Format("02 January 2006")},
+	}
+
+	var accountsSummary strings.Builder
+	for i, acc := range input.Accounts {
+		if i > 0 {
+			accountsSummary.WriteString("\n\n")
+		}
+		accountsSummary.WriteString(fmt.Sprintf("Akun Pengganti %d — %s\n", i+1, acc.Label))
+		accountsSummary.WriteString(fmt.Sprintf("Email/username: %s\n", acc.Username))
+		accountsSummary.WriteString(fmt.Sprintf("Kata sandi: %s\n", acc.Password))
+		if acc.Instructions != "" {
+			accountsSummary.WriteString(fmt.Sprintf("Catatan: %s", acc.Instructions))
+		}
+	}
+
+	laporanURL := supportURL + "/laporan-kendala"
+
+	layoutData := LayoutData{
+		Title:        "Akun Pengganti",
+		Greeting:     fmt.Sprintf("Halo %s,", input.CustomerName),
+		IntroText:    "Akun untuk pesanan Anda telah diganti karena masa aktif akun sebelumnya berakhir atau keluhan Anda disetujui. Tidak ada tagihan baru untuk penggantian ini.",
+		SummaryTable: &SummaryTableData{Rows: summaryRows},
+		WarningBox: &WarningBoxData{
+			Title:   "PERINGATAN PENTING: Jangan ubah kata sandi / profil",
+			Message: "Jangan mengubah kata sandi, email, atau profil akun pengganti ini.",
+		},
+		HelpBox: &HelpBoxData{
+			Title:       "Pusat Laporan Kendala",
+			Message:     "Jika Anda mengalami kendala dengan akun pengganti, laporkan melalui Laporan Kendala.",
+			ButtonLabel: "Buka Laporan Kendala",
+			ButtonURL:   laporanURL,
+			Note:        "Sertakan nomor pesanan " + input.OrderNumber + ".",
+		},
+		FooterNote: accountsSummary.String(),
+	}
+
+	return RenderLayout(layoutCfg, layoutData)
+}
