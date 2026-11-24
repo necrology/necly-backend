@@ -2,6 +2,7 @@ package emailtemplate
 
 import (
 	"fmt"
+	"html"
 	"strings"
 	"time"
 )
@@ -195,27 +196,31 @@ func RenderDeliveryEmail(input DeliveryEmailInput) (string, error) {
 		{Label: "Masa akses", Value: "sampai " + formatTanggal(input.AccessExpiresAt)},
 	}
 
-	// Build summary table or custom representation for accounts
-	// For delivery email, we can include account credentials in the summary or custom text/boxes.
-	// Let's create account rows or text.
-	var accountsSummary strings.Builder
-	for i, acc := range input.Accounts {
-		if i > 0 {
-			accountsSummary.WriteString("\n\n")
+	// Build credential cards from accounts (one card per account)
+	var credentialCards []CredentialCardData
+	for _, acc := range input.Accounts {
+		title := fmt.Sprintf("KREDENSIAL AKUN %s", strings.ToUpper(html.EscapeString(acc.Label)))
+		if input.ProductName != "" {
+			title = fmt.Sprintf("KREDENSIAL AKUN %s", strings.ToUpper(html.EscapeString(input.ProductName)))
 		}
-		accountsSummary.WriteString(fmt.Sprintf("Akun %d — %s\n", i+1, acc.Label))
-		accountsSummary.WriteString(fmt.Sprintf("Email/username: %s\n", acc.Username))
-		accountsSummary.WriteString(fmt.Sprintf("Kata sandi: %s\n", acc.Password))
+		card := CredentialCardData{
+			Title: title,
+			Rows: []CredentialRow{
+				{Label: "Email akun", Value: acc.Username, Monospace: true},
+				{Label: "Kata sandi", Value: acc.Password, Monospace: true},
+			},
+			Note: "Pakai email dan kata sandi ini untuk login ke platform langganan. Kode akses Necly di atas dipakai di halaman Ambil OTP, bukan di sini.",
+		}
 		if acc.Instructions != "" {
-			accountsSummary.WriteString(fmt.Sprintf("Catatan: %s", acc.Instructions))
+			card.Note += " Catatan: " + acc.Instructions
 		}
+		credentialCards = append(credentialCards, card)
 	}
 
 	laporanURL := supportURL + "/laporan-kendala"
 
 	// Build mandatory box: OTP hanya terbit kalau pelanggan login pakai email + kata sandi,
-	// bukan lewat Google/Apple/SSO. Sertakan tautan ke halaman Ambil OTP.
-	// Tampil selalu: kewajiban login kata sandi berlaku bahkan saat kode akses nonaktif.
+	// bukan lewat Google/Apple/SSO. Tampil selalu: kewajiban login kata sandi berlaku bahkan saat kode akses nonaktif.
 	mandatoryBox := &WarningBoxData{
 		Title: "WAJIB — OTP hanya terbit kalau Anda login pakai KATA SANDI",
 		Message: "Kode OTP baru dikirim ke email akun setelah Anda memasukkan email dan kata sandi akun di form login biasa platform.\n" +
@@ -285,13 +290,14 @@ func RenderDeliveryEmail(input DeliveryEmailInput) (string, error) {
 	}
 
 	layoutData := LayoutData{
-		Title:        "Akses Pesanan Aktif",
-		Greeting:     fmt.Sprintf("Halo %s,", input.CustomerName),
-		IntroText:    "Akses untuk pesanan Anda sudah aktif. Berikut detail pesanan dan akun langganan yang dapat Anda gunakan.",
-		MandatoryBox: mandatoryBox,
-		CodeCard:     codeCard,
-		SummaryTable: &SummaryTableData{Rows: summaryRows},
-		StepsTable:   stepsTable,
+		Title:           "Akses Pesanan Aktif",
+		Greeting:        fmt.Sprintf("Halo %s,", input.CustomerName),
+		IntroText:       "Akses untuk pesanan Anda sudah aktif. Berikut detail pesanan dan akun langganan yang dapat Anda gunakan.",
+		MandatoryBox:    mandatoryBox,
+		CodeCard:        codeCard,
+		SummaryTable:    &SummaryTableData{Rows: summaryRows},
+		CredentialCards: credentialCards,
+		StepsTable:      stepsTable,
 		WarningBox: &WarningBoxData{
 			Title:   "PERINGATAN PENTING: Jangan ubah kata sandi / profil",
 			Message: "Jangan mengubah kata sandi, email, atau profil akun karena akun ini digunakan bersama sesuai paket yang dibeli. Pelanggaran dapat menyebabkan pencabutan garansi akses.",
@@ -303,7 +309,8 @@ func RenderDeliveryEmail(input DeliveryEmailInput) (string, error) {
 			ButtonURL:   laporanURL,
 			Note:        "Sertakan selalu nomor pesanan " + input.OrderNumber + " saat membuat laporan.",
 		},
-		FooterNote: accountsSummary.String(),
+		// FooterNote no longer carries credentials; keep a generic note if desired.
+		FooterNote: "Jangan bagikan kredensial akun ini kepada siapa pun. Jika Anda tidak meminta akses ini, abaikan email ini.",
 	}
 
 	return RenderLayout(layoutCfg, layoutData)
@@ -335,26 +342,35 @@ func RenderReplacementEmail(input ReplacementEmailInput) (string, error) {
 		{Label: "Masa akses baru", Value: "sampai " + formatTanggal(input.AccessExpiresAt)},
 	}
 
-	var accountsSummary strings.Builder
-	for i, acc := range input.Accounts {
-		if i > 0 {
-			accountsSummary.WriteString("\n\n")
+	// Build credential cards from accounts (one card per account)
+	var credentialCards []CredentialCardData
+	for _, acc := range input.Accounts {
+		title := fmt.Sprintf("KREDENSIAL AKUN PENGGANTI %s", strings.ToUpper(html.EscapeString(acc.Label)))
+		if input.ProductName != "" {
+			title = fmt.Sprintf("KREDENSIAL AKUN %s (PENGGANTI)", strings.ToUpper(html.EscapeString(input.ProductName)))
 		}
-		accountsSummary.WriteString(fmt.Sprintf("Akun Pengganti %d — %s\n", i+1, acc.Label))
-		accountsSummary.WriteString(fmt.Sprintf("Email/username: %s\n", acc.Username))
-		accountsSummary.WriteString(fmt.Sprintf("Kata sandi: %s\n", acc.Password))
+		card := CredentialCardData{
+			Title: title,
+			Rows: []CredentialRow{
+				{Label: "Email akun", Value: acc.Username, Monospace: true},
+				{Label: "Kata sandi", Value: acc.Password, Monospace: true},
+			},
+			Note: "Pakai email dan kata sandi ini untuk login ke platform langganan. Kode akses Necly dipakai di halaman Ambil OTP, bukan di sini.",
+		}
 		if acc.Instructions != "" {
-			accountsSummary.WriteString(fmt.Sprintf("Catatan: %s", acc.Instructions))
+			card.Note += " Catatan: " + acc.Instructions
 		}
+		credentialCards = append(credentialCards, card)
 	}
 
 	laporanURL := supportURL + "/laporan-kendala"
 
 	layoutData := LayoutData{
-		Title:        "Akun Pengganti",
-		Greeting:     fmt.Sprintf("Halo %s,", input.CustomerName),
-		IntroText:    "Akun untuk pesanan Anda telah diganti karena masa aktif akun sebelumnya berakhir atau keluhan Anda disetujui. Tidak ada tagihan baru untuk penggantian ini.",
-		SummaryTable: &SummaryTableData{Rows: summaryRows},
+		Title:           "Akun Pengganti",
+		Greeting:        fmt.Sprintf("Halo %s,", input.CustomerName),
+		IntroText:       "Akun untuk pesanan Anda telah diganti karena masa aktif akun sebelumnya berakhir atau keluhan Anda disetujui. Tidak ada tagihan baru untuk penggantian ini.",
+		SummaryTable:    &SummaryTableData{Rows: summaryRows},
+		CredentialCards: credentialCards,
 		WarningBox: &WarningBoxData{
 			Title:   "PERINGATAN PENTING: Jangan ubah kata sandi / profil",
 			Message: "Jangan mengubah kata sandi, email, atau profil akun pengganti ini.",
@@ -366,7 +382,8 @@ func RenderReplacementEmail(input ReplacementEmailInput) (string, error) {
 			ButtonURL:   laporanURL,
 			Note:        "Sertakan nomor pesanan " + input.OrderNumber + ".",
 		},
-		FooterNote: accountsSummary.String(),
+		// FooterNote no longer carries credentials.
+		FooterNote: "Jangan bagikan kredensial akun pengganti ini kepada siapa pun.",
 	}
 
 	return RenderLayout(layoutCfg, layoutData)
