@@ -282,7 +282,12 @@ func renderCodeCard(card *CodeCardData) string {
 	if card.ExpiresLabel != "" {
 		expiresLabel = card.ExpiresLabel
 	}
-	wib := formatWIB(card.ExpiresAt)
+	// A zero ExpiresAt must not render as a bogus "01 Jan 07:00 WIB" date.
+	showExpiry := !card.ExpiresAt.IsZero()
+	wib := ""
+	if showExpiry {
+		wib = formatWIB(card.ExpiresAt)
+	}
 
 	b.WriteString(`<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:24px;">`)
 	b.WriteString("<tr><td class=\"card-padding\" style=\"padding:24px;background-color:#eef2ff;border-radius:8px;border:1px solid #e0e7ff;\">")
@@ -297,7 +302,9 @@ func renderCodeCard(card *CodeCardData) string {
 	b.WriteString("</code>")
 	b.WriteString("</div>")
 	// Expires
-	b.WriteString(fmt.Sprintf(`<p style="margin:14px 0 0 0;color:#3730a3;font-size:15px;font-weight:600;"><strong>%s:</strong> %s WIB</p>`, html.EscapeString(expiresLabel), html.EscapeString(wib)))
+	if showExpiry {
+		b.WriteString(fmt.Sprintf(`<p style="margin:14px 0 0 0;color:#3730a3;font-size:15px;font-weight:600;"><strong>%s:</strong> %s WIB</p>`, html.EscapeString(expiresLabel), html.EscapeString(wib)))
+	}
 	b.WriteString("</td></tr></table>")
 	return b.String()
 }

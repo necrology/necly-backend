@@ -2,7 +2,6 @@ package emailtemplate
 
 import (
 	"fmt"
-	"html"
 	"strings"
 	"time"
 )
@@ -196,15 +195,18 @@ func RenderDeliveryEmail(input DeliveryEmailInput) (string, error) {
 		{Label: "Masa akses", Value: "sampai " + formatTanggal(input.AccessExpiresAt)},
 	}
 
-	// Build credential cards from accounts (one card per account)
+	// Build credential cards from accounts (one card per account).
+	// The title carries the product name, while Subtitle carries the account
+	// label so multiple accounts in one order stay distinguishable.
+	productLabel := strings.ToUpper(strings.TrimSpace(input.ProductName))
+	if productLabel == "" {
+		productLabel = "LANGGANAN"
+	}
 	var credentialCards []CredentialCardData
 	for _, acc := range input.Accounts {
-		title := fmt.Sprintf("KREDENSIAL AKUN %s", strings.ToUpper(html.EscapeString(acc.Label)))
-		if input.ProductName != "" {
-			title = fmt.Sprintf("KREDENSIAL AKUN %s", strings.ToUpper(html.EscapeString(input.ProductName)))
-		}
 		card := CredentialCardData{
-			Title: title,
+			Title:    fmt.Sprintf("KREDENSIAL AKUN %s", productLabel),
+			Subtitle: acc.Label,
 			Rows: []CredentialRow{
 				{Label: "Email akun", Value: acc.Username, Monospace: true},
 				{Label: "Kata sandi", Value: acc.Password, Monospace: true},
@@ -342,15 +344,18 @@ func RenderReplacementEmail(input ReplacementEmailInput) (string, error) {
 		{Label: "Masa akses baru", Value: "sampai " + formatTanggal(input.AccessExpiresAt)},
 	}
 
-	// Build credential cards from accounts (one card per account)
+	// Build credential cards from accounts (one card per account).
+	// Title carries the product name; Subtitle carries the account label so
+	// multiple replacement accounts stay distinguishable.
+	productLabel := strings.ToUpper(strings.TrimSpace(input.ProductName))
+	if productLabel == "" {
+		productLabel = "LANGGANAN"
+	}
 	var credentialCards []CredentialCardData
 	for _, acc := range input.Accounts {
-		title := fmt.Sprintf("KREDENSIAL AKUN PENGGANTI %s", strings.ToUpper(html.EscapeString(acc.Label)))
-		if input.ProductName != "" {
-			title = fmt.Sprintf("KREDENSIAL AKUN %s (PENGGANTI)", strings.ToUpper(html.EscapeString(input.ProductName)))
-		}
 		card := CredentialCardData{
-			Title: title,
+			Title:    fmt.Sprintf("KREDENSIAL AKUN %s (PENGGANTI)", productLabel),
+			Subtitle: acc.Label,
 			Rows: []CredentialRow{
 				{Label: "Email akun", Value: acc.Username, Monospace: true},
 				{Label: "Kata sandi", Value: acc.Password, Monospace: true},
