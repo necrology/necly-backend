@@ -336,6 +336,7 @@ func TestDeliverApprovedOrderMovesTrackingToAccessReceived(t *testing.T) {
 
 func TestDeliverApprovedOrderUsesComplaintPageAndNoReplyWording(t *testing.T) {
 	fixture := newDeliveryFixture(t, true, "user:secret")
+	fixture.order.Items[0].ProductName = "ChatGPT Plus"
 	fixture.service.SetAccessCodeSupport(newFakeAccessStore(), "https://necly.example")
 
 	if _, err := fixture.service.DeliverApprovedOrder(context.Background(), AdminActor{}, fixture.order.ID); err != nil {
@@ -356,9 +357,9 @@ func TestDeliverApprovedOrderUsesComplaintPageAndNoReplyWording(t *testing.T) {
 		"KODE AKSES OTP",
 		"Berlaku        : 5 menit",
 		"berbeda dari kata sandi akun dan berbeda dari OTP platform",
-		"kode akses OTP 5 menit yang tercantum di email ini",
-		"Tunggu beberapa saat sampai kode OTP terbaru",
-		"Kembali ke platform dan masukkan kode OTP",
+		"kode akses Necly 10 karakter",
+		"Salin kode OTP 6 digit yang tampil di halaman Ambil OTP",
+		"tempel di form verifikasi",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("email tidak memuat langkah OTP %q:\n%s", want, body)
@@ -375,15 +376,19 @@ func TestDeliverApprovedOrderExplainsChatGPTPasswordBeforeOptionalOTP(t *testing
 		t.Fatalf("DeliverApprovedOrder() error = %v", err)
 	}
 	body := fixture.mail.sent[0].Body
-	passwordStep := "masukkan email akun di atas, lalu lanjutkan dengan kata sandi akun di atas"
-	optionalOTPStep := "Ambil OTP hanya jika ChatGPT benar-benar menampilkan permintaan kode verifikasi setelah langkah kata sandi"
+	// Alur 4 langkah: login kata sandi dulu, form OTP kedua, halaman Necly ketiga.
+	passwordStep := "lanjutkan dengan kata sandi akun di atas"
+	formOTPStep := "Tunggu form kode OTP muncul di ChatGPT Plus"
+	otpPageStep := "Buka halaman Ambil OTP"
 	passwordIndex := strings.Index(body, passwordStep)
-	otpIndex := strings.Index(body, optionalOTPStep)
-	if passwordIndex < 0 || otpIndex < 0 {
+	formIndex := strings.Index(body, formOTPStep)
+	pageIndex := strings.Index(body, otpPageStep)
+	if passwordIndex < 0 || formIndex < 0 || pageIndex < 0 {
 		t.Fatalf("instruksi ChatGPT tidak lengkap:\n%s", body)
 	}
-	if passwordIndex >= otpIndex {
-		t.Fatalf("instruksi OTP mendahului password:\n%s", body)
+	if !(passwordIndex < formIndex && formIndex < pageIndex) {
+		t.Fatalf("urutan harus password < form OTP < halaman OTP (password=%d form=%d page=%d):\n%s",
+			passwordIndex, formIndex, pageIndex, body)
 	}
 }
 

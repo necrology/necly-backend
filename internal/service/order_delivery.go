@@ -825,42 +825,47 @@ func (s *OrderDeliveryService) writeUsageInstructions(body *strings.Builder, ite
 	isChatGPT := strings.Contains(strings.ToLower(productName), "chatgpt")
 	body.WriteString("Cara penggunaan dan login:\n")
 	step := 1
+
+	// Langkah 1: login memakai email + kata sandi. Ini yang memicu form OTP.
 	if loginURL := platformLoginURL(productName); loginURL != "" {
 		fmt.Fprintf(body, "%d. Buka %s (%s).\n", step, productName, loginURL)
 	} else {
 		fmt.Fprintf(body, "%d. Buka situs atau aplikasi resmi %s.\n", step, productName)
 	}
-	step++
 	if isChatGPT {
-		fmt.Fprintf(body, "%d. Pilih menu Masuk/Login, masukkan email akun di atas, lalu lanjutkan dengan kata sandi akun di atas.\n", step)
+		fmt.Fprintf(body, "   Pilih menu Masuk/Login, masukkan email akun di atas, lalu lanjutkan dengan kata sandi akun di atas.\n")
 	} else {
-		fmt.Fprintf(body, "%d. Pilih menu Masuk/Login, lalu masukkan email/username dan kata sandi di atas.\n", step)
+		fmt.Fprintf(body, "   Pilih menu Masuk/Login, lalu masukkan email/username dan kata sandi di atas.\n")
 	}
+	body.WriteString("   WAJIB: JANGAN login lewat Google, Apple, atau SSO pihak ketiga — jalur itu tidak mengirim kode OTP.\n")
 	step++
-	body.WriteString(fmt.Sprintf("%d. Jangan mengubah kata sandi, email, atau profil akun karena akun digunakan bersama.\n", step))
-	step++
-	if s.accessCodes != nil {
-		if isChatGPT {
-			fmt.Fprintf(body, "%d. Ambil OTP hanya jika ChatGPT benar-benar menampilkan permintaan kode verifikasi setelah langkah kata sandi.\n", step)
-			step++
-		}
+
+	// Langkah 2: form OTP harus SUDAH terbuka sebelum halaman Necly dibuka.
+	if s.accessCodes != nil && isChatGPT {
+		fmt.Fprintf(body, "%d. Tunggu form kode OTP muncul di %s.\n", step, productName)
+		body.WriteString("   JANGAN tutup halaman/tab ini — form OTP harus tetap terbuka.\n")
+		step++
+
+		// Langkah 3: baru sekarang buka halaman Ambil OTP + kode akses.
 		if s.frontendURL != "" {
-			fmt.Fprintf(body, "%d. Jika platform meminta kode OTP lewat email, buka halaman Ambil OTP di %s/otp.\n", step, s.frontendURL)
+			fmt.Fprintf(body, "%d. Buka halaman Ambil OTP di %s/otp, masukkan email akun + kode akses Necly 10 karakter.\n", step, s.frontendURL)
 		} else {
-			fmt.Fprintf(body, "%d. Jika platform meminta kode OTP lewat email, buka halaman Ambil OTP di situs Necly.\n", step)
+			fmt.Fprintf(body, "%d. Buka halaman Ambil OTP di situs Necly, masukkan email akun + kode akses Necly 10 karakter.\n", step)
 		}
-		step++
+		body.WriteString("   Kode akses Necly BUKAN kode OTP 6 digit.\n")
 		if codeIncluded {
-			body.WriteString(fmt.Sprintf("%d. Masukkan email akun dan kode akses OTP 5 menit yang tercantum di email ini pada halaman Ambil OTP.\n", step))
+			body.WriteString("   Kode akses sudah tercantum di email ini.\n")
 		} else {
-			body.WriteString(fmt.Sprintf("%d. Di halaman pesanan, buka bagian Akses akun & OTP, buat kode akses OTP, lalu masukkan email akun dan kode akses tersebut di halaman Ambil OTP.\n", step))
+			body.WriteString("   Di halaman pesanan, buka bagian Akses akun & OTP, buat kode akses OTP terlebih dahulu.\n")
 		}
 		step++
-		body.WriteString(fmt.Sprintf("%d. Tunggu beberapa saat sampai kode OTP terbaru dari email akun muncul di halaman Ambil OTP, lalu salin kodenya.\n", step))
-		step++
-		body.WriteString(fmt.Sprintf("%d. Kembali ke platform dan masukkan kode OTP tersebut untuk menyelesaikan login.\n", step))
+
+		// Langkah 4: ambil OTP yang ditampilkan, kembali ke platform, tempel di form.
+		fmt.Fprintf(body, "%d. Salin kode OTP 6 digit yang tampil di halaman Ambil OTP, kembali ke %s, tempel di form verifikasi. Login selesai.\n", step, productName)
 		step++
 	}
+	fmt.Fprintf(body, "%d. Jangan mengubah kata sandi, email, atau profil akun karena akun digunakan bersama.\n", step)
+	step++
 	if s.frontendURL != "" {
 		fmt.Fprintf(body, "%d. Jika tidak bisa masuk, buat laporan di %s/laporan-kendala dengan menyertakan nomor pesanan.\n", step, s.frontendURL)
 	} else {
