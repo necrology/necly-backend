@@ -148,6 +148,132 @@ func TestRenderDeliveryEmail(t *testing.T) {
 	}
 }
 
+func TestRenderDeliveryEmail_WithAccessCode(t *testing.T) {
+	accounts := []DeliveryAccountView{
+		{
+			Label:        "Akun Utama",
+			Username:     "user@example.com",
+			Password:     "secretpass123",
+			Instructions: "Jangan mengubah kata sandi",
+		},
+	}
+
+	input := DeliveryEmailInput{
+		CustomerName:        "Budi Santoso",
+		OrderNumber:         "ORD-20261122-001",
+		ProductName:         "Netflix Premium",
+		DurationName:        "1 Bulan",
+		Quantity:            1,
+		AccessExpiresAt:     time.Date(2026, 12, 22, 0, 0, 0, 0, time.UTC),
+		Accounts:            accounts,
+		FrontendURL:         "https://necly.example",
+		CompanyName:         "NECLY Services",
+		AccessCode:          "XK7M9PQ2R4",
+		AccessCodeExpiresAt: time.Date(2026, 11, 22, 15, 35, 0, 0, time.FixedZone("WIB", 7*3600)),
+	}
+
+	html, err := RenderDeliveryEmail(input)
+	if err != nil {
+		t.Fatalf("RenderDeliveryEmail returned error: %v", err)
+	}
+
+	// Should contain access code card
+	if !strings.Contains(html, "Kode Akses Necly (bukan OTP 6 digit)") {
+		t.Error("HTML should contain access code card label")
+	}
+	if !strings.Contains(html, "XK7M9PQ2R4") {
+		t.Error("HTML should contain access code")
+	}
+	if !strings.Contains(html, "Masa berlaku") {
+		t.Error("HTML should contain expires label")
+	}
+
+	// Should contain mandatory box
+	if !strings.Contains(html, "WAJIB — OTP hanya terbit kalau Anda login pakai KATA SANDI") {
+		t.Error("HTML should contain mandatory box")
+	}
+	if !strings.Contains(html, "Continue with Google") || !strings.Contains(html, "Sign in with Apple") {
+		t.Error("HTML should mention specific SSO providers to avoid")
+	}
+
+	// Should contain steps table with at least 7 steps
+	stepCount := strings.Count(html, `background-color:#4f46e5;color:#ffffff;font-size:13px;font-weight:700;line-height:1;">`)
+	if stepCount < 7 {
+		t.Errorf("Expected at least 7 steps, found %d", stepCount)
+	}
+
+	// Check specific step content
+	if !strings.Contains(html, "Buka halaman Ambil OTP") {
+		t.Error("HTML should contain step 1: Buka halaman Ambil OTP")
+	}
+	if !strings.Contains(html, "WAJIB — Masukkan email akun dan kata sandi di form login biasa") {
+		t.Error("HTML should contain step 2: WAJIB login with password")
+	}
+	if !strings.Contains(html, "JANGAN login pakai Google / Apple / SSO") {
+		t.Error("HTML should contain step 3: Don't use SSO")
+	}
+	if !strings.Contains(html, "Masukkan email akun + kode akses Necly") {
+		t.Error("HTML should contain step 6: Enter access code")
+	}
+	if !strings.Contains(html, "Salin kode OTP 6 digit dan tempel di platform") {
+		t.Error("HTML should contain step 7: Copy 6-digit OTP")
+	}
+
+	checkForbidden(html, t)
+
+	if len(html) >= 100*1024 {
+		t.Errorf("HTML size %d bytes exceeds 100KB limit", len(html))
+	}
+}
+
+func TestRenderDeliveryEmail_WithoutAccessCode(t *testing.T) {
+	accounts := []DeliveryAccountView{
+		{
+			Label:        "Akun Utama",
+			Username:     "user@example.com",
+			Password:     "secretpass123",
+			Instructions: "Jangan mengubah kata sandi",
+		},
+	}
+
+	input := DeliveryEmailInput{
+		CustomerName:    "Budi Santoso",
+		OrderNumber:     "ORD-20261122-001",
+		ProductName:     "Netflix Premium",
+		DurationName:    "1 Bulan",
+		Quantity:        1,
+		AccessExpiresAt: time.Date(2026, 12, 22, 0, 0, 0, 0, time.UTC),
+		Accounts:        accounts,
+		FrontendURL:     "https://necly.example",
+		CompanyName:     "NECLY Services",
+		AccessCode:      "",
+	}
+
+	html, err := RenderDeliveryEmail(input)
+	if err != nil {
+		t.Fatalf("RenderDeliveryEmail returned error: %v", err)
+	}
+
+	// Should NOT contain access code card
+	if strings.Contains(html, "Kode Akses Necly (bukan OTP 6 digit)") {
+		t.Error("HTML should NOT contain access code card label when AccessCode is empty")
+	}
+	if strings.Contains(html, "Masa berlaku") {
+		t.Error("HTML should NOT contain expires label when AccessCode is empty")
+	}
+
+	// Should still contain mandatory box and steps (they are always shown now)
+	if !strings.Contains(html, "WAJIB — OTP hanya terbit kalau Anda login pakai KATA SANDI") {
+		t.Error("HTML should still contain mandatory box")
+	}
+
+	checkForbidden(html, t)
+
+	if len(html) >= 100*1024 {
+		t.Errorf("HTML size %d bytes exceeds 100KB limit", len(html))
+	}
+}
+
 func TestRenderReplacementEmail(t *testing.T) {
 	accounts := []DeliveryAccountView{
 		{
