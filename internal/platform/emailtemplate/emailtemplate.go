@@ -21,15 +21,17 @@ type AccessCodeEmailInput struct {
 
 // DeliveryEmailInput holds data required to render the "Akses pesanan" email.
 type DeliveryEmailInput struct {
-	CustomerName    string
-	OrderNumber     string
-	ProductName     string
-	DurationName    string
-	Quantity        int
-	AccessExpiresAt time.Time
-	Accounts        []DeliveryAccountView
-	FrontendURL     string
-	CompanyName     string
+	CustomerName        string
+	OrderNumber         string
+	ProductName         string
+	DurationName        string
+	Quantity            int
+	AccessExpiresAt     time.Time
+	Accounts            []DeliveryAccountView
+	FrontendURL         string
+	CompanyName         string
+	AccessCode          string
+	AccessCodeExpiresAt time.Time
 }
 
 // ReplacementEmailInput holds data required to render the "Akun pengganti" email.
@@ -190,7 +192,7 @@ func RenderDeliveryEmail(input DeliveryEmailInput) (string, error) {
 		{Label: "Produk", Value: input.ProductName},
 		{Label: "Durasi", Value: input.DurationName},
 		{Label: "Jumlah akses", Value: fmt.Sprintf("%d", input.Quantity)},
-		{Label: "Masa akses", Value: "sampai " + input.AccessExpiresAt.Format("02 January 2006")},
+		{Label: "Masa akses", Value: "sampai " + formatTanggal(input.AccessExpiresAt)},
 	}
 
 	// Build summary table or custom representation for accounts
@@ -211,11 +213,85 @@ func RenderDeliveryEmail(input DeliveryEmailInput) (string, error) {
 
 	laporanURL := supportURL + "/laporan-kendala"
 
+	// Build mandatory box: OTP hanya terbit kalau pelanggan login pakai email + kata sandi,
+	// bukan lewat Google/Apple/SSO. Sertakan tautan ke halaman Ambil OTP.
+	// Tampil selalu: kewajiban login kata sandi berlaku bahkan saat kode akses nonaktif.
+	mandatoryBox := &WarningBoxData{
+		Title: "WAJIB — OTP hanya terbit kalau Anda login pakai KATA SANDI",
+		Message: "Kode OTP baru dikirim ke email akun setelah Anda memasukkan email dan kata sandi akun di form login biasa platform.\n" +
+			"• Login lewat \"Continue with Google\" / \"Sign in with Apple\" / SSO lain TIDAK mengirim kode OTP.\n" +
+			"• Urutan benar: isi email + kata sandi di platform, tekan Log in, tunggu email kode verifikasi, lalu kembali ke halaman Ambil OTP Necly.",
+	}
+
+	// Build steps table: minimal 5 langkah
+	steps := []Step{
+		{
+			Number:        1,
+			Title:         "Buka halaman Ambil OTP",
+			Description:   "Buka halaman Ambil OTP di situs Necly melalui tautan di bawah ini.",
+			ButtonLabel:   "Buka Halaman Ambil OTP",
+			ButtonURL:     supportURL + "/otp",
+			TextLinkLabel: supportURL + "/otp",
+			TextLinkURL:   supportURL + "/otp",
+		},
+		{
+			Number:      2,
+			Title:       "WAJIB — Masukkan email akun dan kata sandi di form login biasa",
+			Description: "Buka platform layanan yang bersangkutan (misalnya chatgpt.com), lalu ketik email akun dan kata sandi di form login biasa, kemudian tekan Log in. Langkah ini tidak boleh dilewati: tanpa login memakai kata sandi, kode OTP tidak akan pernah dikirim ke email akun.",
+			IsWarning:   true,
+		},
+		{
+			Number:      3,
+			Title:       "JANGAN login pakai Google / Apple / SSO",
+			Description: "Jangan pernah memilih \"Continue with Google\", \"Sign in with Apple\", atau login via SSO pihak ketiga. Jalur tersebut tidak mengirim kode OTP ke email akun.",
+			IsWarning:   true,
+		},
+		{
+			Number:      4,
+			Title:       "Tunggu email kode verifikasi masuk (10–60 detik)",
+			Description: "Setelah kata sandi diterima platform, sistem akan mengirim kode OTP ke email akun. Tunggu selama 10 hingga 60 detik sampai email masuk.",
+		},
+		{
+			Number:      5,
+			Title:       "Kembali ke halaman Ambil OTP",
+			Description: "Kembali ke halaman Ambil OTP Necly yang sudah dibuka pada Langkah 1.",
+		},
+		{
+			Number:      6,
+			Title:       "Masukkan email akun + kode akses Necly",
+			Description: "Ketik email akun dan salin kode akses Necly dari email ini ke kolom yang tersedia, lalu tekan tombol ambil OTP.",
+		},
+		{
+			Number:      7,
+			Title:       "Salin kode OTP 6 digit dan tempel di platform",
+			Description: "Kode OTP 6 digit terbaru akan muncul di layar. Salin kode tersebut, lalu tempel di kolom verifikasi platform layanan.",
+		},
+	}
+
+	stepsTable := &StepsTableData{
+		Title: "Cara mengambil OTP langkah demi langkah",
+		Steps: steps,
+	}
+
+	// Build code card: hanya tampilkan kalau AccessCode diisi
+	var codeCard *CodeCardData
+	if input.AccessCode != "" {
+		codeCard = &CodeCardData{
+			Label:        "Kode Akses Necly (bukan OTP 6 digit)",
+			Code:         input.AccessCode,
+			ExpiresAt:    input.AccessCodeExpiresAt,
+			ExpiresLabel: "Masa berlaku",
+		}
+	}
+
 	layoutData := LayoutData{
 		Title:        "Akses Pesanan Aktif",
 		Greeting:     fmt.Sprintf("Halo %s,", input.CustomerName),
 		IntroText:    "Akses untuk pesanan Anda sudah aktif. Berikut detail pesanan dan akun langganan yang dapat Anda gunakan.",
+		MandatoryBox: mandatoryBox,
+		CodeCard:     codeCard,
 		SummaryTable: &SummaryTableData{Rows: summaryRows},
+		StepsTable:   stepsTable,
 		WarningBox: &WarningBoxData{
 			Title:   "PERINGATAN PENTING: Jangan ubah kata sandi / profil",
 			Message: "Jangan mengubah kata sandi, email, atau profil akun karena akun ini digunakan bersama sesuai paket yang dibeli. Pelanggaran dapat menyebabkan pencabutan garansi akses.",
@@ -256,7 +332,7 @@ func RenderReplacementEmail(input ReplacementEmailInput) (string, error) {
 		{Label: "Produk", Value: input.ProductName},
 		{Label: "Durasi", Value: input.DurationName},
 		{Label: "Alasan penggantian", Value: input.Reason},
-		{Label: "Masa akses baru", Value: "sampai " + input.AccessExpiresAt.Format("02 January 2006")},
+		{Label: "Masa akses baru", Value: "sampai " + formatTanggal(input.AccessExpiresAt)},
 	}
 
 	var accountsSummary strings.Builder

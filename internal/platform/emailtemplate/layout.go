@@ -393,3 +393,12 @@ func escapeMultiline(s string) string {
 	escaped = strings.ReplaceAll(escaped, "\r\n", "\n")
 	return strings.ReplaceAll(escaped, "\n", "<br>")
 }
+
+// formatTanggal renders a date in Indonesian ("05 Desember 2026") so the
+// customer-facing email does not mix English month names into Indonesian prose.
+func formatTanggal(t time.Time) string {
+	names := []string{"Januari", "Februari", "Maret", "April", "Mei", "Juni",
+		"Juli", "Agustus", "September", "Oktober", "November", "Desember"}
+	local := t.In(time.FixedZone("WIB", 7*3600))
+	return fmt.Sprintf("%02d %s %d", local.Day(), names[int(local.Month())-1], local.Year())
+}

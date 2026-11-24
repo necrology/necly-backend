@@ -683,14 +683,16 @@ func (s *OrderDeliveryService) buildMessage(order *domain.Order, item *domain.Or
 		Body:    body.String(),
 	}
 	if html, err := emailtemplate.RenderDeliveryEmail(emailtemplate.DeliveryEmailInput{
-		CustomerName:    order.Customer.Name,
-		OrderNumber:     order.Number,
-		ProductName:     productNameOf(item),
-		DurationName:    durationNameOf(item),
-		Quantity:        quantityOf(item),
-		AccessExpiresAt: accessExpiresAt,
-		Accounts:        deliveryAccountViews(accounts),
-		FrontendURL:     s.frontendURL,
+		CustomerName:        order.Customer.Name,
+		OrderNumber:         order.Number,
+		ProductName:         productNameOf(item),
+		DurationName:        durationNameOf(item),
+		Quantity:            quantityOf(item),
+		AccessExpiresAt:     accessExpiresAt,
+		Accounts:            deliveryAccountViews(accounts),
+		FrontendURL:         s.frontendURL,
+		AccessCode:          accessCode,
+		AccessCodeExpiresAt: accessCodeExpiresAt,
 	}); err != nil {
 		log.Printf("order delivery: render html for order %s failed: %v", order.ID, err)
 	} else {
