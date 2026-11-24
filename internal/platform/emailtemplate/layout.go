@@ -45,6 +45,10 @@ type LayoutData struct {
 	CodeCard *CodeCardData
 	// SummaryTable is optional: if non-nil, renders the order/account summary table.
 	SummaryTable *SummaryTableData
+	// CredentialCards is optional: if non-empty, renders credential cards for
+	// account login details (email/username + password). Rendered after
+	// SummaryTable and before StepsTable so credentials appear prominently.
+	CredentialCards []CredentialCardData
 	// StepsTable is optional: if non-nil, renders the numbered steps table.
 	StepsTable *StepsTableData
 	// WarningBox is optional: if non-nil, renders the yellow warning box.
@@ -77,6 +81,22 @@ type SummaryTableData struct {
 type SummaryRow struct {
 	Label string
 	Value string
+}
+
+// CredentialRow is one labelled value inside a credential card, e.g.
+// "Email akun" -> "buyer-account@example.test".
+type CredentialRow struct {
+	Label     string
+	Value     string
+	Monospace bool // if true, render value in monospace font
+}
+
+// CredentialCardData holds one account's login credentials.
+type CredentialCardData struct {
+	Title    string
+	Subtitle string
+	Rows     []CredentialRow
+	Note     string
 }
 
 // StepsTableData holds the numbered steps for the "Cara mengambil OTP" section.
@@ -179,6 +199,14 @@ func RenderLayout(config LayoutConfig, data LayoutData) (string, error) {
 		b.WriteString("\n")
 	}
 
+	// Credential Cards
+	if len(data.CredentialCards) > 0 {
+		for _, card := range data.CredentialCards {
+			b.WriteString(renderCredentialCard(&card))
+			b.WriteString("\n")
+		}
+	}
+
 	// Steps Table
 	if data.StepsTable != nil {
 		b.WriteString(renderStepsTable(data.StepsTable))
@@ -239,6 +267,8 @@ func RenderLayout(config LayoutConfig, data LayoutData) (string, error) {
 	/* Stack steps */
 	.step-cell { display: block; width: 100% !important; }
 	.step-number { margin-bottom: 4px !important; }
+	/* Credential value readability on mobile */
+	.cred-value { font-size: 15px !important; }
 }
 </style>`)
 
@@ -252,7 +282,12 @@ func renderCodeCard(card *CodeCardData) string {
 	if card.ExpiresLabel != "" {
 		expiresLabel = card.ExpiresLabel
 	}
-	wib := formatWIB(card.ExpiresAt)
+	// A zero ExpiresAt must not render as a bogus "01 Jan 07:00 WIB" date.
+	showExpiry := !card.ExpiresAt.IsZero()
+	wib := ""
+	if showExpiry {
+		wib = formatWIB(card.ExpiresAt)
+	}
 
 	b.WriteString(`<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:24px;">`)
 	b.WriteString("<tr><td class=\"card-padding\" style=\"padding:24px;background-color:#eef2ff;border-radius:8px;border:1px solid #e0e7ff;\">")
@@ -267,7 +302,53 @@ func renderCodeCard(card *CodeCardData) string {
 	b.WriteString("</code>")
 	b.WriteString("</div>")
 	// Expires
-	b.WriteString(fmt.Sprintf(`<p style="margin:14px 0 0 0;color:#3730a3;font-size:15px;font-weight:600;"><strong>%s:</strong> %s WIB</p>`, html.EscapeString(expiresLabel), html.EscapeString(wib)))
+	if showExpiry {
+		b.WriteString(fmt.Sprintf(`<p style="margin:14px 0 0 0;color:#3730a3;font-size:15px;font-weight:600;"><strong>%s:</strong> %s WIB</p>`, html.EscapeString(expiresLabel), html.EscapeString(wib)))
+	}
+	b.WriteString("</td></tr></table>")
+	return b.String()
+}
+
+// renderCredentialCard renders a credential card for account login details.
+// Uses a green/teal theme to visually distinguish from the blue access code card.
+func renderCredentialCard(card *CredentialCardData) string {
+	var b strings.Builder
+
+	b.WriteString(`<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:24px;">`)
+	b.WriteString("<tr><td class=\"card-padding\" style=\"padding:24px;background-color:#ecfdf5;border-radius:8px;border:1px solid #a7f3d0;\">")
+	// Title
+	if card.Title != "" {
+		b.WriteString(`<p style="margin:0 0 4px 0;color:#065f46;font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">`)
+		b.WriteString(html.EscapeString(card.Title))
+		b.WriteString("</p>")
+	}
+	// Subtitle
+	if card.Subtitle != "" {
+		b.WriteString(`<p style="margin:0 0 16px 0;color:#047857;font-size:13px;">`)
+		b.WriteString(html.EscapeString(card.Subtitle))
+		b.WriteString("</p>")
+	}
+	// Rows
+	for _, row := range card.Rows {
+		valueStyle := "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;font-weight:400;color:#111827;"
+		if row.Monospace {
+			valueStyle = "font-family:'SF Mono','Fira Code','Fira Mono',Menlo,Consolas,monospace;font-size:16px;font-weight:700;color:#065f46;background-color:#ffffff;border:1px solid #d1fae5;border-radius:4px;padding:8px 12px;user-select:all;-webkit-user-select:all;-moz-user-select:all;-ms-user-select:all;display:inline-block;word-break:break-all;"
+		}
+		b.WriteString(`<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:12px;">`)
+		b.WriteString("<tr>")
+		b.WriteString(fmt.Sprintf(`<td style="padding:0 0 4px 0;color:#6b7280;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;white-space:nowrap;">%s</td>`, html.EscapeString(row.Label)))
+		b.WriteString("</tr><tr>")
+		className := ""
+		if row.Monospace {
+			className = " cred-value"
+		}
+		b.WriteString(fmt.Sprintf(`<td style="padding:0;"><span class="%s" style="%s">%s</span></td>`, className, valueStyle, html.EscapeString(row.Value)))
+		b.WriteString("</tr></table>")
+	}
+	// Note
+	if card.Note != "" {
+		b.WriteString(fmt.Sprintf(`<p style="margin:16px 0 0 0;color:#047857;font-size:13px;line-height:1.6;">%s</p>`, html.EscapeString(card.Note)))
+	}
 	b.WriteString("</td></tr></table>")
 	return b.String()
 }
