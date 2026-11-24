@@ -192,7 +192,7 @@ func RenderDeliveryEmail(input DeliveryEmailInput) (string, error) {
 		{Label: "Produk", Value: input.ProductName},
 		{Label: "Durasi", Value: input.DurationName},
 		{Label: "Jumlah akses", Value: fmt.Sprintf("%d", input.Quantity)},
-		{Label: "Masa akses", Value: "sampai " + input.AccessExpiresAt.Format("02 January 2006")},
+		{Label: "Masa akses", Value: "sampai " + formatTanggal(input.AccessExpiresAt)},
 	}
 
 	// Build summary table or custom representation for accounts
@@ -215,15 +215,12 @@ func RenderDeliveryEmail(input DeliveryEmailInput) (string, error) {
 
 	// Build mandatory box: OTP hanya terbit kalau pelanggan login pakai email + kata sandi,
 	// bukan lewat Google/Apple/SSO. Sertakan tautan ke halaman Ambil OTP.
-	var mandatoryBox *WarningBoxData
-	if input.AccessCode != "" || true {
-		// Selalu tampilkan mandatory box karena login password selalu diperlukan
-		mandatoryBox = &WarningBoxData{
-			Title: "WAJIB — OTP hanya terbit kalau Anda login pakai KATA SANDI",
-			Message: "Kode OTP baru dikirim ke email akun setelah Anda memasukkan email dan kata sandi akun di form login biasa platform.\n" +
-				"• Login lewat \"Continue with Google\" / \"Sign in with Apple\" / SSO lain TIDAK mengirim kode OTP.\n" +
-				"• Urutan benar: isi email + kata sandi di platform, tekan Log in, tunggu email kode verifikasi, lalu kembali ke halaman Ambil OTP Necly.",
-		}
+	// Tampil selalu: kewajiban login kata sandi berlaku bahkan saat kode akses nonaktif.
+	mandatoryBox := &WarningBoxData{
+		Title: "WAJIB — OTP hanya terbit kalau Anda login pakai KATA SANDI",
+		Message: "Kode OTP baru dikirim ke email akun setelah Anda memasukkan email dan kata sandi akun di form login biasa platform.\n" +
+			"• Login lewat \"Continue with Google\" / \"Sign in with Apple\" / SSO lain TIDAK mengirim kode OTP.\n" +
+			"• Urutan benar: isi email + kata sandi di platform, tekan Log in, tunggu email kode verifikasi, lalu kembali ke halaman Ambil OTP Necly.",
 	}
 
 	// Build steps table: minimal 5 langkah
@@ -335,7 +332,7 @@ func RenderReplacementEmail(input ReplacementEmailInput) (string, error) {
 		{Label: "Produk", Value: input.ProductName},
 		{Label: "Durasi", Value: input.DurationName},
 		{Label: "Alasan penggantian", Value: input.Reason},
-		{Label: "Masa akses baru", Value: "sampai " + input.AccessExpiresAt.Format("02 January 2006")},
+		{Label: "Masa akses baru", Value: "sampai " + formatTanggal(input.AccessExpiresAt)},
 	}
 
 	var accountsSummary strings.Builder
