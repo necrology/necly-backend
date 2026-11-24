@@ -384,14 +384,18 @@ func (s *OrderDeliveryService) buildAccessCodeMessage(order *domain.Order, item 
 	fmt.Fprintf(&body, "\nKode akses : %s\n", code)
 	fmt.Fprintf(&body, "Berlaku sampai : %s WIB\n\n", expiresAt.In(time.FixedZone("WIB", 7*3600)).Format("02 Jan 2006 15:04"))
 	body.WriteString("Cara mengambil OTP:\n")
-	if s.frontendURL != "" {
-		fmt.Fprintf(&body, "1. Buka %s/otp\n", s.frontendURL)
-	} else {
-		body.WriteString("1. Buka halaman Ambil OTP di situs Necly.\n")
+	productName := item.ProductName
+	if productName == "" {
+		productName = "platform"
 	}
-	body.WriteString("2. Masukkan email akun dan kode akses di atas.\n")
-	body.WriteString("3. Tunggu beberapa saat sampai kode OTP terbaru dari email akun muncul.\n")
-	body.WriteString("4. Salin kode OTP lalu masukkan ke halaman verifikasi platform.\n\n")
+	otpPage := "halaman Ambil OTP di situs Necly"
+	if s.frontendURL != "" {
+		otpPage = s.frontendURL + "/otp"
+	}
+	fmt.Fprintf(&body, "1. Login ke %s pakai email + kata sandi akun (bukan Google/Apple/SSO).\n", productName)
+	fmt.Fprintf(&body, "2. Tunggu form kode OTP muncul di %s. Jangan tutup halaman/tab ini.\n", productName)
+	fmt.Fprintf(&body, "3. Baru buka %s, masukkan email akun + kode akses di atas (kode akses BUKAN OTP 6 digit).\n", otpPage)
+	fmt.Fprintf(&body, "4. Salin kode OTP 6 digit yang tampil di halaman Ambil OTP, kembali ke %s, tempel di form verifikasi. Login selesai.\n\n", productName)
 	body.WriteString("Jangan bagikan kode akses ini. Jika Anda tidak meminta kode, abaikan email ini.\n")
 	if s.frontendURL != "" {
 		fmt.Fprintf(&body, "Untuk kendala, buat laporan di %s/laporan-kendala dengan menyertakan nomor pesanan.\n", s.frontendURL)

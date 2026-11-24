@@ -49,21 +49,32 @@ func TestRenderAccessCodeEmail(t *testing.T) {
 		t.Error("HTML should contain access code")
 	}
 
-	// Check for 8 steps
+	// Alur 4 langkah: login kata sandi dulu, form OTP kedua, halaman OTP ketiga.
 	stepCount := strings.Count(html, `background-color:#4f46e5;color:#ffffff;font-size:13px;font-weight:700;line-height:1;">`)
-	if stepCount < 8 {
-		t.Errorf("Expected at least 8 steps, found %d", stepCount)
+	if stepCount < 4 {
+		t.Errorf("Expected at least 4 steps, found %d", stepCount)
 	}
 
 	// Check specific step content
-	if !strings.Contains(html, `JANGAN login pakai Google`) && !strings.Contains(html, `JANGAN pakai Google`) {
+	if !strings.Contains(html, `JANGAN pilih Continue with Google`) && !strings.Contains(html, `JANGAN login pakai Google`) {
 		t.Error("HTML should contain warning about not using Google/Apple login")
 	}
 	if !strings.Contains(html, `Continue with Google`) && !strings.Contains(html, `Sign in with Apple`) {
 		t.Error("HTML should mention specific SSO providers to avoid")
 	}
-	if !strings.Contains(html, `Ambil ulang`) {
-		t.Error("HTML should contain step about retrying if OTP doesn't appear")
+	if !strings.Contains(html, `JANGAN tutup halaman`) {
+		t.Error("HTML should tell the user to keep the OTP form open")
+	}
+
+	// URUTAN: login kata sandi < form OTP < halaman Ambil OTP.
+	loginIdx := strings.Index(html, `kata sandi akun`)
+	formIdx := strings.Index(html, `Tunggu form kode OTP muncul`)
+	otpIdx := strings.Index(html, `Buka Halaman Ambil OTP`)
+	if loginIdx < 0 || formIdx < 0 || otpIdx < 0 {
+		t.Fatalf("missing markers login=%d form=%d otp=%d", loginIdx, formIdx, otpIdx)
+	}
+	if !(loginIdx < formIdx && formIdx < otpIdx) {
+		t.Errorf("urutan harus login < form OTP < halaman OTP (login=%d form=%d otp=%d)", loginIdx, formIdx, otpIdx)
 	}
 
 	// Check help box
@@ -189,34 +200,34 @@ func TestRenderDeliveryEmail_WithAccessCode(t *testing.T) {
 	}
 
 	// Should contain mandatory box
-	if !strings.Contains(html, "WAJIB — OTP hanya terbit kalau Anda login pakai KATA SANDI") {
+	if !strings.Contains(html, "WAJIB — Login pakai KATA SANDI, form OTP harus terbuka dulu") {
 		t.Error("HTML should contain mandatory box")
 	}
 	if !strings.Contains(html, "Continue with Google") || !strings.Contains(html, "Sign in with Apple") {
 		t.Error("HTML should mention specific SSO providers to avoid")
 	}
 
-	// Should contain steps table with at least 7 steps
+	// Alur 4 langkah: login kata sandi dulu, form OTP kedua, halaman OTP ketiga.
 	stepCount := strings.Count(html, `background-color:#4f46e5;color:#ffffff;font-size:13px;font-weight:700;line-height:1;">`)
-	if stepCount < 7 {
-		t.Errorf("Expected at least 7 steps, found %d", stepCount)
+	if stepCount < 4 {
+		t.Errorf("Expected at least 4 steps, found %d", stepCount)
 	}
 
 	// Check specific step content
-	if !strings.Contains(html, "Buka halaman Ambil OTP") {
-		t.Error("HTML should contain step 1: Buka halaman Ambil OTP")
+	if !strings.Contains(html, "Buka halaman Ambil OTP Necly dan masukkan email akun + kode akses") {
+		t.Error("HTML should contain the step that opens the OTP page with the access code")
 	}
-	if !strings.Contains(html, "WAJIB — Masukkan email akun dan kata sandi di form login biasa") {
-		t.Error("HTML should contain step 2: WAJIB login with password")
+	if !strings.Contains(html, "pakai email + kata sandi akun") {
+		t.Error("HTML should contain step 1: login with password")
 	}
-	if !strings.Contains(html, "JANGAN login pakai Google / Apple / SSO") {
-		t.Error("HTML should contain step 3: Don't use SSO")
+	if !strings.Contains(html, "Continue with Google") {
+		t.Error("HTML should warn against Google/Apple/SSO")
 	}
-	if !strings.Contains(html, "Masukkan email akun + kode akses Necly") {
-		t.Error("HTML should contain step 6: Enter access code")
+	if !strings.Contains(html, "Tunggu form kode OTP muncul") {
+		t.Error("HTML should contain the step where the OTP form appears")
 	}
-	if !strings.Contains(html, "Salin kode OTP 6 digit dan tempel di platform") {
-		t.Error("HTML should contain step 7: Copy 6-digit OTP")
+	if !strings.Contains(html, "Ambil kode OTP-nya") {
+		t.Error("HTML should contain the step that copies the 6-digit OTP")
 	}
 
 	checkForbidden(html, t)
@@ -263,7 +274,7 @@ func TestRenderDeliveryEmail_WithoutAccessCode(t *testing.T) {
 	}
 
 	// Should still contain mandatory box and steps (they are always shown now)
-	if !strings.Contains(html, "WAJIB — OTP hanya terbit kalau Anda login pakai KATA SANDI") {
+	if !strings.Contains(html, "WAJIB — Login pakai KATA SANDI, form OTP harus terbuka dulu") {
 		t.Error("HTML should still contain mandatory box")
 	}
 

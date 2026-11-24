@@ -88,50 +88,34 @@ func RenderAccessCodeEmail(input AccessCodeEmailInput) (string, error) {
 
 	steps := []Step{
 		{
-			Number:        1,
-			Title:         "Buka halaman Ambil OTP",
-			Description:   "Buka halaman Ambil OTP di situs Necly melalui tombol atau tautan di bawah ini.",
+			Number:      1,
+			Title:       "Login ke " + input.ProductName + " pakai email + kata sandi akun",
+			Description: "Buka " + input.ProductName + " (misalnya chatgpt.com), masukkan email akun dan kata sandi dari kartu kredensial di email ini, lalu tekan Log in. WAJIB: JANGAN pilih Continue with Google / Sign in with Apple / SSO, karena jalur itu tidak mengirim kode OTP.",
+			IsWarning:   true,
+		},
+		{
+			Number:      2,
+			Title:       "Tunggu form kode OTP muncul di " + input.ProductName,
+			Description: "Setelah kata sandi diterima, " + input.ProductName + " menampilkan permintaan kode verifikasi. JANGAN tutup halaman atau tab ini — form OTP harus tetap terbuka sebelum Anda lanjut.",
+		},
+		{
+			Number:        3,
+			Title:         "Buka halaman Ambil OTP Necly dan masukkan email akun + kode akses",
+			Description:   "Baru setelah form OTP muncul, buka halaman Ambil OTP Necly. Masukkan email akun dan kode akses Necly 10 karakter dari kotak besar di atas. Kode akses Necly BUKAN kode OTP 6 digit.",
 			ButtonLabel:   "Buka Halaman Ambil OTP",
 			ButtonURL:     otpURL,
 			TextLinkLabel: otpURL,
 			TextLinkURL:   otpURL,
 		},
 		{
-			Number:      2,
-			Title:       "WAJIB — Masukkan email akun dan kata sandi di form login biasa",
-			Description: "Buka platform layanan yang bersangkutan (misalnya chatgpt.com), lalu ketik email akun dan kata sandi di form login biasa, kemudian tekan Log in. Langkah ini tidak boleh dilewati: tanpa login memakai kata sandi, kode OTP tidak akan pernah dikirim ke email akun.",
-			IsWarning:   true,
-		},
-		{
-			Number:      3,
-			Title:       "JANGAN login pakai Google / Apple / SSO",
-			Description: "Jangan pernah memilih \"Continue with Google\", \"Sign in with Apple\", atau login via SSO pihak ketiga. Jalur tersebut tidak mengirim kode OTP ke email akun.",
-			IsWarning:   true,
-		},
-		{
 			Number:      4,
-			Title:       "Tunggu email kode verifikasi masuk (10–60 detik)",
-			Description: "Setelah kata sandi diterima platform, sistem akan mengirim kode OTP ke email akun. Tunggu selama 10 hingga 60 detik sampai email masuk.",
+			Title:       "Ambil kode OTP-nya, kembali ke " + input.ProductName + ", tempel di form",
+			Description: "Necly membaca kode OTP 6 digit dari email akun Anda dan menampilkannya di halaman Ambil OTP. Salin kode 6 digit itu, kembali ke tab " + input.ProductName + " yang masih terbuka, lalu tempel di kolom verifikasi. Login akun selesai.",
 		},
 		{
 			Number:      5,
-			Title:       "Kembali ke halaman Ambil OTP",
-			Description: "Kembali ke halaman Ambil OTP Necly yang sudah dibuka pada Langkah 1.",
-		},
-		{
-			Number:      6,
-			Title:       "Masukkan email akun + kode akses Necly, lalu ambil OTP",
-			Description: "Ketik email akun dan salin kode akses Necly dari kotak besar di atas (10 karakter, bukan kode OTP) ke kolom yang tersedia, lalu tekan tombol ambil OTP.",
-		},
-		{
-			Number:      7,
-			Title:       "Salin kode OTP 6 digit dan tempel di platform",
-			Description: "Kode OTP 6 digit terbaru akan muncul di layar. Salin kode tersebut, lalu tempel di kolom verifikasi platform layanan.",
-		},
-		{
-			Number:      8,
 			Title:       "Ambil ulang jika kode belum muncul",
-			Description: "Jika kode tidak muncul setelah 60 detik, tekan tombol ambil ulang (resend) di platform layanan, lalu ulangi Langkah 5 dan 6.",
+			Description: "Jika kode tidak muncul setelah 60 detik, tekan tombol ambil ulang (resend) di " + input.ProductName + ", lalu ulangi Langkah 3 dan 4.",
 		},
 	}
 
@@ -224,54 +208,43 @@ func RenderDeliveryEmail(input DeliveryEmailInput) (string, error) {
 	// Build mandatory box: OTP hanya terbit kalau pelanggan login pakai email + kata sandi,
 	// bukan lewat Google/Apple/SSO. Tampil selalu: kewajiban login kata sandi berlaku bahkan saat kode akses nonaktif.
 	mandatoryBox := &WarningBoxData{
-		Title: "WAJIB — OTP hanya terbit kalau Anda login pakai KATA SANDI",
-		Message: "Kode OTP baru dikirim ke email akun setelah Anda memasukkan email dan kata sandi akun di form login biasa platform.\n" +
+		Title: "WAJIB — Login pakai KATA SANDI, form OTP harus terbuka dulu",
+		Message: "Kode OTP hanya terbit kalau Anda login memakai email dan kata sandi akun di form login biasa platform.\n" +
 			"• Login lewat \"Continue with Google\" / \"Sign in with Apple\" / SSO lain TIDAK mengirim kode OTP.\n" +
-			"• Urutan benar: isi email + kata sandi di platform, tekan Log in, tunggu email kode verifikasi, lalu kembali ke halaman Ambil OTP Necly.",
+			"• Urutan benar: login pakai kata sandi di platform → tunggu form kode OTP muncul → BARU buka halaman Ambil OTP Necly → salin kode dari email akun → kembali ke platform dan tempel di form.",
 	}
 
 	// Build steps table: minimal 5 langkah
 	steps := []Step{
 		{
-			Number:        1,
-			Title:         "Buka halaman Ambil OTP",
-			Description:   "Buka halaman Ambil OTP di situs Necly melalui tautan di bawah ini.",
+			Number:      1,
+			Title:       "Login ke " + input.ProductName + " pakai email + kata sandi akun",
+			Description: "Buka " + input.ProductName + " (misalnya chatgpt.com), masukkan email akun dan kata sandi dari kartu kredensial di atas, lalu tekan Log in. WAJIB: JANGAN pilih Continue with Google / Sign in with Apple / SSO, karena jalur itu tidak mengirim kode OTP.",
+			IsWarning:   true,
+		},
+		{
+			Number:      2,
+			Title:       "Tunggu form kode OTP muncul di " + input.ProductName,
+			Description: "Setelah kata sandi diterima, " + input.ProductName + " menampilkan permintaan kode verifikasi. JANGAN tutup halaman atau tab ini — form OTP harus tetap terbuka sebelum Anda lanjut.",
+		},
+		{
+			Number:        3,
+			Title:         "Buka halaman Ambil OTP Necly dan masukkan email akun + kode akses",
+			Description:   "Baru setelah form OTP muncul, buka halaman Ambil OTP Necly. Masukkan email akun dan kode akses Necly 10 karakter dari kartu biru di atas. Kode akses Necly BUKAN kode OTP 6 digit.",
 			ButtonLabel:   "Buka Halaman Ambil OTP",
 			ButtonURL:     supportURL + "/otp",
 			TextLinkLabel: supportURL + "/otp",
 			TextLinkURL:   supportURL + "/otp",
 		},
 		{
-			Number:      2,
-			Title:       "WAJIB — Masukkan email akun dan kata sandi di form login biasa",
-			Description: "Buka platform layanan yang bersangkutan (misalnya chatgpt.com), lalu ketik email akun dan kata sandi di form login biasa, kemudian tekan Log in. Langkah ini tidak boleh dilewati: tanpa login memakai kata sandi, kode OTP tidak akan pernah dikirim ke email akun.",
-			IsWarning:   true,
-		},
-		{
-			Number:      3,
-			Title:       "JANGAN login pakai Google / Apple / SSO",
-			Description: "Jangan pernah memilih \"Continue with Google\", \"Sign in with Apple\", atau login via SSO pihak ketiga. Jalur tersebut tidak mengirim kode OTP ke email akun.",
-			IsWarning:   true,
-		},
-		{
 			Number:      4,
-			Title:       "Tunggu email kode verifikasi masuk (10–60 detik)",
-			Description: "Setelah kata sandi diterima platform, sistem akan mengirim kode OTP ke email akun. Tunggu selama 10 hingga 60 detik sampai email masuk.",
+			Title:       "Ambil kode OTP-nya, kembali ke " + input.ProductName + ", tempel di form",
+			Description: "Necly membaca kode OTP 6 digit dari email akun Anda dan menampilkannya di halaman Ambil OTP. Salin kode 6 digit itu, kembali ke tab " + input.ProductName + " yang masih terbuka, lalu tempel di kolom verifikasi. Login akun selesai.",
 		},
 		{
 			Number:      5,
-			Title:       "Kembali ke halaman Ambil OTP",
-			Description: "Kembali ke halaman Ambil OTP Necly yang sudah dibuka pada Langkah 1.",
-		},
-		{
-			Number:      6,
-			Title:       "Masukkan email akun + kode akses Necly",
-			Description: "Ketik email akun dan salin kode akses Necly dari email ini ke kolom yang tersedia, lalu tekan tombol ambil OTP.",
-		},
-		{
-			Number:      7,
-			Title:       "Salin kode OTP 6 digit dan tempel di platform",
-			Description: "Kode OTP 6 digit terbaru akan muncul di layar. Salin kode tersebut, lalu tempel di kolom verifikasi platform layanan.",
+			Title:       "Ambil ulang jika kode belum muncul",
+			Description: "Jika kode tidak muncul setelah 60 detik, tekan tombol ambil ulang (resend) di " + input.ProductName + ", lalu ulangi Langkah 3 dan 4.",
 		},
 	}
 
