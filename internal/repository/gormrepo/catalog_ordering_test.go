@@ -2,6 +2,8 @@ package gormrepo
 
 import (
 	"context"
+	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 
@@ -10,7 +12,6 @@ import (
 	"github.com/necly/services/internal/migrate"
 	"github.com/necly/services/internal/platform/testdb"
 	"github.com/necly/services/internal/service"
-	"path/filepath"
 )
 
 // TestListProductsWithStockOrdersActiveBeforeComingSoon_baris130 verifies
@@ -158,10 +159,13 @@ func TestListProductsWithStockOrderIsDeterministic_baris130(t *testing.T) {
 		t.Fatalf("list products: %v", err)
 	}
 
-	// Should be ordered by id ASC as tiebreaker
+	// Should be ordered by id ASC as tiebreaker. UUIDs are random, so the
+	// expected order is the sorted list — not the insertion order.
+	sorted := append([]string(nil), ids...)
+	sort.Strings(sorted)
 	for i := 0; i < 3; i++ {
-		if products[i].ID != ids[i] {
-			t.Errorf("products[%d] = %s, want %s (id ASC tiebreaker)", i, products[i].ID, ids[i])
+		if products[i].ID != sorted[i] {
+			t.Errorf("products[%d] = %s, want %s (id ASC tiebreaker)", i, products[i].ID, sorted[i])
 		}
 	}
 

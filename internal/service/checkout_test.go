@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -113,6 +114,89 @@ func (r *atomicStockRepository) GetProductIDsByPriceIDs(_ context.Context, price
 
 func (r *atomicStockRepository) UserHasSentDeliveryForProduct(_ context.Context, _, _ string) (bool, error) {
 	return false, nil
+}
+
+// subscribedRepository simulates a buyer who received an account for
+// "product-price-1". The subscription is switched on after a checkout so the
+// first purchase is allowed and later ones are not.
+type subscribedRepository struct {
+	*atomicStockRepository
+	mu         sync.Mutex
+	subscribed bool
+}
+
+func (r *subscribedRepository) UserHasSentDeliveryForProduct(_ context.Context, _ string, productID string) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.subscribed && productID == "product-price-1", nil
+}
+
+func (r *subscribedRepository) markSubscribed() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.subscribed = true
+}
+
+// baris 133: membeli produk yang akunnya sudah pernah dikirim harus ditolak.
+func TestCheckoutRejectsProductAlreadySubscribed_baris133(t *testing.T) {
+	repo := &subscribedRepository{atomicStockRepository: &atomicStockRepository{stock: 5}, subscribed: true}
+	checkout := NewCheckoutService(repo, &fakeCheckoutProvider{}, 15*time.Minute)
+
+	_, err := checkout.Checkout(context.Background(), CheckoutInput{
+		UserID: "user-1", IdempotencyKey: "key-1",
+		Items: []CheckoutItemInput{{ProductPriceID: "price-1", Quantity: 1}},
+	})
+	if !errors.Is(err, ErrProductAlreadySubscribed) {
+		t.Fatalf("err = %v, want ErrProductAlreadySubscribed", err)
+	}
+	// Ditolak sebelum reservasi, jadi stok tidak boleh berkurang.
+	if repo.stock != 5 {
+		t.Fatalf("stock = %d, want 5 (rejection must not reserve stock)", repo.stock)
+	}
+}
+
+// Regresi: kalau guard berjalan sebelum jalur replay idempotency, retry checkout
+// yang sama akan dijawab 409 alih-alih 200 dengan order yang sudah tersimpan.
+// Pembeli yang notabene sudah memiliki produk itu akan melihat error, padahal
+// request-nya hanya kali kedua dari checkout yang sama.
+func TestCheckoutRetrySameKeyStillReplaysAfterDeliverySent_baris133(t *testing.T) {
+	repo := &subscribedRepository{atomicStockRepository: &atomicStockRepository{stock: 5}}
+	checkout := NewCheckoutService(repo, &fakeCheckoutProvider{}, 15*time.Minute)
+	input := CheckoutInput{
+		UserID: "user-1", IdempotencyKey: "key-1",
+		Items: []CheckoutItemInput{{ProductPriceID: "price-1", Quantity: 1}},
+	}
+
+	first, err := checkout.Checkout(context.Background(), input)
+	if err != nil {
+		t.Fatalf("first checkout: %v", err)
+	}
+	if first == nil || first.Order.ID == "" {
+		t.Fatal("first checkout returned no order")
+	}
+
+	// Akun sudah terkirim: pembeli sah memiliki produk ini.
+	repo.markSubscribed()
+
+	retry, err := checkout.Checkout(context.Background(), input)
+	if err != nil {
+		t.Fatalf("retry of the same idempotency key must replay, got %v", err)
+	}
+	if retry.Order.ID != first.Order.ID {
+		t.Fatalf("retry order = %q, want %q", retry.Order.ID, first.Order.ID)
+	}
+	if repo.stock != 4 {
+		t.Fatalf("stock = %d, want 4 (retry must not consume stock)", repo.stock)
+	}
+
+	// Kunci baru untuk produk yang sama tetap harus ditolak.
+	_, err = checkout.Checkout(context.Background(), CheckoutInput{
+		UserID: "user-1", IdempotencyKey: "key-2",
+		Items: []CheckoutItemInput{{ProductPriceID: "price-1", Quantity: 1}},
+	})
+	if !errors.Is(err, ErrProductAlreadySubscribed) {
+		t.Fatalf("new key err = %v, want ErrProductAlreadySubscribed", err)
+	}
 }
 
 type fakeCheckoutProvider struct{ calls atomic.Int32 }
