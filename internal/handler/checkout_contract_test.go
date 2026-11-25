@@ -63,6 +63,14 @@ func (r *checkoutHTTPRepository) CancelAndRelease(_ context.Context, _ string, _
 	return nil
 }
 
+func (r *checkoutHTTPRepository) GetProductIDsByPriceIDs(_ context.Context, _ []string) (map[string]string, error) {
+	return map[string]string{}, nil
+}
+
+func (r *checkoutHTTPRepository) UserHasSentDeliveryForProduct(_ context.Context, _, _ string) (bool, error) {
+	return false, nil
+}
+
 type checkoutHTTPProvider struct{}
 
 func (checkoutHTTPProvider) Name() string { return "mock" }

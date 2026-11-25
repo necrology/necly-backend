@@ -82,6 +82,13 @@ var (
 	// an account the buyer already received for the same product while another
 	// unused account is still available.
 	ErrAccountUsedByCustomer = errors.New("Akun sudah pernah dipakai pembeli ini untuk produk yang sama")
+	// ErrProductAlreadySubscribed blocks a checkout when the buyer already has a
+	// delivered (sent) delivery for the same product. This enforces the business
+	// rule: one account Necly = one purchase per product. The definition of
+	// "sudah berlangganan" is: the buyer has order_deliveries.status = 'sent' for
+	// this product. Orders that are still pending payment or not yet delivered do
+	// NOT count, otherwise a failed checkout would lock the user forever.
+	ErrProductAlreadySubscribed = errors.New("Akun yang anda gunakan saat ini sudah berlangganan produk ini, silahkan pilih produk lain yang belum di order atau untuk melakukan transaksi lain silahkan gunakan akun lain")
 	// ErrNoAlternativeAccount is the explicit all-accounts-used outcome. The
 	// delivery must not fall back to the same account; an admin must add a new
 	// account before sending.

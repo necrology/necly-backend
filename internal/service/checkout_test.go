@@ -103,6 +103,18 @@ func (r *atomicStockRepository) CancelAndRelease(_ context.Context, _ string, _ 
 	return nil
 }
 
+func (r *atomicStockRepository) GetProductIDsByPriceIDs(_ context.Context, priceIDs []string) (map[string]string, error) {
+	result := make(map[string]string, len(priceIDs))
+	for _, id := range priceIDs {
+		result[id] = "product-" + id
+	}
+	return result, nil
+}
+
+func (r *atomicStockRepository) UserHasSentDeliveryForProduct(_ context.Context, _, _ string) (bool, error) {
+	return false, nil
+}
+
 type fakeCheckoutProvider struct{ calls atomic.Int32 }
 
 func (p *fakeCheckoutProvider) Name() string { return "test" }
@@ -201,6 +213,18 @@ func (r *leaseRecoveryRepository) GetCheckoutProgress(_ context.Context, _, _ st
 
 func (r *leaseRecoveryRepository) CancelAndRelease(_ context.Context, _ string, _ time.Time) error {
 	return nil
+}
+
+func (r *leaseRecoveryRepository) GetProductIDsByPriceIDs(_ context.Context, priceIDs []string) (map[string]string, error) {
+	result := make(map[string]string, len(priceIDs))
+	for _, id := range priceIDs {
+		result[id] = "product-" + id
+	}
+	return result, nil
+}
+
+func (r *leaseRecoveryRepository) UserHasSentDeliveryForProduct(_ context.Context, _, _ string) (bool, error) {
+	return false, nil
 }
 
 func TestWaiterRecoversStaleReservationWithoutDoubleClaim(t *testing.T) {

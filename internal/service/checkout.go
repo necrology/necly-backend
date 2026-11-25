@@ -155,6 +155,13 @@ type CheckoutRepository interface {
 	FailCheckout(ctx context.Context, attemptID, errorCode string, now time.Time) error
 	GetCheckoutProgress(ctx context.Context, userID, idempotencyKey string) (*CheckoutProgress, error)
 	CancelAndRelease(ctx context.Context, orderID string, now time.Time) error
+	// GetProductIDsByPriceIDs returns a map of priceID -> productID for the given price IDs.
+	// This is used to check existing subscriptions before creating an order.
+	GetProductIDsByPriceIDs(ctx context.Context, priceIDs []string) (map[string]string, error)
+	// UserHasSentDeliveryForProduct reports whether the user already has a
+	// delivery with status 'sent' for the given product. This is used to
+	// enforce the one-purchase-per-product rule before creating an order.
+	UserHasSentDeliveryForProduct(ctx context.Context, userID, productID string) (bool, error)
 }
 
 type CheckoutResult struct {
@@ -275,6 +282,26 @@ func (s *CheckoutService) Checkout(ctx context.Context, input CheckoutInput) (*C
 	channel, err := NormalisePaymentChannel(input.PaymentChannel)
 	if err != nil {
 		return nil, err
+	}
+
+	// Check if user already has a sent delivery for any of the products.
+	// This enforces the one-purchase-per-product rule before creating an order.
+	priceIDs := make([]string, 0, len(input.Items))
+	for _, item := range input.Items {
+		priceIDs = append(priceIDs, item.ProductPriceID)
+	}
+	productIDMap, err := s.repo.GetProductIDsByPriceIDs(ctx, priceIDs)
+	if err != nil {
+		return nil, fmt.Errorf("load product ids: %w", err)
+	}
+	for _, productID := range productIDMap {
+		hasSent, err := s.repo.UserHasSentDeliveryForProduct(ctx, input.UserID, productID)
+		if err != nil {
+			return nil, fmt.Errorf("check existing subscription: %w", err)
+		}
+		if hasSent {
+			return nil, ErrProductAlreadySubscribed
+		}
 	}
 
 	// PostgreSQL stores timestamptz at microsecond precision. Truncating before
