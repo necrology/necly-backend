@@ -452,8 +452,10 @@ func (s *Store) ListProductsWithStock(ctx context.Context, filter service.Produc
 	}
 
 	var products []domain.Product
+	// Urutkan: produk yang BUKAN Coming Soon lebih dulu, baru produk Coming Soon.
+	// Di dalam masing-masing kelompok pertahankan urutan created_at DESC, id ASC.
 	offset := (page - 1) * perPage
-	if err := query.Order("created_at DESC, id ASC").Offset(offset).Limit(perPage).Find(&products).Error; err != nil {
+	if err := query.Order("coming_soon ASC, created_at DESC, id ASC").Offset(offset).Limit(perPage).Find(&products).Error; err != nil {
 		return nil, 0, fmt.Errorf("list products: %w", err)
 	}
 

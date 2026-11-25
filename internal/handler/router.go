@@ -1196,6 +1196,10 @@ func writeCheckoutError(c *fiber.Ctx, err error) error {
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
 			"error": "Slot akun langganan tidak mencukupi atau sedang habis", "code": "out_of_stock",
 		})
+	case errors.Is(err, service.ErrProductAlreadySubscribed):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+			"error": err.Error(), "code": "product_already_subscribed",
+		})
 	case errors.Is(err, service.ErrIdempotencyConflict):
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
 			"error": err.Error(), "code": "idempotency_conflict",

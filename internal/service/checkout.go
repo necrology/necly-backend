@@ -155,6 +155,13 @@ type CheckoutRepository interface {
 	FailCheckout(ctx context.Context, attemptID, errorCode string, now time.Time) error
 	GetCheckoutProgress(ctx context.Context, userID, idempotencyKey string) (*CheckoutProgress, error)
 	CancelAndRelease(ctx context.Context, orderID string, now time.Time) error
+	// GetProductIDsByPriceIDs returns a map of priceID -> productID for the given price IDs.
+	// This is used to check existing subscriptions before creating an order.
+	GetProductIDsByPriceIDs(ctx context.Context, priceIDs []string) (map[string]string, error)
+	// UserHasSentDeliveryForProduct reports whether the user already has a
+	// delivery with status 'sent' for the given product. This is used to
+	// enforce the one-purchase-per-product rule before creating an order.
+	UserHasSentDeliveryForProduct(ctx context.Context, userID, productID string) (bool, error)
 }
 
 type CheckoutResult struct {
@@ -277,6 +284,21 @@ func (s *CheckoutService) Checkout(ctx context.Context, input CheckoutInput) (*C
 		return nil, err
 	}
 
+	// The one-account-one-purchase-per-product rule must not break idempotency: a
+	// retry of the *same* checkout has to answer 200 with the stored order even
+	// though the buyer now legitimately owns that product. So the guard only runs
+	// when this owner/key pair has no stored checkout order yet, and it runs before
+	// BeginCheckout so a rejection never leaves a reservation holding stock.
+	progress, err := s.repo.GetCheckoutProgress(ctx, input.UserID, input.IdempotencyKey)
+	if err != nil {
+		return nil, fmt.Errorf("check existing checkout: %w", err)
+	}
+	if progress == nil || progress.Order == nil {
+		if err := s.rejectRepeatProduct(ctx, input); err != nil {
+			return nil, err
+		}
+	}
+
 	// PostgreSQL stores timestamptz at microsecond precision. Truncating before
 	// the first response makes the in-memory 201 body byte-identical to the
 	// 200 body that is later read back from the database.
@@ -303,6 +325,42 @@ func (s *CheckoutService) Checkout(ctx context.Context, input CheckoutInput) (*C
 		return s.waitForProgress(ctx, input.UserID, input.IdempotencyKey, channel)
 	}
 	return s.completeReservation(ctx, reservation, now, false, channel)
+}
+
+// rejectRepeatProduct enforces "one Necly account = one purchase per product".
+// Only a delivered (sent) delivery counts: a pending payment or an undelivered
+// order must not lock the buyer out, otherwise a failed checkout would ban them
+// from that product forever. Every product in the cart is checked, so a cart
+// mixing an owned product with a new one is rejected as a whole.
+func (s *CheckoutService) rejectRepeatProduct(ctx context.Context, input CheckoutInput) error {
+	priceIDs := make([]string, 0, len(input.Items))
+	for _, item := range input.Items {
+		priceIDs = append(priceIDs, item.ProductPriceID)
+	}
+	productIDMap, err := s.repo.GetProductIDsByPriceIDs(ctx, priceIDs)
+	if err != nil {
+		return fmt.Errorf("load product ids: %w", err)
+	}
+	// The map is keyed by price id, so the same product can appear twice when it
+	// has several price rows (different durations). De-duplicate before querying.
+	checked := make(map[string]struct{}, len(productIDMap))
+	for _, productID := range productIDMap {
+		if productID == "" {
+			continue
+		}
+		if _, done := checked[productID]; done {
+			continue
+		}
+		checked[productID] = struct{}{}
+		hasSent, err := s.repo.UserHasSentDeliveryForProduct(ctx, input.UserID, productID)
+		if err != nil {
+			return fmt.Errorf("check existing subscription: %w", err)
+		}
+		if hasSent {
+			return ErrProductAlreadySubscribed
+		}
+	}
+	return nil
 }
 
 func (s *CheckoutService) completeReservation(ctx context.Context, reservation *CheckoutReservation, now time.Time, alreadyClaimed bool, channel string) (*CheckoutResult, error) {

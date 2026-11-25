@@ -24,6 +24,7 @@ func NewStore(db *gorm.DB) *Store {
 }
 
 func (s *Store) nowUTC() time.Time { return s.now().UTC() }
+func (s *Store) DB() *gorm.DB      { return s.db }
 
 func (s *Store) CreateUser(ctx context.Context, user *domain.User, verification *domain.EmailVerificationToken) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {

@@ -484,3 +484,45 @@ func (s *Store) CancelAndRelease(ctx context.Context, orderID string, now time.T
 		return nil
 	})
 }
+
+// UserHasSentDeliveryForProduct checks if the user already has a delivery
+// with status 'sent' for the given product. This implements the business rule:
+// one account Necly = one purchase per product. Only deliveries with status
+// 'sent' count; pending payments or undelivered orders do NOT count.
+func (s *Store) UserHasSentDeliveryForProduct(ctx context.Context, userID, productID string) (bool, error) {
+	var count int64
+	err := s.db.WithContext(ctx).Table("order_deliveries d").
+		Joins("JOIN order_items oi ON oi.id = d.order_item_id").
+		Joins("JOIN orders o ON o.id = oi.order_id").
+		Joins("JOIN product_prices pp ON pp.id = oi.product_price_id").
+		Where("o.user_id = ? AND pp.product_id = ? AND d.status = ?", userID, productID, domain.DeliverySent).
+		Count(&count).Error
+	if err != nil {
+		return false, fmt.Errorf("check user sent delivery: %w", err)
+	}
+	return count > 0, nil
+}
+
+// GetProductIDsByPriceIDs returns a map of priceID -> productID for the given price IDs.
+func (s *Store) GetProductIDsByPriceIDs(ctx context.Context, priceIDs []string) (map[string]string, error) {
+	if len(priceIDs) == 0 {
+		return map[string]string{}, nil
+	}
+	type priceProduct struct {
+		ID        string
+		ProductID string
+	}
+	var prices []priceProduct
+	err := s.db.WithContext(ctx).Model(&domain.ProductPrice{}).
+		Select("id, product_id").
+		Where("id IN ?", priceIDs).
+		Scan(&prices).Error
+	if err != nil {
+		return nil, fmt.Errorf("load product prices: %w", err)
+	}
+	result := make(map[string]string, len(prices))
+	for _, p := range prices {
+		result[p.ID] = p.ProductID
+	}
+	return result, nil
+}
