@@ -485,17 +485,26 @@ func (s *Store) CancelAndRelease(ctx context.Context, orderID string, now time.T
 	})
 }
 
+// activeOrderStatusForSubscription lists order statuses that represent an
+// active subscription. Only these statuses block a new checkout for the same
+// product. This mirrors accessRevocationApprovedOrderStatus in
+// access_revocation.go to keep the definition of "active" consistent.
+var activeOrderStatusForSubscription = []domain.OrderStatus{
+	domain.OrderProcessing, domain.OrderShipped, domain.OrderDelivered, domain.OrderCompleted,
+}
+
 // UserHasSentDeliveryForProduct checks if the user already has a delivery
-// with status 'sent' for the given product. This implements the business rule:
-// one account Necly = one purchase per product. Only deliveries with status
-// 'sent' count; pending payments or undelivered orders do NOT count.
+// with status 'sent' for the given product, where the order is in an active
+// status. This implements the business rule: one account Necly = one purchase
+// per product. Only deliveries with status 'sent' AND an active order status
+// count; cancelled/refunded/expired orders do NOT block a new checkout.
 func (s *Store) UserHasSentDeliveryForProduct(ctx context.Context, userID, productID string) (bool, error) {
 	var count int64
 	err := s.db.WithContext(ctx).Table("order_deliveries d").
 		Joins("JOIN order_items oi ON oi.id = d.order_item_id").
 		Joins("JOIN orders o ON o.id = oi.order_id").
 		Joins("JOIN product_prices pp ON pp.id = oi.product_price_id").
-		Where("o.user_id = ? AND pp.product_id = ? AND d.status = ?", userID, productID, domain.DeliverySent).
+		Where("o.user_id = ? AND pp.product_id = ? AND d.status = ? AND o.status IN ?", userID, productID, domain.DeliverySent, activeOrderStatusForSubscription).
 		Count(&count).Error
 	if err != nil {
 		return false, fmt.Errorf("check user sent delivery: %w", err)
