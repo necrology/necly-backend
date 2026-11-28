@@ -111,10 +111,16 @@ func TestCheckoutPreventsDuplicateOrders_baris134(t *testing.T) {
 		t.Fatalf("first checkout: %v", err)
 	}
 
-	// Mark delivery as sent
+	// Mark delivery as sent. A 'sent' delivery implies the order was approved
+	// for fulfilment, so move the order to an active status first — that is the
+	// state baris 134 protects (cancel/refund re-checkout is baris 136).
 	var order domain.Order
 	if err := db.Where("user_id = ?", userID).First(&order).Error; err != nil {
 		t.Fatalf("load order: %v", err)
+	}
+	if err := db.Model(&domain.Order{}).Where("id = ?", order.ID).
+		Updates(map[string]any{"status": domain.OrderProcessing, "updated_at": now}).Error; err != nil {
+		t.Fatalf("activate order: %v", err)
 	}
 	var item domain.OrderItem
 	if err := db.Where("order_id = ?", order.ID).First(&item).Error; err != nil {

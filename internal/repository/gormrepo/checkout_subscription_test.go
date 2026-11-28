@@ -106,6 +106,15 @@ func TestCheckoutSecondOrderForSameProductRejected_baris133(t *testing.T) {
 		t.Fatalf("load order: %v", err)
 	}
 	orderID = order.ID
+	// A delivery can only reach status 'sent' after an administrator approved
+	// the order for fulfilment, so the order must be in an active fulfilment
+	// status. Moving it here keeps the fixture realistic: baris 133 blocks a
+	// repeat purchase for an *active* subscription (baris 136 covers the
+	// cancelled/refunded case where the block must be lifted).
+	if err := db.Model(&domain.Order{}).Where("id = ?", orderID).
+		Updates(map[string]any{"status": domain.OrderProcessing, "updated_at": now}).Error; err != nil {
+		t.Fatalf("activate order: %v", err)
+	}
 	var item domain.OrderItem
 	if err := db.Where("order_id = ?", orderID).First(&item).Error; err != nil {
 		t.Fatalf("load order item: %v", err)
