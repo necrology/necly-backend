@@ -106,6 +106,15 @@ func TestCheckoutSecondOrderForSameProductRejected_baris133(t *testing.T) {
 		t.Fatalf("load order: %v", err)
 	}
 	orderID = order.ID
+	// A delivery can only reach status 'sent' after an administrator approved
+	// the order for fulfilment, so the order must be in an active fulfilment
+	// status. Moving it here keeps the fixture realistic: baris 133 blocks a
+	// repeat purchase for an *active* subscription (baris 136 covers the
+	// cancelled/refunded case where the block must be lifted).
+	if err := db.Model(&domain.Order{}).Where("id = ?", orderID).
+		Updates(map[string]any{"status": domain.OrderProcessing, "updated_at": now}).Error; err != nil {
+		t.Fatalf("activate order: %v", err)
+	}
 	var item domain.OrderItem
 	if err := db.Where("order_id = ?", orderID).First(&item).Error; err != nil {
 		t.Fatalf("load order item: %v", err)
@@ -502,5 +511,402 @@ func TestCheckoutIdempotencyReplayNotBlockedBySubscriptionCheck_baris133(t *test
 	}
 	if provider.calls.Load() != 1 {
 		t.Fatalf("provider calls = %d, want 1 (replay should not call provider)", provider.calls.Load())
+	}
+}
+
+// TestCheckoutCancelledOrderAllowsRecheckout_baris136 verifies that a user
+// can checkout the same product again if their previous order was cancelled
+// (or refunded/expired) even though a delivery was sent. Only orders in
+// active statuses (processing, shipped, delivered, completed) block a new
+// checkout.
+func TestCheckoutCancelledOrderAllowsRecheckout_baris136(t *testing.T) {
+	if !testdb.Available() {
+		t.Skip("DB_HOST/DB_USER not set; skipping PostgreSQL integration test")
+	}
+	db, cleanup, err := testdb.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	migrations, err := filepath.Abs(filepath.Join("..", "..", "..", "migrations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrate.Run(context.Background(), db, migrate.Options{Dir: migrations}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	store := NewStore(db)
+	provider := &stubProvider{}
+	svc := service.NewCheckoutService(store, provider, 15*time.Minute)
+	now := time.Now().UTC()
+	userID := uuid.NewString()
+	categoryID := uuid.NewString()
+	productID := uuid.NewString()
+	durationID := uuid.NewString()
+	priceID := uuid.NewString()
+	accountID := uuid.NewString()
+	// Seed user
+	if err := db.Create(&domain.User{
+		ID: userID, Email: "baris136@example.com", Name: "Baris 136 User",
+		PasswordHash: "x", Role: domain.RoleCustomer, Active: true, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	// Seed category
+	if err := db.Create(&domain.Category{
+		ID: categoryID, Name: "Test", Slug: "test", Active: true, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed category: %v", err)
+	}
+	// Seed product
+	if err := db.Create(&domain.Product{
+		ID: productID, CategoryID: categoryID, Name: "Baris 136 Product", Slug: "baris-136-product",
+		Active: true, ComingSoon: false, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed product: %v", err)
+	}
+	// Seed duration
+	if err := db.Create(&domain.ProductDuration{
+		ID: durationID, Name: "1 Month", Days: 30, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed duration: %v", err)
+	}
+	// Seed price
+	if err := db.Create(&domain.ProductPrice{
+		ID: priceID, ProductID: productID, DurationID: durationID, Amount: 100000,
+		Currency: "IDR", Active: true, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed price: %v", err)
+	}
+	// Seed inventory account
+	if err := db.Create(&domain.InventoryAccount{
+		ID: accountID, ProductID: productID, EncryptedCredentials: []byte("creds"),
+		Status: "active", SharingLimit: 5, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+	// Seed slots
+	for i := 0; i < 3; i++ {
+		if err := db.Create(&domain.InventorySlot{
+			ID: uuid.NewString(), InventoryAccountID: accountID, ProductPriceID: priceID,
+			Status: "available", CreatedAt: now, UpdatedAt: now,
+		}).Error; err != nil {
+			t.Fatalf("seed slot %d: %v", i, err)
+		}
+	}
+	// First checkout - should succeed
+	_, err = svc.Checkout(context.Background(), service.CheckoutInput{
+		UserID: userID, IdempotencyKey: "baris136-first",
+		Items: []service.CheckoutItemInput{{ProductPriceID: priceID, Quantity: 1}},
+	})
+	if err != nil {
+		t.Fatalf("first checkout: %v", err)
+	}
+	// Mark delivery as sent and order as completed (active status)
+	var order domain.Order
+	if err := db.Where("user_id = ?", userID).First(&order).Error; err != nil {
+		t.Fatalf("load order: %v", err)
+	}
+	var item domain.OrderItem
+	if err := db.Where("order_id = ?", order.ID).First(&item).Error; err != nil {
+		t.Fatalf("load item: %v", err)
+	}
+	if err := db.Create(&domain.OrderDelivery{
+		ID: uuid.NewString(), OrderID: order.ID, OrderItemID: item.ID,
+		Status: domain.DeliverySent, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("create sent delivery: %v", err)
+	}
+	// Update order to completed (active status)
+	if err := db.Model(&order).Update("status", domain.OrderCompleted).Error; err != nil {
+		t.Fatalf("update order status: %v", err)
+	}
+	// Second checkout for same product - should be BLOCKED (409) because order is active
+	_, err = svc.Checkout(context.Background(), service.CheckoutInput{
+		UserID: userID, IdempotencyKey: "baris136-second-active",
+		Items: []service.CheckoutItemInput{{ProductPriceID: priceID, Quantity: 1}},
+	})
+	if err == nil {
+		t.Fatal("second checkout should have been blocked for active order")
+	}
+	if !errors.Is(err, service.ErrProductAlreadySubscribed) {
+		t.Fatalf("second checkout error = %v, want ErrProductAlreadySubscribed", err)
+	}
+	// Now cancel the order (simulating refund/cancelled/expired)
+	if err := db.Model(&order).Update("status", domain.OrderCancelled).Error; err != nil {
+		t.Fatalf("cancel order: %v", err)
+	}
+	// Third checkout for same product - should SUCCEED because order is cancelled
+	_, err = svc.Checkout(context.Background(), service.CheckoutInput{
+		UserID: userID, IdempotencyKey: "baris136-third-cancelled",
+		Items: []service.CheckoutItemInput{{ProductPriceID: priceID, Quantity: 1}},
+	})
+	if err != nil {
+		t.Fatalf("third checkout after cancellation: %v", err)
+	}
+	if provider.calls.Load() != 2 {
+		t.Fatalf("provider calls = %d, want 2", provider.calls.Load())
+	}
+}
+
+// TestCheckoutRefundedOrderAllowsRecheckout_baris136 verifies that a refunded
+// order also allows recheckout.
+func TestCheckoutRefundedOrderAllowsRecheckout_baris136(t *testing.T) {
+	if !testdb.Available() {
+		t.Skip("DB_HOST/DB_USER not set; skipping PostgreSQL integration test")
+	}
+	db, cleanup, err := testdb.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	migrations, err := filepath.Abs(filepath.Join("..", "..", "..", "migrations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrate.Run(context.Background(), db, migrate.Options{Dir: migrations}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	store := NewStore(db)
+	provider := &stubProvider{}
+	svc := service.NewCheckoutService(store, provider, 15*time.Minute)
+	now := time.Now().UTC()
+	userID := uuid.NewString()
+	categoryID := uuid.NewString()
+	productID := uuid.NewString()
+	durationID := uuid.NewString()
+	priceID := uuid.NewString()
+	accountID := uuid.NewString()
+	// Seed user
+	if err := db.Create(&domain.User{
+		ID: userID, Email: "baris136b@example.com", Name: "Baris 136 User B",
+		PasswordHash: "x", Role: domain.RoleCustomer, Active: true, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	// Seed category
+	if err := db.Create(&domain.Category{
+		ID: categoryID, Name: "Test", Slug: "test", Active: true, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed category: %v", err)
+	}
+	// Seed product
+	if err := db.Create(&domain.Product{
+		ID: productID, CategoryID: categoryID, Name: "Baris 136 Product B", Slug: "baris-136-product-b",
+		Active: true, ComingSoon: false, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed product: %v", err)
+	}
+	// Seed duration
+	if err := db.Create(&domain.ProductDuration{
+		ID: durationID, Name: "1 Month", Days: 30, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed duration: %v", err)
+	}
+	// Seed price
+	if err := db.Create(&domain.ProductPrice{
+		ID: priceID, ProductID: productID, DurationID: durationID, Amount: 100000,
+		Currency: "IDR", Active: true, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed price: %v", err)
+	}
+	// Seed inventory account
+	if err := db.Create(&domain.InventoryAccount{
+		ID: accountID, ProductID: productID, EncryptedCredentials: []byte("creds"),
+		Status: "active", SharingLimit: 5, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+	// Seed slots
+	for i := 0; i < 3; i++ {
+		if err := db.Create(&domain.InventorySlot{
+			ID: uuid.NewString(), InventoryAccountID: accountID, ProductPriceID: priceID,
+			Status: "available", CreatedAt: now, UpdatedAt: now,
+		}).Error; err != nil {
+			t.Fatalf("seed slot %d: %v", i, err)
+		}
+	}
+	// First checkout - should succeed
+	_, err = svc.Checkout(context.Background(), service.CheckoutInput{
+		UserID: userID, IdempotencyKey: "baris136b-first",
+		Items: []service.CheckoutItemInput{{ProductPriceID: priceID, Quantity: 1}},
+	})
+	if err != nil {
+		t.Fatalf("first checkout: %v", err)
+	}
+	// Mark delivery as sent and order as delivered (active status)
+	var order domain.Order
+	if err := db.Where("user_id = ?", userID).First(&order).Error; err != nil {
+		t.Fatalf("load order: %v", err)
+	}
+	var item domain.OrderItem
+	if err := db.Where("order_id = ?", order.ID).First(&item).Error; err != nil {
+		t.Fatalf("load item: %v", err)
+	}
+	if err := db.Create(&domain.OrderDelivery{
+		ID: uuid.NewString(), OrderID: order.ID, OrderItemID: item.ID,
+		Status: domain.DeliverySent, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("create sent delivery: %v", err)
+	}
+	if err := db.Model(&order).Update("status", domain.OrderDelivered).Error; err != nil {
+		t.Fatalf("update order status: %v", err)
+	}
+	// Second checkout for same product - should be BLOCKED
+	_, err = svc.Checkout(context.Background(), service.CheckoutInput{
+		UserID: userID, IdempotencyKey: "baris136b-second-active",
+		Items: []service.CheckoutItemInput{{ProductPriceID: priceID, Quantity: 1}},
+	})
+	if err == nil {
+		t.Fatal("second checkout should have been blocked for delivered order")
+	}
+	if !errors.Is(err, service.ErrProductAlreadySubscribed) {
+		t.Fatalf("second checkout error = %v, want ErrProductAlreadySubscribed", err)
+	}
+	// Now refund the order
+	if err := db.Model(&order).Update("status", domain.OrderRefunded).Error; err != nil {
+		t.Fatalf("refund order: %v", err)
+	}
+	// Third checkout for same product - should SUCCEED because order is refunded
+	_, err = svc.Checkout(context.Background(), service.CheckoutInput{
+		UserID: userID, IdempotencyKey: "baris136b-third-refunded",
+		Items: []service.CheckoutItemInput{{ProductPriceID: priceID, Quantity: 1}},
+	})
+	if err != nil {
+		t.Fatalf("third checkout after refund: %v", err)
+	}
+	if provider.calls.Load() != 2 {
+		t.Fatalf("provider calls = %d, want 2", provider.calls.Load())
+	}
+}
+
+// TestCheckoutExpiredOrderAllowsRecheckout_baris136 verifies that an expired
+// order also allows recheckout.
+func TestCheckoutExpiredOrderAllowsRecheckout_baris136(t *testing.T) {
+	if !testdb.Available() {
+		t.Skip("DB_HOST/DB_USER not set; skipping PostgreSQL integration test")
+	}
+	db, cleanup, err := testdb.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	migrations, err := filepath.Abs(filepath.Join("..", "..", "..", "migrations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrate.Run(context.Background(), db, migrate.Options{Dir: migrations}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	store := NewStore(db)
+	provider := &stubProvider{}
+	svc := service.NewCheckoutService(store, provider, 15*time.Minute)
+	now := time.Now().UTC()
+	userID := uuid.NewString()
+	categoryID := uuid.NewString()
+	productID := uuid.NewString()
+	durationID := uuid.NewString()
+	priceID := uuid.NewString()
+	accountID := uuid.NewString()
+	// Seed user
+	if err := db.Create(&domain.User{
+		ID: userID, Email: "baris136c@example.com", Name: "Baris 136 User C",
+		PasswordHash: "x", Role: domain.RoleCustomer, Active: true, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	// Seed category
+	if err := db.Create(&domain.Category{
+		ID: categoryID, Name: "Test", Slug: "test", Active: true, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed category: %v", err)
+	}
+	// Seed product
+	if err := db.Create(&domain.Product{
+		ID: productID, CategoryID: categoryID, Name: "Baris 136 Product C", Slug: "baris-136-product-c",
+		Active: true, ComingSoon: false, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed product: %v", err)
+	}
+	// Seed duration
+	if err := db.Create(&domain.ProductDuration{
+		ID: durationID, Name: "1 Month", Days: 30, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed duration: %v", err)
+	}
+	// Seed price
+	if err := db.Create(&domain.ProductPrice{
+		ID: priceID, ProductID: productID, DurationID: durationID, Amount: 100000,
+		Currency: "IDR", Active: true, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed price: %v", err)
+	}
+	// Seed inventory account
+	if err := db.Create(&domain.InventoryAccount{
+		ID: accountID, ProductID: productID, EncryptedCredentials: []byte("creds"),
+		Status: "active", SharingLimit: 5, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+	// Seed slots
+	for i := 0; i < 3; i++ {
+		if err := db.Create(&domain.InventorySlot{
+			ID: uuid.NewString(), InventoryAccountID: accountID, ProductPriceID: priceID,
+			Status: "available", CreatedAt: now, UpdatedAt: now,
+		}).Error; err != nil {
+			t.Fatalf("seed slot %d: %v", i, err)
+		}
+	}
+	// First checkout - should succeed
+	_, err = svc.Checkout(context.Background(), service.CheckoutInput{
+		UserID: userID, IdempotencyKey: "baris136c-first",
+		Items: []service.CheckoutItemInput{{ProductPriceID: priceID, Quantity: 1}},
+	})
+	if err != nil {
+		t.Fatalf("first checkout: %v", err)
+	}
+	// Mark delivery as sent and order as processing (active status)
+	var order domain.Order
+	if err := db.Where("user_id = ?", userID).First(&order).Error; err != nil {
+		t.Fatalf("load order: %v", err)
+	}
+	var item domain.OrderItem
+	if err := db.Where("order_id = ?", order.ID).First(&item).Error; err != nil {
+		t.Fatalf("load item: %v", err)
+	}
+	if err := db.Create(&domain.OrderDelivery{
+		ID: uuid.NewString(), OrderID: order.ID, OrderItemID: item.ID,
+		Status: domain.DeliverySent, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("create sent delivery: %v", err)
+	}
+	if err := db.Model(&order).Update("status", domain.OrderProcessing).Error; err != nil {
+		t.Fatalf("update order status: %v", err)
+	}
+	// Second checkout for same product - should be BLOCKED
+	_, err = svc.Checkout(context.Background(), service.CheckoutInput{
+		UserID: userID, IdempotencyKey: "baris136c-second-active",
+		Items: []service.CheckoutItemInput{{ProductPriceID: priceID, Quantity: 1}},
+	})
+	if err == nil {
+		t.Fatal("second checkout should have been blocked for processing order")
+	}
+	if !errors.Is(err, service.ErrProductAlreadySubscribed) {
+		t.Fatalf("second checkout error = %v, want ErrProductAlreadySubscribed", err)
+	}
+	// Now expire the order
+	if err := db.Model(&order).Update("status", domain.OrderExpired).Error; err != nil {
+		t.Fatalf("expire order: %v", err)
+	}
+	// Third checkout for same product - should SUCCEED because order is expired
+	_, err = svc.Checkout(context.Background(), service.CheckoutInput{
+		UserID: userID, IdempotencyKey: "baris136c-third-expired",
+		Items: []service.CheckoutItemInput{{ProductPriceID: priceID, Quantity: 1}},
+	})
+	if err != nil {
+		t.Fatalf("third checkout after expiry: %v", err)
+	}
+	if provider.calls.Load() != 2 {
+		t.Fatalf("provider calls = %d, want 2", provider.calls.Load())
 	}
 }

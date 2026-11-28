@@ -199,6 +199,37 @@ func TestCheckoutRetrySameKeyStillReplaysAfterDeliverySent_baris133(t *testing.T
 	}
 }
 
+// baris 133: keranjang campuran (produk sudah dimiliki + produk baru) ditolak
+// secara keseluruhan. Guard harus memeriksa SEMUA produk, bukan hanya yang pertama.
+func TestCheckoutMixedCartOwnedAndNewRejected_baris133(t *testing.T) {
+	repo := &mixedCartRepository{atomicStockRepository: &atomicStockRepository{stock: 5}}
+	checkout := NewCheckoutService(repo, &fakeCheckoutProvider{}, 15*time.Minute)
+
+	_, err := checkout.Checkout(context.Background(), CheckoutInput{
+		UserID: "user-1", IdempotencyKey: "key-mixed-1",
+		Items: []CheckoutItemInput{
+			{ProductPriceID: "price-owned", Quantity: 1},
+			{ProductPriceID: "price-new", Quantity: 1},
+		},
+	})
+	if !errors.Is(err, ErrProductAlreadySubscribed) {
+		t.Fatalf("err = %v, want ErrProductAlreadySubscribed", err)
+	}
+	if repo.stock != 5 {
+		t.Fatalf("stock = %d, want 5 (rejection must not reserve stock)", repo.stock)
+	}
+}
+
+// mixedCartRepository simulates a buyer who owns "product-price-owned"
+// but not "product-price-new".
+type mixedCartRepository struct {
+	*atomicStockRepository
+}
+
+func (r *mixedCartRepository) UserHasSentDeliveryForProduct(_ context.Context, _ string, productID string) (bool, error) {
+	return productID == "product-price-owned", nil
+}
+
 type fakeCheckoutProvider struct{ calls atomic.Int32 }
 
 func (p *fakeCheckoutProvider) Name() string { return "test" }
